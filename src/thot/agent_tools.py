@@ -81,7 +81,14 @@ def read_file(context: ToolContext, *, path: str, start: int = 1, end: int = 0) 
     last = end if end and end >= first else len(lines)
     selected = lines[first - 1 : last]
     numbered = [f"{first + i:>5}  {line}" for i, line in enumerate(selected)]
-    return "\n".join(numbered) or "(fichier vide)"
+    if not numbered:
+        return "(fichier vide)"
+
+    # A file is read from the top, so this one keeps the head — the opposite
+    # end from a command's output, and for the opposite reason.
+    from thot.output import truncate_head
+
+    return truncate_head("\n".join(numbered)).rendered()
 
 
 _PLUGIN_CACHE: dict[str, list] = {}

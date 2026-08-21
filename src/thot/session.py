@@ -202,6 +202,15 @@ class Session:
         except (sqlite3.Error, OSError):
             return None
 
+    def _charge(self, input_tokens: int, output_tokens: int) -> None:
+        """Record what the turn cost, against the session and the goal."""
+        if self.store is not None and self.session_id:
+            try:
+                self.store.charge(self.session_id, input_tokens, output_tokens)
+            except (sqlite3.Error, OSError):
+                pass
+        self._charge_goal(input_tokens + output_tokens)
+
     def _charge_goal(self, tokens: int) -> None:
         """Bill the turn, and say so the moment the budget runs out."""
         goal = self._goal()
@@ -471,7 +480,7 @@ class Session:
             )
             streamed.close()
             self.messages.append(reply.message)
-            self._charge_goal(reply.usage.input_tokens + reply.usage.output_tokens)
+            self._charge(reply.usage.input_tokens, reply.usage.output_tokens)
 
             if not reply.message.tool_calls:
                 theme.console.print()
@@ -532,7 +541,9 @@ class Session:
 
         self.messages.append(Message(role="assistant", content=answer))
         self._record("assistant", answer)
-        self._charge_goal(self.claude.last_tokens)
+        # The CLI reports one figure for the turn; attribute it to input,
+        # which is where all but a rounding error of it actually goes.
+        self._charge(self.claude.last_tokens, 0)
         self._refresh()  # the CLI may have edited files
         theme.console.print()
 
@@ -561,6 +572,8 @@ class Session:
             ("/verdict", "écarter ou accepter un finding : /verdict 2 refute raison"),
             ("/audit", "relancer l'analyse et afficher les findings"),
             ("/audit deep", "faire analyser puis réfuter les candidats par le modèle"),
+                ("/cost", "ce que cette session a coûté"),
+                ("/context", "ce qui remplit la fenêtre de contexte"),
                 ("/tools", "ce que le modèle peut faire : /tools lecture|complet|carte"),
                 ("/deps", "vérifier les dépendances contre OSV.dev"),
                 ("/sandbox", "où tournent les commandes : /sandbox docker|local"),
@@ -665,6 +678,12 @@ class Session:
 
         if command == "verdict":
             return self._verdict(argument)
+
+        if command in {"cost", "coût", "cout"}:
+            return self._cost()
+
+        if command in {"context", "contexte"}:
+            return self._context()
 
         if command in {"tools", "outils"}:
             return self._toolset(argument)
@@ -925,6 +944,57 @@ class Session:
             theme.hint(f"Budget : {created.token_budget} jetons.")
         theme.hint("Il sera rappelé au modèle à chaque tour, y compris après /compact.")
         self._record("goal", f"objectif fixé : {created.objective}")
+        theme.console.print()
+        return None
+
+    def _cost(self) -> None:
+        if not self._need_store():
+            return None
+        here = self.store.usage(self.session_id)
+        repo = self.store.usage_across(self.root)
+        everywhere = self.store.usage_across()
+
+        theme.console.print()
+        theme.console.print(theme.field("session", here.describe()))
+        theme.console.print(theme.field("ce dépôt", repo.describe()))
+        theme.console.print(theme.field("en tout", everywhere.describe()))
+        goal = self._goal()
+        if goal is not None:
+            theme.console.print(theme.field("objectif", goal.progress()))
+        theme.console.print()
+        theme.hint("Estimations : ce que le fournisseur a rapporté, pas une facture.")
+        theme.console.print()
+        return None
+
+    def _context(self) -> None:
+        """What is filling the window, worst first."""
+        from thot.state import compaction, context_breakdown
+
+        goal = self._goal()
+        slices = context_breakdown(
+            brief=self._brief(),
+            goal=goal.brief() if goal else "",
+            messages=self.messages,
+        )
+        total = sum(s.tokens for s in slices)
+
+        theme.console.print()
+        if not total:
+            theme.hint("Contexte vide — la conversation vient de commencer.")
+            theme.console.print()
+            return None
+
+        for item in slices:
+            share = f"{100 * item.tokens // total:>3} %" if total else "  0 %"
+            detail = f"{item.tokens:>6} jetons  {share}"
+            if item.detail:
+                detail += f"   {item.detail}"
+            theme.console.print(theme.entry(item.label, detail, width=22))
+
+        theme.console.print()
+        proposal = compaction.plan(self.messages)
+        theme.console.print(theme.field("total", f"~{total} jetons estimés"))
+        theme.console.print(theme.field("compactage", proposal.describe()))
         theme.console.print()
         return None
 

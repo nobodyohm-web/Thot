@@ -13,14 +13,19 @@ from pathlib import Path
 
 from thot.sandbox.base import DEFAULT_TIMEOUT, Result
 
-MAX_OUTPUT_CHARS = 6000
+# A command's output is read from the bottom: the traceback, the assertion,
+# the summary line. Prime Agent's limits, applied to the tail.
+MAX_OUTPUT_LINES = 400
+MAX_OUTPUT_BYTES = 24_000
 
 
-def clip(text: str, limit: int = MAX_OUTPUT_CHARS) -> str:
-    text = text.strip()
-    if len(text) <= limit:
-        return text
-    return text[:limit] + "\n… (sortie tronquée)"
+def clip(text: str) -> str:
+    """Keep the end of a command's output, and say what was dropped."""
+    from thot.output import truncate_tail
+
+    cut = truncate_tail(text.strip(), max_lines=MAX_OUTPUT_LINES,
+                        max_bytes=MAX_OUTPUT_BYTES)
+    return cut.rendered(tail=True)
 
 
 @dataclass

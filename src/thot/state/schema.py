@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import sqlite3
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 
 SCHEMA_SQL = """
 CREATE TABLE IF NOT EXISTS sessions (
@@ -116,10 +116,11 @@ def apply_pragmas(connection: sqlite3.Connection) -> str:
 
 def migrate(connection: sqlite3.Connection) -> bool:
     """Create or upgrade the schema. Returns whether search is available."""
-    from thot.state import goals
+    from thot.state import goals, usage
 
     connection.executescript(SCHEMA_SQL)
-    goals.migrate(connection)  # v2: Prime's persistent objective
+    goals.migrate(connection)   # v2: Prime's persistent objective
+    usage.migrate(connection)   # v3: what a session cost
 
     searchable = has_fts5(connection)
     if searchable:

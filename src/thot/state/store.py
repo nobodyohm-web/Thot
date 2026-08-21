@@ -20,7 +20,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 
-from thot.state import goals, schema
+from thot.state import goals, schema, usage
 from thot.state.search import DEFAULT_LIMIT, Hit, search
 
 from thot.paths import sessions_db
@@ -214,6 +214,18 @@ class SessionStore:
         )
         self._connection.commit()
         return cursor.rowcount > 0
+
+    # -- usage -----------------------------------------------------------
+
+    def charge(self, session_id: str, input_tokens: int, output_tokens: int) -> None:
+        usage.charge(self._connection, session_id, input_tokens, output_tokens)
+
+    def usage(self, session_id: str) -> "usage.Usage":
+        return usage.of(self._connection, session_id)
+
+    def usage_across(self, root: str | Path | None = None) -> "usage.Usage":
+        return usage.across(self._connection,
+                            None if root is None else str(root))
 
     # -- goals -----------------------------------------------------------
     #

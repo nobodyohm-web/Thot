@@ -133,11 +133,23 @@ def test_a_command_that_never_ends_is_cut(tmp_path):
 
 
 def test_output_is_clipped_rather_than_flooding_the_context(tmp_path):
-    from thot.sandbox.local import MAX_OUTPUT_CHARS
+    from thot.sandbox.local import MAX_OUTPUT_BYTES
 
     result = LocalSandbox(root=tmp_path).run("head -c 100000 /dev/zero | tr '\\0' 'x'")
-    assert len(result.output) <= MAX_OUTPUT_CHARS + 40
-    assert "tronquée" in result.output
+    assert len(result.output.encode()) <= MAX_OUTPUT_BYTES + 200
+    assert "coupé" in result.output
+
+
+def test_a_command_keeps_its_end_because_that_is_where_it_failed(tmp_path):
+    """Thot used to keep the collection banner and drop the traceback."""
+    script = ("for i in $(seq 1 2000); do echo collecte $i; done; "
+              "echo 'E   assert 1 == 2'; echo 'FAILED tests/test_x.py'")
+    result = LocalSandbox(root=tmp_path).run(script)
+
+    assert "FAILED tests/test_x.py" in result.output
+    assert "assert 1 == 2" in result.output
+    assert "collecte 1\n" not in result.output
+    assert "coupées au début" in result.output
 
 
 # -- the tool the model actually calls ---------------------------------------

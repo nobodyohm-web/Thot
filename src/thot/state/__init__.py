@@ -13,11 +13,15 @@ from thot.state.portability import (
     write_export,
 )
 from thot.state.goals import Goal
+from thot.state.usage import Slice, Usage, context_breakdown
 from thot.state.search import Hit
 from thot.state.store import SessionInfo, SessionStore, Turn
 
 __all__ = [
     "Goal",
+    "Slice",
+    "Usage",
+    "context_breakdown",
     "Hit",
     "SessionInfo",
     "SessionStore",

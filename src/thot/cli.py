@@ -199,6 +199,8 @@ def build_parser() -> argparse.ArgumentParser:
     export = subparsers.add_parser("export", help="Écrire une session en JSON")
     export.add_argument("session", help="Identifiant de session (préfixe accepté)")
     export.add_argument("--out", help="Fichier de sortie")
+    export.add_argument("--html", action="store_true",
+                        help="Écrire une page HTML autonome plutôt que du JSON")
 
     importer = subparsers.add_parser("import", help="Recharger une session exportée")
     importer.add_argument("file")
@@ -233,6 +235,8 @@ def build_parser() -> argparse.ArgumentParser:
                        help="Où s'exécutent les commandes de la session")
     audit.add_argument("--json", action="store_true", help="Sortie JSON")
     audit.add_argument("--markdown", action="store_true", help="Sortie Markdown")
+    audit.add_argument("--html", action="store_true",
+                       help="Sortie HTML autonome (un seul fichier, aucun réseau)")
     audit.add_argument("--paths", action="store_true",
                        help="Afficher le chemin de teinte complet de chaque finding")
     audit.add_argument("--out", help="Écrire le rapport dans un fichier")
@@ -394,6 +398,10 @@ def _cmd_audit(args) -> int:
         rendered = render_markdown(
             shown.findings, shown.manifest, shown.elapsed, hidden=hidden
         )
+    elif args.html:
+        from thot.report.html_report import audit_page
+
+        rendered = audit_page(shown, root=str(root)).html
     else:
         rendered = None
 
@@ -1048,6 +1056,15 @@ def _cmd_export(args) -> int:
         if resolved is None:
             print(f"Aucune session « {args.session} ».", file=sys.stderr)
             return EXIT_USAGE
+
+        if args.html:
+            from thot.report.html_report import session_page
+
+            target = Path(args.out or f"thot-session-{resolved[:8]}.html")
+            page = session_page(store.info(resolved), store.turns(resolved))
+            print(page.write(target))
+            return 0
+
         target = Path(args.out or f"thot-session-{resolved[:8]}.json")
         print(write_export(store, resolved, target))
         return 0
