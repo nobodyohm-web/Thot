@@ -175,3 +175,35 @@ def test_taint_in_a_non_command_argument_is_ignored(tmp_path):
         "    conn.execute('SELECT 1', name)\n",
     )
     assert candidates == []
+
+
+def test_recursive_function_does_not_crash_the_fixed_point(tmp_path):
+    """A self-call used to mutate param_sinks while it was being iterated."""
+    candidates = _analyse_source(
+        tmp_path,
+        "import os\nimport sys\n\n\n"
+        "def walk(target, depth):\n"
+        "    os.system('ls ' + target)\n"
+        "    if depth:\n"
+        "        walk(target, depth - 1)\n\n\n"
+        "def main():\n"
+        "    arg = sys.argv[1]\n"
+        "    walk(arg, 3)\n",
+    )
+    assert {c.rule for c in candidates} == {"sink.os.system"}
+
+
+def test_mutually_recursive_functions_do_not_crash(tmp_path):
+    candidates = _analyse_source(
+        tmp_path,
+        "import os\nimport sys\n\n\n"
+        "def ping(value):\n"
+        "    pong(value)\n\n\n"
+        "def pong(value):\n"
+        "    os.system(value)\n"
+        "    ping(value)\n\n\n"
+        "def main():\n"
+        "    arg = sys.argv[1]\n"
+        "    ping(arg)\n",
+    )
+    assert {c.rule for c in candidates} == {"sink.os.system"}

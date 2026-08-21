@@ -148,18 +148,25 @@ class _Facts:
     assigns_from_call: list[tuple[str, str, CodeRef]] = field(default_factory=list)
 
 
-def _function_node(root: Path, symbol: Symbol) -> ast.AST | None:
-    try:
-        source = (root / symbol.path).read_text(encoding="utf-8", errors="replace")
-        tree = ast.parse(source)
-    except (SyntaxError, ValueError, OSError):
-        return None
-    short = symbol.name.rsplit(".", 1)[-1]
-    for node in ast.walk(tree):
-        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
-            if node.name == short and node.lineno == symbol.lineno:
-                return node
-    return None
+def index_function_nodes(
+    root: Path, paths: set[str]
+) -> dict[tuple[str, int], ast.AST]:
+    """Parse each file once and index every function body by (path, line).
+
+    Parsing per symbol instead would re-read and re-parse a file as many times
+    as it has functions — quadratic on any real repository.
+    """
+    index: dict[tuple[str, int], ast.AST] = {}
+    for relative in paths:
+        try:
+            source = (root / relative).read_text(encoding="utf-8", errors="replace")
+            tree = ast.parse(source)
+        except (SyntaxError, ValueError, OSError, RecursionError):
+            continue
+        for node in ast.walk(tree):
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                index[(relative, node.lineno)] = node
+    return index
 
 
 def _ordered_nodes(node: ast.AST) -> list[ast.AST]:
@@ -273,14 +280,15 @@ def find_candidates(
     """Return every source-to-sink path the deterministic analysis can prove."""
     root = Path(root)
 
+    functions = [s for s in graph.symbols.values() if s.kind == "function"]
+    node_index = index_function_nodes(root, {s.path for s in functions})
+
     facts_by_name: dict[str, _Facts] = {}
-    for name, symbol in graph.symbols.items():
-        if symbol.kind != "function":
-            continue
-        node = _function_node(root, symbol)
+    for symbol in functions:
+        node = node_index.get((symbol.path, symbol.lineno))
         if node is None:
             continue
-        facts_by_name[name] = _analyse_body(symbol, node)
+        facts_by_name[symbol.name] = _analyse_body(symbol, node)
 
     by_short: dict[str, list[str]] = {}
     for name in facts_by_name:
@@ -305,7 +313,9 @@ def find_candidates(
                 if arg not in set(facts.symbol.params):
                     continue
                 for callee in resolve(callee_short):
-                    for sinks in callee.param_sinks.values():
+                    # Snapshot: a self-recursive call would otherwise mutate the
+                    # very dict being iterated.
+                    for sinks in list(callee.param_sinks.values()):
                         existing = facts.param_sinks.setdefault(arg, [])
                         for entry in sinks:
                             if entry not in existing:
@@ -354,8 +364,8 @@ def find_candidates(
             if origin is None:
                 continue
             for callee in resolve(callee_short):
-                for sinks in callee.param_sinks.values():
-                    for rule_id, sink_ref in sinks:
+                for sinks in list(callee.param_sinks.values()):
+                    for rule_id, sink_ref in list(sinks):
                         emit(rule_id, origin, sink_ref, (origin, call_ref, sink_ref))
 
     return candidates
