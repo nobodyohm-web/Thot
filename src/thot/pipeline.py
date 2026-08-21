@@ -55,9 +55,15 @@ def findings_from_graph(root: Path, graph: CodeGraph) -> list[Finding]:
     """Turn taint candidates into scored findings. Shared by the CLI and the
     interactive session, so both see exactly the same analysis."""
     findings: list[Finding] = []
+    entrypoints_known = bool(graph.entrypoints)
     for candidate in find_candidates(root, graph):
         distance = graph.distance_from_entrypoints(candidate.sink.symbol or "")
-        severity = compute_severity(candidate.impact, distance, Confidence.PLAUSIBLE)
+        severity = compute_severity(
+            candidate.impact,
+            distance,
+            Confidence.PLAUSIBLE,
+            entrypoints_known=entrypoints_known,
+        )
         scenario = (
             f"{candidate.description} : une valeur issue de `{candidate.source}` "
             f"atteint `{candidate.sink}` sans validation intermédiaire détectée."

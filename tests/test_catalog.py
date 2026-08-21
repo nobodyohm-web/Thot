@@ -42,3 +42,32 @@ def test_sys_argv_is_a_source():
 def test_every_sink_rule_id_is_unique():
     ids = [rule.id for rule in DEFAULT_SINKS]
     assert len(ids) == len(set(ids))
+
+
+# -- sources reached through a method call -----------------------------------
+# `request.args.get("x")` and `os.environ.get("X")` are how untrusted data is
+# actually read. Matching only the bare attribute missed every one of them.
+
+
+def test_http_source_matches_through_get():
+    assert match_source("request.args.get") is not None
+    assert match_source("request.form.get") is not None
+    assert match_source("request.get_json") is not None
+
+
+def test_environment_source_matches_through_get():
+    assert match_source("os.environ.get") is not None
+
+
+def test_http_source_still_matches_the_bare_attribute():
+    assert match_source("request.args") is not None
+
+
+def test_a_qualified_http_source_matches():
+    assert match_source("flask.request.args.get") is not None
+
+
+def test_an_unrelated_attribute_is_not_a_source():
+    assert match_source("self.request_count") is None
+    assert match_source("payload.get") is None
+    assert match_source("config.args.get") is None

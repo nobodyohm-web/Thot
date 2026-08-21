@@ -30,6 +30,7 @@ class SourceRule:
     id: str
     patterns: tuple[str, ...]
     description: str
+    match_mode: str = "qualified"
 
 
 DEFAULT_SINKS: tuple[SinkRule, ...] = (
@@ -94,6 +95,7 @@ DEFAULT_SOURCES: tuple[SourceRule, ...] = (
         id="source.environ",
         patterns=("os.environ", "os.getenv"),
         description="Variables d'environnement",
+        match_mode="prefix",
     ),
     SourceRule(
         id="source.stdin",
@@ -103,8 +105,11 @@ DEFAULT_SOURCES: tuple[SourceRule, ...] = (
     SourceRule(
         id="source.http",
         patterns=("request.args", "request.form", "request.json", "request.data",
-                  "request.values", "request.get_json"),
+                  "request.values", "request.get_json", "request.cookies",
+                  "request.headers", "request.files", "request.query_params",
+                  "request.body", "request.POST", "request.GET"),
         description="Requête HTTP entrante",
+        match_mode="prefix",
     ),
 )
 
@@ -121,14 +126,23 @@ def _matches(call_name: str, patterns: tuple[str, ...], mode: str = "qualified")
     - ``method`` — the receiver is never statically known, so any
       ``<something>.execute`` counts. Required for DB-API and ORM calls.
     - ``bare`` — builtins only: ``eval`` matches, ``obj.eval`` does not.
+    - ``prefix`` — the pattern names a tainted *object*, so anything read off
+      it is tainted too: ``request.args`` covers ``request.args.get`` and
+      ``request.args.getlist``. Untrusted input is almost never read as a bare
+      attribute, so without this the HTTP sources match nothing real.
     """
     for pattern in patterns:
         if call_name == pattern:
             return True
-        if mode == "qualified" and call_name.endswith("." + pattern):
+        if mode in {"qualified", "prefix"} and call_name.endswith("." + pattern):
             return True
         if mode == "method" and call_name.rsplit(".", 1)[-1] == pattern:
             return True
+        if mode == "prefix":
+            if call_name.startswith(pattern + "."):
+                return True
+            if "." + pattern + "." in call_name:
+                return True
     return False
 
 
@@ -141,7 +155,7 @@ def match_sink(call_name: str) -> SinkRule | None:
 
 def match_source(expression: str) -> SourceRule | None:
     for rule in DEFAULT_SOURCES:
-        if _matches(expression, rule.patterns, "qualified"):
+        if _matches(expression, rule.patterns, rule.match_mode):
             return rule
     return None
 

@@ -24,10 +24,21 @@ _CONFIDENCE_SCORE = {
 }
 
 
-def accessibility_weight(distance: int | None) -> float:
-    """Closeness to a public entry point, as a multiplier."""
+def accessibility_weight(
+    distance: int | None, *, entrypoints_known: bool = True
+) -> float:
+    """Closeness to a public entry point, as a multiplier.
+
+    `distance is None` carries two very different meanings, and conflating
+    them is dangerous. When the graph has entry points, unreachable really
+    means unreachable and the discount is the point of this whole function.
+    When it has none — a library, a framework Thot does not recognise, a
+    partial checkout — reach is simply unknown, and discounting on that
+    ignorance buries real defects below the default threshold. Unknown gets a
+    mild penalty, not a burial.
+    """
     if distance is None:
-        return 0.2
+        return 0.2 if entrypoints_known else 0.8
     if distance == 0:
         return 1.0
     if distance <= 2:
@@ -36,11 +47,15 @@ def accessibility_weight(distance: int | None) -> float:
 
 
 def compute_severity(
-    impact: Severity, distance: int | None, confidence: Confidence
+    impact: Severity,
+    distance: int | None,
+    confidence: Confidence,
+    *,
+    entrypoints_known: bool = True,
 ) -> Severity:
     score = (
         _IMPACT_SCORE[impact]
-        * accessibility_weight(distance)
+        * accessibility_weight(distance, entrypoints_known=entrypoints_known)
         * _CONFIDENCE_SCORE[confidence]
     )
     if score >= 0.7:
