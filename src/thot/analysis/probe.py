@@ -13,6 +13,7 @@ That asymmetry is what separates an audit from a linter with opinions.
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import replace
 from pathlib import Path
 
@@ -121,7 +122,9 @@ def _probe_task(root: Path, finding: Finding) -> AgentTask:
     )
 
 
-def _refute_task(root: Path, finding: Finding, scenario: str) -> AgentTask:
+def _refute_task(
+    root: Path, finding: Finding, scenario: str, *, again: bool = False
+) -> AgentTask:
     context = (
         f"Emplacement : {finding.location}\n"
         f"Scénario d'exploitation avancé :\n{scenario}\n\n"
@@ -138,8 +141,18 @@ def _refute_task(root: Path, finding: Finding, scenario: str) -> AgentTask:
         "Réponds uniquement par un objet JSON : "
         '{"refuted": true|false, "raison": "..."}'
     )
+    if again:
+        # It survived one attacker. Saying so is not a hint to agree: an
+        # attacker told nothing would rehearse the first attack's angles,
+        # and the value of a second attacker is entirely in the angles the
+        # first one missed.
+        instructions = (
+            "Ce scénario a déjà résisté à une tentative de réfutation par un "
+            "autre agent. Cherche ce que cette première attaque a manqué, pas "
+            "ce qu'elle a déjà couvert.\n\n" + instructions
+        )
     return AgentTask(
-        id=f"refute:{finding.id}",
+        id=f"refute2:{finding.id}" if again else f"refute:{finding.id}",
         instructions=instructions,
         context=context,
         schema=REFUTE_SCHEMA,
@@ -166,31 +179,107 @@ def analyse(
     findings: list[Finding],
     engine: Engine,
     limit: int = DEFAULT_LIMIT,
+    on_decided: Callable[[Finding], None] | None = None,
 ) -> list[Finding]:
-    """Probe, then refute. Returns every finding, analysed ones replaced."""
+    """Probe, attack, and attack again what survived — in batches.
+
+    Three phases rather than two, and the third is the point of running more
+    than one agent. A finding that survives its attacker is the one that will
+    be reported to a human, so it is the one worth spending a second,
+    independent attacker on — a different agent, which has seen neither the
+    argument being built nor the first attack being written.
+
+    The escalation is deliberately one-sided. A refutation is never
+    re-examined: the prompt tells the attacker to refute when in doubt, so a
+    refutation is already the cautious answer and re-litigating it would
+    manufacture false positives. Only survivors climb.
+
+    Batched because these runs are long. Three hundred candidates on a large
+    repository is hours of wall clock, and `fan_out` only returns once every
+    task in it has finished — so a single pass over the whole selection meant
+    an interruption at minute 90 threw away all ninety minutes. A batch is
+    decided, persisted through `on_decided`, and only then is the next one
+    started: what an interruption costs is one batch, not the run.
+    """
     root = Path(root)
     selected = select_for_analysis(findings, limit)
     if not selected:
         return list(findings)
 
-    probes = engine.fan_out([_probe_task(root, f) for f in selected])
     by_id: dict[str, Finding] = {}
+    size = _batch_size(engine)
+    for start in range(0, len(selected), size):
+        _analyse_batch(root, selected[start : start + size], engine, by_id,
+                       on_decided)
+
+    return [by_id.get(f.id, f) for f in findings]
+
+
+def _batch_size(engine: Engine) -> int:
+    """As wide as the engine can run at once, and no wider.
+
+    Wider would buy nothing — the extra tasks would queue anyway — and would
+    widen exactly what an interruption destroys.
+    """
+    return max(1, engine.capabilities.max_parallel)
+
+
+def _analyse_batch(
+    root: Path,
+    batch: list[Finding],
+    engine: Engine,
+    by_id: dict[str, Finding],
+    on_decided: Callable[[Finding], None] | None,
+) -> None:
+    """One batch through all three phases. Every finding leaves it settled."""
+
+    def settle(finding: Finding) -> None:
+        by_id[finding.id] = finding
+        if on_decided is not None:
+            on_decided(finding)
+
+    probes = engine.fan_out([_probe_task(root, f) for f in batch])
     to_refute: list[tuple[Finding, str]] = []
 
-    for finding, result in zip(selected, probes):
+    for finding, result in zip(batch, probes):
         updated = _apply_probe(finding, result, engine)
         by_id[finding.id] = updated
         if updated.confidence is Confidence.CONFIRMED:
             to_refute.append((updated, updated.failure_scenario))
+        else:
+            settle(updated)
 
+    survivors: list[tuple[Finding, str]] = []
     if to_refute:
         refutations = engine.fan_out(
             [_refute_task(root, f, scenario) for f, scenario in to_refute]
         )
-        for (finding, _), result in zip(to_refute, refutations):
-            by_id[finding.id] = _apply_refutation(finding, result, engine)
+        for (finding, scenario), result in zip(to_refute, refutations):
+            attacked = _apply_refutation(finding, result, engine)
+            by_id[finding.id] = attacked
+            if attacked.confidence is Confidence.CONFIRMED:
+                survivors.append((attacked, scenario))
+            else:
+                settle(attacked)
 
-    return [by_id.get(f.id, f) for f in findings]
+    # The cascade. Skipped when the panel has no third voice: an agent that
+    # already argued or already attacked this finding would be reviewing its
+    # own work, which is the failure this whole arrangement exists to avoid.
+    if survivors and _can_escalate(engine):
+        second = engine.fan_out(
+            [_refute_task(root, f, scenario, again=True)
+             for f, scenario in survivors]
+        )
+        for (finding, _), result in zip(survivors, second):
+            settle(_apply_refutation(finding, result, engine, again=True))
+    else:
+        for finding, _ in survivors:
+            settle(finding)
+
+
+def _can_escalate(engine: Engine) -> bool:
+    """Whether a third, untainted agent exists to attack the survivors."""
+    return len(getattr(engine, "names", ())) >= 3
 
 
 def _attribute(engine: Engine, task_id: str) -> str:
@@ -238,18 +327,22 @@ def _apply_probe(finding: Finding, result: AgentResult, engine: Engine) -> Findi
 
 
 def _apply_refutation(
-    finding: Finding, result: AgentResult, engine: Engine
+    finding: Finding, result: AgentResult, engine: Engine, *, again: bool = False
 ) -> Finding:
     provenance = dict(finding.provenance or {})
     # Named separately from `moteur`: on a panel these are two different
     # agents, and "who tried to destroy this and failed" is the sentence
-    # that makes a confirmation worth trusting.
-    provenance["contradicteur"] = _attribute(engine, result.task_id)
+    # that makes a confirmation worth trusting. The second attacker gets its
+    # own key so a survivor can name both, and so nothing overwrites the
+    # record of who already tried.
+    key = "second contradicteur" if again else "contradicteur"
+    provenance[key] = _attribute(engine, result.task_id)
     if not result.ok or not result.data:
         provenance["réfutation"] = result.error or "réponse vide"
         return replace(finding, provenance=provenance)
 
-    provenance["phase"] = "réfutée" if result.data.get("refuted") else "confirmée"
+    survived = "confirmée (2 attaques)" if again else "confirmée"
+    provenance["phase"] = "réfutée" if result.data.get("refuted") else survived
     reason = str(result.data.get("raison") or "")
     if result.data.get("refuted"):
         # Severity is impact × reach × confidence, and refuted confidence

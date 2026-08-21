@@ -32,6 +32,7 @@ from thot.engine.base import AgentResult, AgentTask, Engine, EngineCapabilities
 # plain Engine — nothing above it has to know a panel is running.
 PROBE_PREFIX = "probe:"
 REFUTE_PREFIX = "refute:"
+SECOND_PREFIX = "refute2:"
 
 
 def _subject(task_id: str) -> str:
@@ -46,6 +47,7 @@ class PanelEngine:
     members: list[Engine]
     _who: dict[str, str] = field(default_factory=dict)
     _argued: dict[str, str] = field(default_factory=dict)
+    _attacked: dict[str, str] = field(default_factory=dict)
     _turn: int = 0
     _lock: threading.Lock = field(default_factory=threading.Lock)
 
@@ -84,12 +86,24 @@ class PanelEngine:
     # -- routing ---------------------------------------------------------
 
     def _assign(self, task: AgentTask) -> Engine:
-        """Round-robin, except that a refutation avoids the arguer."""
-        opposed = ""
-        if task.id.startswith(REFUTE_PREFIX):
-            opposed = self._argued.get(_subject(task.id), "")
+        """Round-robin, minus everyone who already spoke about this finding.
 
-        pool = [m for m in self.members if m.capabilities.name != opposed]
+        A refutation avoids the agent that argued. A second refutation avoids
+        both — it exists precisely to bring an angle neither has taken, and a
+        member reviewing its own work would return the answer it already gave.
+        """
+        subject = _subject(task.id)
+        spoken: set[str] = set()
+        if task.id.startswith(SECOND_PREFIX):
+            spoken = {
+                name for name in
+                (self._argued.get(subject), self._attacked.get(subject))
+                if name
+            }
+        elif task.id.startswith(REFUTE_PREFIX):
+            spoken = {self._argued.get(subject, "")}
+
+        pool = [m for m in self.members if m.capabilities.name not in spoken]
         if not pool:  # a panel of one: better a self-attack than no attack
             pool = list(self.members)
 
@@ -102,6 +116,8 @@ class PanelEngine:
             self._who[task.id] = name
             if task.id.startswith(PROBE_PREFIX):
                 self._argued[_subject(task.id)] = name
+            elif task.id.startswith(REFUTE_PREFIX):
+                self._attacked[_subject(task.id)] = name
 
     def _execute(self, member: Engine, task: AgentTask) -> AgentResult:
         result = member.run(task)

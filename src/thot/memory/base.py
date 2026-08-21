@@ -198,7 +198,10 @@ def record_verdicts(
         # engine, which records nothing in provenance.
         provenance = finding.provenance or {}
         decided_by = str(
-            provenance.get("contradicteur") or provenance.get("moteur") or author
+            provenance.get("second contradicteur")
+            or provenance.get("contradicteur")
+            or provenance.get("moteur")
+            or author
         )
         verdict = Verdict.of(finding, Decision.REFUTED, reason, decided_by)
         memory.remember(verdict)

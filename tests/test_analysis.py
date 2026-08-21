@@ -153,3 +153,103 @@ def test_the_probe_prompt_carries_the_code_not_just_the_rule(toy_repo):
     probe = engine.tasks[0]
     assert "src/app.py" in probe.prompt()
     assert probe.schema is not None
+
+
+# -- the cascade: what survives an attack gets a second, different attacker ---
+
+
+class _Member:
+    """A scripted engine with a name of its own, for panel tests."""
+
+    def __init__(self, name, answers):
+        self._name = name
+        self.answers = answers
+        self.tasks: list[AgentTask] = []
+
+    @property
+    def capabilities(self):
+        return EngineCapabilities(name=self._name, max_parallel=1)
+
+    def run(self, task):
+        self.tasks.append(task)
+        for prefix, payload in self.answers.items():
+            if task.id.startswith(prefix):
+                return AgentResult(task_id=task.id, text="", data=payload)
+        return AgentResult(task_id=task.id, error="pas de réponse scriptée")
+
+    def fan_out(self, tasks):
+        return [self.run(task) for task in tasks]
+
+
+_SURVIVES = {
+    "probe:": {"verdict": "confirmed", "scenario": "entrée x atteint le sink"},
+    "refute:": {"refuted": False, "raison": "je n'ai rien trouvé"},
+    "refute2:": {"refuted": False, "raison": "moi non plus"},
+}
+
+
+def _panel(names):
+    from thot.engine.panel import PanelEngine
+
+    return PanelEngine(members=[_Member(name, _SURVIVES) for name in names])
+
+
+def test_a_survivor_is_attacked_again_by_a_third_agent(tmp_path):
+    """Two independent attackers, or the confirmation is one agent's opinion."""
+    panel = _panel(["claude", "hermes", "prime"])
+
+    result = analyse(tmp_path, [make_finding()], panel, limit=1)[0]
+
+    provenance = result.provenance
+    voices = {
+        provenance["moteur"],
+        provenance["contradicteur"],
+        provenance["second contradicteur"],
+    }
+    assert len(voices) == 3, "un agent a parlé deux fois sur le même finding"
+    assert provenance["phase"] == "confirmée (2 attaques)"
+    assert result.confidence is Confidence.CONFIRMED
+
+
+def test_without_a_third_agent_nothing_escalates(tmp_path):
+    """A second attack by someone who already spoke is a rehearsal, not a test."""
+    panel = _panel(["claude", "hermes"])
+
+    analyse(tmp_path, [make_finding()], panel, limit=1)
+
+    issued = [t.id for member in panel.members for t in member.tasks]
+    assert not any(i.startswith("refute2:") for i in issued)
+
+
+def test_a_refutation_is_never_re_litigated(tmp_path):
+    """The attacker is told to refute when in doubt, so a refutation stands."""
+    members = [
+        _Member(name, {
+            "probe:": {"verdict": "confirmed", "scenario": "s"},
+            "refute:": {"refuted": True, "raison": "entrée constante"},
+            "refute2:": {"refuted": False, "raison": "en fait si"},
+        })
+        for name in ("claude", "hermes", "prime")
+    ]
+    from thot.engine.panel import PanelEngine
+
+    panel = PanelEngine(members=members)
+    result = analyse(tmp_path, [make_finding()], panel, limit=1)[0]
+
+    issued = [t.id for m in members for t in m.tasks]
+    assert not any(i.startswith("refute2:") for i in issued)
+    assert result.confidence is Confidence.REFUTED
+
+
+def test_every_decision_is_announced_as_it_lands(tmp_path):
+    """What makes a two-hour run survivable: nothing waits for the end."""
+    engine = ScriptedEngine({
+        "probe:": {"verdict": "refuted", "scenario": "faux positif"},
+    })
+    seen = []
+
+    findings = [make_finding(path=f"a{i}.py") for i in range(3)]
+    analyse(tmp_path, findings, engine, limit=3, on_decided=seen.append)
+
+    assert len(seen) == 3
+    assert {f.id for f in seen} == {f.id for f in findings}

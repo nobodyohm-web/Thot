@@ -500,10 +500,13 @@ def _cmd_audit(args) -> int:
 
         memory = build_memory(root)
 
+    progress = _deep_progress() if engine is not None else None
+
     try:
         result = run_audit(
             root, store=store, engine=engine, budget=args.budget, memory=memory,
             dependencies=bool(getattr(args, "deps", False)),
+            on_decided=progress,
         )
     finally:
         if store is not None:
@@ -1130,6 +1133,42 @@ def _cmd_mcp(args) -> int:
     print(f"\n{len(connected & {s.name for s in entries})}/{len(entries)} "
           f"connecté(s) · `thot mcp add <nom>`")
     return 0
+
+
+def _deep_progress():
+    """One line per finding, as it is decided.
+
+    A deep pass over a large repository runs for tens of minutes. Silence for
+    that long is indistinguishable from a hang, and the first thing anyone
+    does about a hang is kill it — losing the run. On stderr so it never
+    contaminates `--json`.
+    """
+    from thot.contracts import Confidence
+
+    state = {"n": 0}
+    label = {
+        Confidence.CONFIRMED: "confirmé",
+        Confidence.REFUTED: "réfuté",
+        Confidence.PLAUSIBLE: "sans verdict",
+    }
+
+    def show(finding) -> None:
+        state["n"] += 1
+        provenance = finding.provenance or {}
+        who = (
+            provenance.get("second contradicteur")
+            or provenance.get("contradicteur")
+            or provenance.get("moteur")
+            or "?"
+        )
+        print(
+            f"  [{state['n']}] {finding.location} — "
+            f"{label.get(finding.confidence, finding.confidence.value)} · {who}",
+            file=sys.stderr,
+            flush=True,
+        )
+
+    return show
 
 
 def _cmd_plugins(args) -> int:

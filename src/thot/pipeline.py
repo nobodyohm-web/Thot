@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import subprocess
 import time
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -105,6 +106,7 @@ def run_audit(
     budget: int = DEFAULT_LIMIT,
     memory: Memory | None = None,
     dependencies: bool = False,
+    on_decided: "Callable[[Finding], None] | None" = None,
 ) -> AuditResult:
     """Map, taint, score — then, if an engine is given, probe and refute.
 
@@ -166,10 +168,23 @@ def run_audit(
 
     engine_name = None
     if engine is not None and findings:
-        findings = analyse(root, findings, engine, limit=budget)
         engine_name = engine.capabilities.name
-        if memory is not None:
-            record_verdicts(findings, memory, author=engine.capabilities.name)
+
+        def settled(finding: Finding) -> None:
+            # Written the moment it is decided, not at the end. A deep pass
+            # over a large repository runs for hours; persisting only on the
+            # way out means one interruption throws away every judgement the
+            # run had already paid for. Because a remembered refutation is
+            # skipped by the next `select_for_analysis`, this also makes an
+            # interrupted pass resume where it stopped rather than restart.
+            if memory is not None:
+                record_verdicts([finding], memory, author=engine_name or "thot")
+            if on_decided is not None:
+                on_decided(finding)
+
+        findings = analyse(
+            root, findings, engine, limit=budget, on_decided=settled
+        )
 
     # Plugins see the finished findings, before anything is written down.
     findings = annotate_findings(findings, root)

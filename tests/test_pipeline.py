@@ -114,3 +114,54 @@ def test_auditing_a_repository_never_runs_the_code_it_ships(tmp_path):
     run_audit(tmp_path)
 
     assert not marker.exists()
+
+
+def test_an_interrupted_deep_pass_keeps_what_it_already_decided(tmp_path):
+    """Ninety minutes of judgement must not die with the ninety-first.
+
+    The engine answers two batches and then dies. What was decided before
+    the failure has to be on disk, and — because a remembered refutation is
+    skipped by the next selection — the re-run has to pick up where this one
+    stopped rather than pay for it twice.
+    """
+    from thot.engine.base import AgentResult, EngineCapabilities
+    from thot.memory import build_memory
+    from thot.scope.authorization import write_authorization
+
+    for index in range(6):
+        (tmp_path / f"m{index}.py").write_text(
+            "import os, sys\n\n"
+            "def run():\n"
+            "    os.system('ls ' + sys.argv[1])\n"
+        )
+    write_authorization(tmp_path, owner="tester")
+
+    class _DiesHalfway:
+        def __init__(self):
+            self.answered = 0
+
+        @property
+        def capabilities(self):
+            return EngineCapabilities(name="scripted", max_parallel=2)
+
+        def run(self, task):
+            self.answered += 1
+            if self.answered > 4:
+                raise KeyboardInterrupt("l'utilisateur a coupé")
+            return AgentResult(
+                task_id=task.id,
+                data={"verdict": "refuted", "scenario": "entrée constante"},
+            )
+
+        def fan_out(self, tasks):
+            return [self.run(task) for task in tasks]
+
+    memory = build_memory(tmp_path)
+    try:
+        with pytest.raises(KeyboardInterrupt):
+            run_audit(tmp_path, engine=_DiesHalfway(), budget=6, memory=memory)
+        kept = [v for v in memory.all_verdicts()]
+    finally:
+        memory.close()
+
+    assert len(kept) == 4, "les lots terminés doivent être sur disque"
