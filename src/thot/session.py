@@ -19,6 +19,7 @@ from rich.text import Text
 
 from thot import __version__, agent_tools
 from thot.agent_tools import ToolContext
+from thot.contracts import Confidence
 from thot.llm.base import Message, Provider, ProviderError
 from thot.llm.claude_cli import ClaudeCli, Events
 from thot.llm.credentials import Config, build_provider, forget
@@ -147,6 +148,40 @@ class Session:
             theme.hint(f"Reconnaissance en {recon.elapsed:.2f} s. Prêt.")
 
         theme.console.print()
+
+    def _deep_analyse(self, findings: list) -> list:
+        """Spend the model on the worst candidates, then try to refute them.
+
+        Returns the findings untouched when no engine is reachable: a session
+        that loses its audit because a CLI is missing is worse than one that
+        shows the deterministic result and says why.
+        """
+        from thot.analysis.probe import DEFAULT_LIMIT, analyse, select_for_analysis
+        from thot.engine.factory import NoEngine, build_engine
+
+        try:
+            engine = build_engine(self.root, self.config)
+        except NoEngine as exc:
+            theme.warn(str(exc))
+            return findings
+
+        selected = select_for_analysis(findings, DEFAULT_LIMIT)
+        if not selected:
+            theme.hint("Aucun candidat à analyser.")
+            return findings
+
+        label = (
+            f"{len(selected)} candidat(s) — analyse puis réfutation "
+            f"via {engine.capabilities.name}…"
+        )
+        with theme.console.status(f"   [dim]{label}[/dim]", spinner="dots"):
+            analysed = analyse(self.root, findings, engine, limit=DEFAULT_LIMIT)
+
+        confirmed = sum(1 for f in analysed if f.confidence is Confidence.CONFIRMED)
+        refuted = sum(1 for f in analysed if f.confidence is Confidence.REFUTED)
+        theme.ok(f"{confirmed} confirmé(s), {refuted} réfuté(s)")
+        theme.console.print()
+        return analysed
 
     def _confirm(self, action: str, detail: str) -> bool:
         theme.console.print()
@@ -299,6 +334,7 @@ class Session:
             for name, description in (
                 ("/status", "sur quoi tu tournes, et où"),
             ("/audit", "relancer l'analyse et afficher les findings"),
+            ("/audit deep", "faire analyser puis réfuter les candidats par le modèle"),
                 ("/scan", "recalculer la carte du dépôt"),
                 ("/model", "changer de modèle"),
                 ("/clear", "oublier la conversation en cours"),
@@ -334,8 +370,12 @@ class Session:
             from thot.console import print_report
             from thot.pipeline import AuditResult
 
+            findings = self.recon.findings
+            if argument.strip().lower() in {"deep", "profond", "--deep"}:
+                findings = self._deep_analyse(findings)
+
             result = AuditResult(
-                findings=self.recon.findings,
+                findings=findings,
                 manifest=self.recon.manifest,
                 elapsed=self.recon.elapsed,
             )

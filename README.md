@@ -116,6 +116,37 @@ thot audit . --json --out rapport.json
 thot audit . --fail-on high                   # code 1 en CI
 ```
 
+### Analyse assistée — `--deep`
+
+L'analyse déterministe répond à « ces données *pourraient*-elles circuler ? ».
+C'est exhaustif, gratuit, et ce n'est pas la question qu'on paie un auditeur à
+trancher. `--deep` pose la question chère, sur les seuls candidats qui l'ont
+méritée :
+
+```bash
+thot audit . --deep                  # 20 pires candidats, 4 en parallèle
+thot audit . --deep --budget 50      # plus large
+thot audit . --deep --parallel 8     # plus vite
+```
+
+Deux passes, volontairement adverses :
+
+1. **La sonde** doit nommer une entrée concrète qui atteint le point
+   dangereux. Pas de généralité sur la classe de vulnérabilité — une URL, une
+   valeur, un effet.
+2. **La réfutation** reçoit ce scénario avec pour seule mission de le
+   détruire : validation en amont, appelant qui ne passe que des constantes,
+   type qui interdit l'entrée supposée. En cas de doute, elle réfute.
+
+Un finding ne survit que si une seconde lecture hostile du même code échoue à
+le tuer. `confirmed` veut alors dire quelque chose.
+
+En session, la même chose : `/audit deep`.
+
+Le moteur est choisi automatiquement — ton compte Claude via le CLI officiel
+s'il est connecté (les analyses tournent en parallèle, sur ton abonnement),
+une clé API sinon.
+
 ### Calibration
 
 La précision compte autant que la détection. Sont volontairement **non**
@@ -125,7 +156,10 @@ rapportés :
 - `cursor.execute("… ?", params)` — requête littérale, paramètres liés.
 - Une valeur passée par `int()`, `shlex.quote()`, `os.path.basename()`,
   `html.escape()` — ces appels cassent la chaîne de contamination.
-- Un défaut qu'aucun point d'entrée n'atteint est dégradé automatiquement.
+- Un défaut qu'aucun point d'entrée n'atteint est dégradé automatiquement —
+  mais seulement si des points d'entrée ont été trouvés. Sans aucun, la
+  portée est *inconnue*, pas *nulle*, et rien n'est enterré sur cette
+  ignorance.
 - `payload.get(...)` n'est pas `requests.get(...)`.
 
 Ordre de grandeur : 6 924 fichiers (4 457 Python) en ~59 s, 3 findings
@@ -133,8 +167,10 @@ au-dessus du seuil.
 
 ## Limites
 
-Python uniquement pour l'analyse. Chaque finding est `PLAUSIBLE` : détecté
-statiquement, pas encore prouvé par exécution. L'absence de finding n'est pas
+Python uniquement pour l'analyse. Sans `--deep`, chaque finding est
+`PLAUSIBLE` : détecté statiquement, pas encore prouvé par exécution. Avec
+`--deep`, un finding `confirmed` a survécu à une réfutation adverse — ce
+n'est pas encore une preuve d'exécution, qui viendra avec le repro. L'absence de finding n'est pas
 une preuve d'absence de défaut — dispatch dynamique, réflexion et
 métaprogrammation échappent à l'analyse.
 

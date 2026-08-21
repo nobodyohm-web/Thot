@@ -134,3 +134,42 @@ def test_unknown_tool_does_not_crash_the_session(session):
     session.messages.append(Message(role="user", content="?"))
     session._turn()
     assert "inconnu" in [m for m in session.messages if m.role == "tool"][0].content
+
+
+# -- /audit deep -------------------------------------------------------------
+
+
+def test_deep_analysis_degrades_gracefully_without_an_engine(session, monkeypatch):
+    """A missing CLI must cost the verdicts, never the audit."""
+    from thot.engine.factory import NoEngine
+
+    def refuse(*args, **kwargs):
+        raise NoEngine("pas de moteur")
+
+    monkeypatch.setattr("thot.engine.factory.build_engine", refuse)
+    findings = session.recon.findings
+    assert session._deep_analyse(findings) == findings
+
+
+def test_deep_analysis_replaces_findings_with_verdicts(session, monkeypatch):
+    from thot.contracts import Confidence
+    from thot.engine import AgentResult, EngineCapabilities
+
+    class Confirming:
+        capabilities = EngineCapabilities(name="stub", max_parallel=1)
+
+        def run(self, task):
+            if task.id.startswith("probe:"):
+                return AgentResult(task_id=task.id, data={
+                    "verdict": "confirmed", "scenario": "entrée non validée",
+                    "severity": "critical"})
+            return AgentResult(task_id=task.id, data={"refuted": False, "raison": "-"})
+
+        def fan_out(self, tasks):
+            return [self.run(t) for t in tasks]
+
+    monkeypatch.setattr(
+        "thot.engine.factory.build_engine", lambda *a, **k: Confirming()
+    )
+    out = session._deep_analyse(session.recon.findings)
+    assert any(f.confidence is Confidence.CONFIRMED for f in out)
