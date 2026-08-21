@@ -182,9 +182,21 @@ def record_verdicts(
         if memory.recall(finding.id) is not None:
             continue  # a human decision outranks a machine one
         reason = _reason_from(finding)
-        memory.remember(Verdict.of(finding, Decision.REFUTED, reason, author))
+        verdict = Verdict.of(finding, Decision.REFUTED, reason, author)
+        memory.remember(verdict)
+        _announce(verdict)
         kept += 1
     return kept
+
+
+def _announce(verdict: Verdict) -> None:
+    """Tell the plugins a decision was taken. Imported late: the core must
+    stay importable without the plugin machinery behind it."""
+    try:
+        from thot.plugins import notify_verdict
+    except ImportError:
+        return
+    notify_verdict(verdict)
 
 
 def _reason_from(finding: Finding) -> str:

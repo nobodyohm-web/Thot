@@ -14,6 +14,7 @@ from thot.codemap.python_indexer import PythonIndexer
 from thot.guard.scanner import sweep_patterns
 from thot.memory.base import Memory, apply_memory, record_verdicts
 from thot.contracts import Confidence, Finding
+from thot.plugins import annotate_findings
 from thot.scope.authorization import load_authorization
 from thot.scope.detect import detect_scope
 from thot.scope.manifest import ScopeManifest
@@ -141,6 +142,9 @@ def run_audit(
         engine_name = engine.capabilities.name
         if memory is not None:
             record_verdicts(findings, memory)
+
+    # Plugins see the finished findings, before anything is written down.
+    findings = annotate_findings(findings, root)
 
     elapsed = time.monotonic() - started
     run_id = None

@@ -221,16 +221,80 @@ def bundled() -> list[Skill]:
     return load_from(directory) if directory else []
 
 
-def discover(root: Path | None = None, *, sources: list[Path] | None = None) -> list[Skill]:
-    """Everything available here, personal and repo skills overriding shipped ones."""
+@dataclass(frozen=True)
+class Rejected:
+    """A skill that was found and refused, and why."""
+
+    name: str
+    path: Path
+    verdict: str
+    reasons: tuple[str, ...] = ()
+
+    def summary(self) -> str:
+        why = "; ".join(self.reasons[:3]) or self.verdict
+        return f"{self.name} — {why}"
+
+
+def screen(skills: list[Skill]) -> tuple[list[Skill], list[Rejected]]:
+    """Refuse skills a repository supplied that the guard calls dangerous.
+
+    The threat is specific to what Thot does. A skill is text handed to a
+    model as instructions, and the repositories Thot reads are exactly the
+    ones nobody has vouched for. A hostile repo dropping a SKILL.md into
+    `.thot/skills/` would otherwise be writing part of the briefing.
+    """
+    from thot.guard.skill_guard import scan_skill, should_allow_install
+
+    kept: list[Skill] = []
+    refused: list[Rejected] = []
+    for skill in skills:
+        try:
+            result = scan_skill(skill.path.parent, source="community")
+            allowed, reason = should_allow_install(result)
+        except (OSError, ValueError):
+            kept.append(skill)  # a scanner that cannot run must not censor
+            continue
+        if allowed:
+            kept.append(skill)
+        else:
+            refused.append(
+                Rejected(
+                    name=skill.name,
+                    path=skill.path,
+                    verdict=result.verdict,
+                    reasons=tuple(
+                        dict.fromkeys(f.description for f in result.findings)
+                    )[:3],
+                )
+            )
+    return kept, refused
+
+
+def discover_report(
+    root: Path | None = None, *, sources: list[Path] | None = None
+) -> tuple[list[Skill], list[Rejected]]:
+    """Everything available here, plus what was refused and why."""
+    refused: list[Rejected] = []
     if sources is None:
         directory = library_dir()
         sources = [p for p in (directory, user_dir()) if p is not None]
+        trusted = len(sources)
         if root is not None:
             sources.append(repo_dir(root))
+    else:
+        trusted = len(sources)  # explicit sources are the caller's own choice
 
     by_name: dict[str, Skill] = {}
-    for source in sources:
-        for skill in load_from(source):
+    for index, source in enumerate(sources):
+        found = load_from(source)
+        if index >= trusted:  # supplied by the repository under audit
+            found, rejected = screen(found)
+            refused.extend(rejected)
+        for skill in found:
             by_name[skill.name] = skill
-    return sorted(by_name.values(), key=lambda s: (s.category, s.name))
+    return sorted(by_name.values(), key=lambda s: (s.category, s.name)), refused
+
+
+def discover(root: Path | None = None, *, sources: list[Path] | None = None) -> list[Skill]:
+    """Everything available here, personal and repo skills overriding shipped ones."""
+    return discover_report(root, sources=sources)[0]

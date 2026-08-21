@@ -125,3 +125,124 @@ def test_the_write_guard_stays_quiet_on_safe_content():
         plugins, "pre_write", path="app.py", content="import json\njson.loads(x)\n"
     )
     assert not any(warnings)
+
+# -- the hooks that ship with Thot -------------------------------------------
+
+
+def _shipped(name: str):
+    """The plugin as Thot really loads it, not as a hand-imported module."""
+    from thot.plugins import discover, forget_plugins
+
+    forget_plugins()
+    for plugin in discover():
+        if plugin.name == name:
+            assert plugin.ok, f"{name} ne charge pas : {plugin.error}"
+            return plugin
+    raise AssertionError(f"plugin {name} absent")
+
+
+def test_every_declared_hook_has_a_subscriber():
+    """A hook nobody fires and nobody uses is a hook that rots."""
+    from thot.plugins import discover
+    from thot.plugins.loader import VALID_HOOKS
+
+    subscribed = set()
+    for plugin in discover():
+        assert plugin.ok, f"{plugin.name} ne charge pas : {plugin.error}"
+        subscribed |= set(plugin.callbacks)
+
+    assert subscribed == set(VALID_HOOKS)
+
+
+def test_the_journal_records_an_audit_a_verdict_and_a_write(isolated_home):
+    import json
+
+    from thot.contracts import CodeRef, Confidence, Finding, Severity
+    from thot.memory import Decision, Verdict
+    from thot.pipeline import AuditResult
+    from thot.scope.manifest import ScopeManifest
+
+    journal = _shipped("audit-log").callbacks
+    finding = Finding(
+        id="x", rule="sink.os.system", severity=Severity.HIGH,
+        confidence=Confidence.PLAUSIBLE,
+        location=CodeRef(path="a.py", line=1, symbol="f", ast_hash="h"),
+    )
+    manifest = ScopeManifest(
+        root="/r", files=("a.py",), languages={"python": 1}, entrypoints=()
+    )
+
+    journal["post_audit"](
+        result=AuditResult(findings=[finding], manifest=manifest, elapsed=1.0),
+        root="/r",
+    )
+    journal["on_verdict"](verdict=Verdict.of(finding, Decision.REFUTED, "littéral"))
+    journal["post_write"](path="a.py", content="une ligne\n")
+
+    lines = [json.loads(line) for line in
+             (isolated_home / "journal.jsonl").read_text().splitlines()]
+    assert [line["event"] for line in lines] == ["audit", "verdict", "écriture"]
+    assert lines[0]["par_gravité"] == {"high": 1}
+    assert lines[1]["décision"] == "refuted"
+    assert all("at" in line for line in lines)
+
+
+def test_a_returning_defect_is_promoted_to_critical():
+    from thot.contracts import CodeRef, Confidence, Finding, Severity
+
+    on_finding = _shipped("regression-alert").callbacks["on_finding"]
+    location = CodeRef(path="a.py", line=1, symbol="f", ast_hash="h")
+    returning = Finding(
+        id="x", rule="sink.os.system", severity=Severity.MEDIUM,
+        confidence=Confidence.PLAUSIBLE, location=location,
+        failure_scenario="argv atteint os.system",
+        provenance={"régression": True, "décidé le": "2026-01-05T10:00:00"},
+    )
+
+    promoted = on_finding(finding=returning)
+    assert promoted.severity is Severity.CRITICAL
+    assert "RÉGRESSION" in promoted.failure_scenario
+    assert "2026-01-05" in promoted.failure_scenario
+    assert "argv atteint os.system" in promoted.failure_scenario
+
+    # Idempotent: re-running an audit must not stack annotations.
+    assert on_finding(finding=promoted) is None
+
+    ordinary = Finding(id="y", rule="r", severity=Severity.LOW,
+                       confidence=Confidence.PLAUSIBLE, location=location)
+    assert on_finding(finding=ordinary) is None
+
+
+def test_writing_a_file_notifies_the_plugins(toy_repo, monkeypatch):
+    """post_write was declared before anything fired it; now something does."""
+    from thot import agent_tools
+
+    seen = []
+    monkeypatch.setattr(
+        "thot.plugins.notify_write",
+        lambda path, content, root: seen.append((path, content)),
+    )
+    context = agent_tools.ToolContext(
+        root=toy_repo, recon=None, confirm=lambda *a: True, refresh=lambda: None
+    )
+    agent_tools.write_file(context, path="nouveau.py", content="x = 1\n")
+
+    assert seen == [("nouveau.py", "x = 1\n")]
+
+
+def test_the_pipeline_lets_plugins_annotate_before_anything_is_stored(monkeypatch):
+    from thot.plugins import notify as notify_module
+
+    seen = []
+
+    def spy(findings, root=None):
+        seen.append(len(findings))
+        return findings
+
+    monkeypatch.setattr("thot.pipeline.annotate_findings", spy)
+    from thot.pipeline import run_audit
+    from pathlib import Path
+
+    run_audit(Path(__file__).resolve().parents[1], store=None,
+              require_authorization=False)
+    assert seen, "on_finding doit être proposé à chaque audit"

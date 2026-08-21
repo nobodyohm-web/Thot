@@ -1,0 +1,11 @@
+name: audit-log
+version: "1.0.0"
+description: >
+  Tient un journal JSONL de tout ce que Thot décide : chaque audit, chaque
+  verdict, chaque fichier écrit. Local, une ligne par événement, jamais de
+  réseau. La réponse locale au plugin d'observabilité d'Hermes.
+author: "Thot (contrat d'observabilité repris de Hermes Agent)"
+hooks:
+  - post_audit
+  - on_verdict
+  - post_write

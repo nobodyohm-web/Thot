@@ -69,6 +69,22 @@ def build_parser() -> argparse.ArgumentParser:
     )
     sched_run.add_argument("name", nargs="?")
 
+    mcp_cmd = subparsers.add_parser(
+        "mcp", help="Les serveurs MCP disponibles et connectés"
+    )
+    mcp_sub = mcp_cmd.add_subparsers(dest="action")
+    mcp_list = mcp_sub.add_parser("list", help="Le catalogue et ce qui est connecté")
+    mcp_list.add_argument("--json", action="store_true", help="Sortie JSON")
+    mcp_show = mcp_sub.add_parser("show", help="Détail d'un serveur")
+    mcp_show.add_argument("name")
+    mcp_add = mcp_sub.add_parser("add", help="Connecter un serveur du catalogue")
+    mcp_add.add_argument("name", nargs="+")
+    mcp_add.add_argument("--scope", default="user", choices=["local", "user", "project"])
+    mcp_remove = mcp_sub.add_parser("remove", help="Déconnecter un serveur")
+    mcp_remove.add_argument("name")
+    mcp_remove.add_argument("--scope", default="user",
+                            choices=["local", "user", "project"])
+
     skills_cmd = subparsers.add_parser(
         "skills", help="Les méthodes disponibles, et la bibliothèque optionnelle"
     )
@@ -87,6 +103,13 @@ def build_parser() -> argparse.ArgumentParser:
     skills_install.add_argument("name", nargs="+")
     skills_remove = skills_sub.add_parser("remove", help="Désactiver une méthode")
     skills_remove.add_argument("name")
+    skills_scan = skills_sub.add_parser(
+        "scan", help="Analyser un skill avant de lui faire confiance"
+    )
+    skills_scan.add_argument("path", nargs="?", default=".",
+                             help="Dossier du skill, ou dépôt à balayer")
+    skills_scan.add_argument("--source", default="community",
+                             choices=["builtin", "trusted", "community"])
 
     sessions = subparsers.add_parser(
         "sessions", help="Les sessions de travail enregistrées"
@@ -421,6 +444,61 @@ def _cmd_verdicts(args) -> int:
         memory.close()
 
 
+def _cmd_mcp(args) -> int:
+    """Browse the catalogue, and hand installation to the official CLI."""
+    from thot.mcp import as_json, catalog, find, install, installed, remove
+
+    action = getattr(args, "action", None) or "list"
+
+    if action == "add":
+        for name in args.name:
+            server = find(name)
+            if server is None:
+                print(f"« {name} » n'est pas au catalogue.", file=sys.stderr)
+                return EXIT_USAGE
+            done, message = install(server, scope=args.scope)
+            print(message, file=sys.stdout if done else sys.stderr)
+            if not done:
+                return EXIT_USAGE
+        return 0
+
+    if action == "remove":
+        done, message = remove(args.name, scope=args.scope)
+        print(message, file=sys.stdout if done else sys.stderr)
+        return 0 if done else EXIT_USAGE
+
+    if action == "show":
+        server = find(args.name)
+        if server is None:
+            print(f"« {args.name} » n'est pas au catalogue.", file=sys.stderr)
+            return EXIT_USAGE
+        print(f"{server.name} — {server.description}")
+        print(f"transport : {server.transport}   auth : {server.auth}")
+        if server.url:
+            print(f"url       : {server.url}")
+        if server.source:
+            print(f"source    : {server.source}")
+        print(f"connexion : {' '.join(server.add_command())}")
+        return 0
+
+    entries = catalog()
+    if getattr(args, "json", False):
+        print(as_json(entries))
+        return 0
+
+    connected = set(installed())
+    for server in entries:
+        mark = "✓" if server.name in connected else " "
+        print(f"{mark} {server.name:<16} {server.auth:<8} {server.summary()}")
+
+    extra = sorted(connected - {s.name for s in entries})
+    if extra:
+        print("\nHors catalogue, déjà connectés : " + ", ".join(extra))
+    print(f"\n{len(connected & {s.name for s in entries})}/{len(entries)} "
+          f"connecté(s) · `thot mcp add <nom>`")
+    return 0
+
+
 def _cmd_skills(args) -> int:
     """Browse the library, and move an optional skill into the loaded set."""
     from thot.skills.loader import discover, install, optional, uninstall
@@ -446,6 +524,32 @@ def _cmd_skills(args) -> int:
         print(f"« {args.name} » n'est pas une méthode installée par toi.",
               file=sys.stderr)
         return EXIT_USAGE
+
+    if action == "scan":
+        from thot.guard.skill_guard import (
+            format_scan_report,
+            scan_skill,
+            should_allow_install,
+        )
+
+        target = Path(args.path).resolve()
+        candidates = (
+            [target] if (target / "SKILL.md").is_file()
+            else sorted(p.parent for p in target.rglob("SKILL.md"))
+        )
+        if not candidates:
+            print(f"Aucun SKILL.md sous {target}.", file=sys.stderr)
+            return EXIT_USAGE
+
+        worst = 0
+        for folder in candidates:
+            result = scan_skill(folder, source=args.source)
+            allowed, reason = should_allow_install(result)
+            print(f"{result.verdict:<10} {folder.name:<32} {reason}")
+            if result.findings:
+                print(format_scan_report(result))
+            worst = max(worst, 0 if allowed else 1)
+        return 0 if worst == 0 else EXIT_USAGE
 
     if action == "show":
         for item in discover(root):
@@ -598,6 +702,8 @@ def main(argv: list[str] | None = None) -> int:
             return _cmd_schedule(args)
         if args.command == "verdicts":
             return _cmd_verdicts(args)
+        if args.command == "mcp":
+            return _cmd_mcp(args)
         if args.command == "skills":
             return _cmd_skills(args)
         if args.command == "sessions":

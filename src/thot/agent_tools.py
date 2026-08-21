@@ -110,6 +110,13 @@ def _write_warnings(context: ToolContext, path: str, content: str) -> str:
     return ("\n\n" + "\n".join(warnings)) if warnings else ""
 
 
+def _notify_write(context: ToolContext, path: str, content: str) -> None:
+    """Tell the plugins the file is on disk. Never blocks, never raises."""
+    from thot.plugins import notify_write
+
+    notify_write(path, content, context.root)
+
+
 def write_file(context: ToolContext, *, path: str, content: str) -> str:
     target = _resolve(context, path)
     exists = target.exists()
@@ -120,6 +127,7 @@ def write_file(context: ToolContext, *, path: str, content: str) -> str:
     warnings = _write_warnings(context, path, content)
     target.parent.mkdir(parents=True, exist_ok=True)
     target.write_text(content, encoding="utf-8")
+    _notify_write(context, path, content)
     context.refresh()
     verb = "écrasé" if exists else "créé"
     return (
@@ -147,6 +155,7 @@ def edit_file(context: ToolContext, *, path: str, old: str, new: str) -> str:
     updated = source.replace(old, new, 1)
     warnings = _write_warnings(context, path, updated)
     target.write_text(updated, encoding="utf-8")
+    _notify_write(context, path, updated)
     context.refresh()
     return f"{_relative(context, target)} modifié{warnings}"
 

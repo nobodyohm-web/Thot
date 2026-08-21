@@ -191,7 +191,28 @@ class Session:
             theme.console.print()
             theme.hint(f"Reconnaissance en {recon.elapsed:.2f} s. Prêt.")
 
+        self._warn_about_refused_skills()
         theme.console.print()
+
+    def _warn_about_refused_skills(self) -> None:
+        """Say out loud when this repository tried to supply a skill.
+
+        Silently dropping it would be safe and useless: the user needs to
+        know the repository they are auditing tried to write part of the
+        briefing, because that is itself a finding.
+        """
+        from thot.skills.loader import discover_report
+
+        refused = discover_report(self.root)[1]
+        if not refused:
+            return
+        theme.console.print()
+        theme.warn(
+            f"{len(refused)} skill(s) fourni(s) par ce dépôt ont été refusés — "
+            f"ils seraient passés au modèle comme instructions."
+        )
+        for item in refused:
+            theme.console.print(theme.entry(item.name, item.summary()[:70], width=20))
 
     @staticmethod
     def _whoami() -> str:
@@ -236,11 +257,18 @@ class Session:
             return None
 
         finding = findings[index - 1]
+        verdict = Verdict.of(finding, decision, reason, self._whoami())
         memory = SqliteMemory.open()
         try:
-            memory.remember(Verdict.of(finding, decision, reason, self._whoami()))
+            memory.remember(verdict)
         finally:
             memory.close()
+
+        from thot.plugins import notify_verdict
+
+        notify_verdict(verdict, self.root)
+        self._record("verdict", f"{finding.rule} {finding.location} → "
+                                f"{decision.value} : {reason}")
 
         theme.ok(f"{finding.rule} à {finding.location} — {decision.value}")
         theme.hint("Retenu tant que ce code ne change pas. `thot verdicts` pour revoir.")
@@ -447,6 +475,7 @@ class Session:
             ("/verdict", "écarter ou accepter un finding : /verdict 2 refute raison"),
             ("/audit", "relancer l'analyse et afficher les findings"),
             ("/audit deep", "faire analyser puis réfuter les candidats par le modèle"),
+                ("/mcp", "les serveurs MCP connectés, et le catalogue"),
                 ("/sessions", "les sessions précédentes sur ce dépôt"),
                 ("/resume", "reprendre une session : /resume <id> (défaut : la dernière)"),
                 ("/search", "chercher dans tout ce que Thot a déjà dit ou trouvé"),
@@ -530,6 +559,9 @@ class Session:
         if command == "verdict":
             return self._verdict(argument)
 
+        if command == "mcp":
+            return self._mcp(argument)
+
         if command in {"sessions", "historique"}:
             return self._sessions(argument)
 
@@ -552,9 +584,9 @@ class Session:
             return self._forget(argument)
 
         if command == "skills":
-            from thot.skills import discover
+            from thot.skills.loader import discover_report
 
-            available = discover(self.root)
+            available, refused = discover_report(self.root)
             theme.console.print()
             if not available:
                 theme.hint("Aucun skill.")
@@ -570,7 +602,14 @@ class Session:
                     theme.console.print(theme.entry(item.name, detail, width=26))
                 theme.console.print()
             theme.console.print()
-            theme.hint("Le modèle les lit lui-même avec l'outil `skill`.")
+            if refused:
+                theme.warn(f"{len(refused)} refusé(s) par le garde :")
+                for item in refused:
+                    theme.console.print(theme.entry(item.name, item.summary()[:70],
+                                                    width=20))
+                theme.console.print()
+            theme.hint("Le modèle les lit lui-même avec l'outil `skill`. "
+                       "`thot skills` en dehors de la session.")
             theme.console.print()
             return None
 
@@ -659,6 +698,39 @@ class Session:
             )
         except (sqlite3.Error, OSError, KeyError):
             pass
+
+    def _mcp(self, argument: str) -> None:
+        """What is connected, and what the catalogue offers."""
+        from thot.mcp import catalog, find, install, installed
+
+        action, _, name = argument.strip().partition(" ")
+        if action in {"add", "ajoute"} and name:
+            server = find(name)
+            if server is None:
+                theme.warn(f"« {name} » n'est pas au catalogue.")
+                theme.console.print()
+                return None
+            done, message = install(server)
+            theme.console.print()
+            (theme.ok if done else theme.error)(message)
+            theme.console.print()
+            return None
+
+        connected = set(installed(self.root))
+        entries = catalog()
+
+        theme.console.print()
+        theme.console.print(theme.field("actifs", ", ".join(sorted({"thot", *connected}))))
+        theme.console.print()
+        for server in entries:
+            mark = "✓ " if server.name in connected else "  "
+            theme.console.print(
+                theme.entry(mark + server.name, server.summary(), width=26)
+            )
+        theme.console.print()
+        theme.hint("`/mcp add <nom>` pour en connecter un.")
+        theme.console.print()
+        return None
 
     # -- session history --------------------------------------------------
 

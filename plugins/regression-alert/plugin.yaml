@@ -1,0 +1,9 @@
+name: regression-alert
+version: "1.0.0"
+description: >
+  Remonte en tête ce qui avait été corrigé et qui est revenu. Un finding
+  marqué « fixed » qui réapparaît est une régression, pas une découverte :
+  il vaut plus qu'un candidat neuf et doit se voir comme tel.
+author: "Thot"
+hooks:
+  - on_finding
