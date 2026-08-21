@@ -31,6 +31,21 @@ PERMISSION_MODE = "acceptEdits"
 ALLOWED_TOOLS = tuple(f"mcp__thot__{name}" for name in EXPOSED)
 
 
+CLAUDE_SETTINGS = Path.home() / ".claude" / "settings.json"
+
+
+def configured_model() -> str:
+    """The model the official CLI would use, read from its own settings.
+
+    Best effort: an empty answer just means Thot shows the model after the
+    first turn instead of before it.
+    """
+    try:
+        return str(json.loads(CLAUDE_SETTINGS.read_text()).get("model", "") or "")
+    except (OSError, ValueError):
+        return ""
+
+
 @dataclass
 class Events:
     """Callbacks the session provides to render the stream."""
@@ -47,6 +62,7 @@ class ClaudeCli:
     root: Path
     model: str = ""
     session_id: str = field(default_factory=lambda: str(uuid.uuid4()))
+    active_model: str = ""  # what the CLI actually used, learned from the stream
     _started: bool = False
 
     @staticmethod
@@ -149,6 +165,10 @@ class ClaudeCli:
                         continue
                     seen_tools.add(key)
                     events.on_tool(block.get("name", "?"), block.get("input") or {})
+            return
+
+        if kind == "system" and event.get("subtype") == "init":
+            self.active_model = event.get("model", "") or self.active_model
             return
 
         if kind == "result" and event.get("is_error"):

@@ -107,8 +107,17 @@ class Session:
 
     # -- display ---------------------------------------------------------
 
+    def _model_label(self) -> str:
+        """What to show in the header — as precise as currently known."""
+        if self.claude is not None:
+            from thot.llm.claude_cli import configured_model
+
+            model = self.claude.active_model or self.claude.model or configured_model()
+            return f"{model or 'modèle par défaut'} · ton compte Claude"
+        return f"{self.config.model} · {self.config.provider}"
+
     def greet(self) -> None:
-        theme.banner(self.config.label())
+        theme.banner(self._model_label())
         recon = self.recon
 
         if recon.is_empty:
@@ -288,13 +297,35 @@ class Session:
         if command in {"h", "help", "?"}:
             theme.console.print()
             for name, description in (
-                ("/audit", "relancer l'analyse et afficher les findings"),
+                ("/status", "sur quoi tu tournes, et où"),
+            ("/audit", "relancer l'analyse et afficher les findings"),
                 ("/scan", "recalculer la carte du dépôt"),
                 ("/model", "changer de modèle"),
                 ("/clear", "oublier la conversation en cours"),
                 ("/quit", "quitter"),
             ):
                 theme.console.print(theme.field(name, description))
+            theme.console.print()
+            return None
+
+        if command == "status":
+            theme.console.print()
+            theme.console.print(theme.field("modèle", self._model_label()))
+            theme.console.print(theme.field("dossier", str(self.root)))
+            if self.claude is not None:
+                theme.console.print(
+                    theme.field("session", self.claude.session_id[:8])
+                )
+                theme.console.print(
+                    theme.field("écriture", "automatique (mode compte)")
+                )
+            else:
+                theme.console.print(
+                    theme.field("écriture", "sur confirmation")
+                )
+            theme.console.print(theme.field("outils", "carte AST + graphe d'appels"))
+            theme.console.print()
+            theme.hint("`/model` pour changer, `thot logout` pour tout oublier.")
             theme.console.print()
             return None
 
