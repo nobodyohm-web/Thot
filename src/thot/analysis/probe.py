@@ -158,11 +158,17 @@ def _refute_task(
         # It survived one attacker. Saying so is not a hint to agree: an
         # attacker told nothing would rehearse the first attack's angles,
         # and the value of a second attacker is entirely in the angles the
-        # first one missed.
+        # first one missed. So it is shown the angle that failed, by name.
+        tried = str((finding.provenance or {}).get("contre-argument écarté") or "")
+        already = (
+            f"Angle déjà tenté et écarté :\n{tried}\n\n" if tried.strip()
+            else ""
+        )
         instructions = (
             "Ce scénario a déjà résisté à une tentative de réfutation par un "
-            "autre agent. Cherche ce que cette première attaque a manqué, pas "
-            "ce qu'elle a déjà couvert.\n\n" + instructions
+            "autre agent.\n\n" + already +
+            "Cherche ce que cette première attaque a manqué. Reprendre le même "
+            "angle n'apprendrait rien.\n\n" + instructions
         )
     return AgentTask(
         id=f"refute2:{finding.id}" if again else f"refute:{finding.id}",

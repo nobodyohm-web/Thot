@@ -253,3 +253,21 @@ def test_every_decision_is_announced_as_it_lands(tmp_path):
 
     assert len(seen) == 3
     assert {f.id for f in seen} == {f.id for f in findings}
+
+
+def test_the_second_attacker_is_shown_the_angle_that_already_failed(tmp_path):
+    """Repeating the first attack's angle would buy nothing."""
+    from thot.analysis.probe import _refute_task
+    from dataclasses import replace as _replace
+
+    finding = _replace(
+        make_finding(),
+        provenance={"contre-argument écarté": "l'entrée est validée en amont"},
+    )
+
+    first = _refute_task(tmp_path, finding, "scénario")
+    second = _refute_task(tmp_path, finding, "scénario", again=True)
+
+    assert "l'entrée est validée en amont" in second.instructions
+    assert "l'entrée est validée en amont" not in first.instructions
+    assert second.id.startswith("refute2:")
