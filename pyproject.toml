@@ -18,8 +18,13 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel.force-include]
+# Each destination is the second candidate its loader looks for, so an
+# editable checkout and an installed wheel resolve the same content.
 "skills" = "thot/skills/library"
+"optional-skills" = "thot/skills/optional-skills"
 "plugins" = "thot/plugins/library"
+"commands" = "thot/commands/library"
+"mcp-catalog" = "thot/mcp/mcp-catalog"
 
 [tool.hatch.build]
 dev-mode-dirs = ["src"]

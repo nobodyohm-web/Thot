@@ -12,6 +12,7 @@ from thot.contracts import Severity
 from thot.schedule.jobs import SCHEDULES
 from thot.analysis.probe import DEFAULT_LIMIT
 from thot.errors import AuthorizationError, ThotError
+from thot.gateway.config import PLATFORMS as GATEWAY_PLATFORMS
 
 EXIT_OK = 0
 EXIT_FINDINGS = 1
@@ -68,6 +69,31 @@ def build_parser() -> argparse.ArgumentParser:
         "run", help="Exécuter maintenant (ce que le planificateur appelle)"
     )
     sched_run.add_argument("name", nargs="?")
+
+    gateway = subparsers.add_parser(
+        "gateway", help="Recevoir les audits ailleurs que dans ce terminal"
+    )
+    gw_sub = gateway.add_subparsers(dest="action")
+    gw_sub.add_parser("list", help="Les canaux configurés")
+    gw_add = gw_sub.add_parser("add", help="Configurer un canal")
+    gw_add.add_argument("platform", choices=list(GATEWAY_PLATFORMS))
+    gw_add.add_argument("setting", nargs="*",
+                        help="clé=valeur (token=…, chat_id=…, webhook=…, topic=…)")
+    gw_allow = gw_sub.add_parser(
+        "allow", help="Autoriser un identifiant à commander par ce canal"
+    )
+    gw_allow.add_argument("platform", choices=list(GATEWAY_PLATFORMS))
+    gw_allow.add_argument("sender", nargs="+")
+    gw_test = gw_sub.add_parser("test", help="Envoyer un message d'essai")
+    gw_test.add_argument("platform", nargs="?")
+    gw_remove = gw_sub.add_parser("remove", help="Retirer un canal")
+    gw_remove.add_argument("platform", choices=list(GATEWAY_PLATFORMS))
+
+    serve = subparsers.add_parser(
+        "serve", help="Écouter les commandes venues des canaux configurés"
+    )
+    serve.add_argument("--once", action="store_true",
+                       help="Traiter ce qui attend, puis rendre la main")
 
     mcp_cmd = subparsers.add_parser(
         "mcp", help="Les serveurs MCP disponibles et connectés"
@@ -444,6 +470,87 @@ def _cmd_verdicts(args) -> int:
         memory.close()
 
 
+def _cmd_gateway(args) -> int:
+    """Configure where audits are delivered, and who may answer back."""
+    from thot.gateway import config
+    from thot.gateway.platforms import build
+
+    action = getattr(args, "action", None) or "list"
+
+    if action == "add":
+        settings = {}
+        for pair in args.setting:
+            key, _, value = pair.partition("=")
+            if not value:
+                print(f"Attendu clé=valeur, reçu « {pair} ».", file=sys.stderr)
+                return EXIT_USAGE
+            settings[key.strip()] = value.strip()
+        existing = next((c for c in config.load()
+                         if c.platform == args.platform), None)
+        merged = {**(existing.settings if existing else {}), **settings}
+        path = config.upsert(args.platform, merged,
+                             existing.allow if existing else ())
+        print(f"{args.platform} configuré → {path}")
+        if args.platform == "telegram" and not (existing and existing.allow):
+            print("Pour commander depuis Telegram : "
+                  "`thot gateway allow telegram <ton-id>`.")
+        return 0
+
+    if action == "allow":
+        existing = next((c for c in config.load()
+                         if c.platform == args.platform), None)
+        if existing is None:
+            print(f"{args.platform} n'est pas configuré.", file=sys.stderr)
+            return EXIT_USAGE
+        allow = tuple(dict.fromkeys([*existing.allow, *args.sender]))
+        config.upsert(args.platform, existing.settings, allow)
+        print(f"{args.platform} : {len(allow)} identifiant(s) autorisé(s).")
+        return 0
+
+    if action == "remove":
+        if config.remove(args.platform):
+            print(f"{args.platform} retiré.")
+            return 0
+        print(f"{args.platform} n'était pas configuré.", file=sys.stderr)
+        return EXIT_USAGE
+
+    if action == "test":
+        from thot.gateway.server import broadcast
+
+        only = (args.platform,) if args.platform else ()
+        results = broadcast("Thot — message d'essai.", only=only)
+        if not results:
+            print("Aucun canal configuré.", file=sys.stderr)
+            return EXIT_USAGE
+        for delivery in results:
+            mark = "✓" if delivery.ok else "✗"
+            print(f"{mark} {delivery.platform} {delivery.detail}".rstrip())
+        return 0 if all(d.ok for d in results) else EXIT_USAGE
+
+    configured = config.load()
+    if not configured:
+        print("Aucun canal configuré.")
+        print("`thot gateway add ntfy topic=<le-tien>` pour commencer.")
+        return 0
+    for channel in configured:
+        platform = build(channel)
+        ready = "prêt" if platform and platform.configured() else "incomplet"
+        way = f"deux sens ({len(channel.allow)} autorisé(s))" \
+            if channel.two_way else "sortant seulement"
+        print(f"{channel.platform:<10} {ready:<10} {way}")
+    return 0
+
+
+def _cmd_serve(args) -> int:
+    from thot.gateway.server import serve
+
+    try:
+        return serve(once=args.once)
+    except KeyboardInterrupt:
+        print()
+        return 0
+
+
 def _cmd_mcp(args) -> int:
     """Browse the catalogue, and hand installation to the official CLI."""
     from thot.mcp import as_json, catalog, find, install, installed, remove
@@ -702,6 +809,10 @@ def main(argv: list[str] | None = None) -> int:
             return _cmd_schedule(args)
         if args.command == "verdicts":
             return _cmd_verdicts(args)
+        if args.command == "gateway":
+            return _cmd_gateway(args)
+        if args.command == "serve":
+            return _cmd_serve(args)
         if args.command == "mcp":
             return _cmd_mcp(args)
         if args.command == "skills":

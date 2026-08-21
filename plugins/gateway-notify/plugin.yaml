@@ -1,0 +1,9 @@
+name: gateway-notify
+version: "1.0.0"
+description: >
+  Pousse le résultat d'un audit non surveillé vers les canaux configurés
+  (Telegram, Discord, Slack, ntfy, courriel). Ne se déclenche que pour les
+  audits programmés : un audit lancé à la main s'affiche déjà à l'écran.
+author: "Thot (adaptateurs de plateformes portés d'Hermes Agent)"
+hooks:
+  - post_audit
