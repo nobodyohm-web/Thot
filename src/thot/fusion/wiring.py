@@ -148,8 +148,85 @@ def plan_prime() -> list[Step]:
                  f"ajoute mcpServers.{SERVER_NAME}, garde le reste")]
 
 
+def hermes_config_path() -> Path:
+    return hermes_home() / "config.yaml"
+
+
+def hermes_enabled() -> bool | None:
+    """Whether Hermes will actually load the plugin. None when unreadable.
+
+    Hermes installs portable Agent Plugins disabled, on purpose. Writing the
+    two files therefore wires nothing on its own — and a status that counted
+    files would report success while Hermes ignored the plugin. Presence is
+    not function.
+    """
+    import yaml
+
+    path = hermes_config_path()
+    if not path.is_file():
+        # No config at all: Hermes has never been configured here, so nothing
+        # enables anything. That is a definite no, not an unknown.
+        return False
+    try:
+        raw = path.read_text(encoding="utf-8")
+    except OSError:
+        return None
+    try:
+        loaded = yaml.safe_load(raw)
+    except yaml.YAMLError:
+        # A config Hermes itself cannot parse. Answering False here would
+        # claim the plugin is off; the truth is that nobody knows.
+        return None
+    if loaded is None:
+        return False
+    if not isinstance(loaded, dict):
+        return None
+    plugins = loaded.get("plugins")
+    if not isinstance(plugins, dict):
+        return False
+    enabled = plugins.get("enabled")
+    return bool(isinstance(enabled, list) and SERVER_NAME in enabled)
+
+
+def plan_enable() -> list[Step]:
+    state = hermes_enabled()
+    target = hermes_config_path()
+    if state is None:
+        return [Step(target, "à vérifier", "config Hermes illisible")]
+    if state:
+        return [Step(target, "déjà en place", f"plugins.enabled contient {SERVER_NAME}")]
+    return [Step(target, "activer", f"`hermes plugins enable {SERVER_NAME}`")]
+
+
+def enable_hermes_plugin() -> tuple[bool, str]:
+    """Enable through Hermes's own CLI, never by editing its config.
+
+    `config.yaml` is Hermes's file, with its own schema, its own comments and
+    its own migrations. Hand-editing it from outside would work until the day
+    it did not.
+    """
+    import subprocess
+
+    from thot.fusion.locate import hermes_command
+
+    command = hermes_command()
+    if command is None:
+        return False, "Hermes n'est pas installé — `uv sync` à la racine."
+    try:
+        done = subprocess.run(
+            [*command, "plugins", "enable", SERVER_NAME],
+            capture_output=True, text=True, timeout=180, check=False,
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        return False, str(exc)
+    if done.returncode != 0:
+        detail = (done.stderr or done.stdout or "").strip().splitlines()
+        return False, detail[-1] if detail else f"code {done.returncode}"
+    return True, ""
+
+
 def plan() -> list[Step]:
-    return plan_hermes() + plan_prime()
+    return plan_hermes() + plan_enable() + plan_prime()
 
 
 def _write_json(path: Path, payload: dict) -> None:
@@ -198,7 +275,19 @@ def wire_prime() -> list[Step]:
 
 
 def wire() -> list[Step]:
-    return wire_hermes() + wire_prime()
+    done = wire_hermes()
+
+    step = plan_enable()[0]
+    if step.action == "activer":
+        ok, why = enable_hermes_plugin()
+        done.append(
+            Step(step.target, "activé" if ok else "échec",
+                 "" if ok else why)
+        )
+    else:
+        done.append(step)
+
+    return done + wire_prime()
 
 
 def unwire() -> list[Step]:
@@ -213,6 +302,20 @@ def unwire() -> list[Step]:
     folder = hermes_plugin_dir()
     if folder.is_dir() and not any(folder.iterdir()):
         folder.rmdir()
+
+    if hermes_enabled():
+        import subprocess
+
+        from thot.fusion.locate import hermes_command
+
+        command = hermes_command()
+        if command is not None:
+            try:
+                subprocess.run([*command, "plugins", "disable", SERVER_NAME],
+                               capture_output=True, timeout=180, check=False)
+                done.append(Step(hermes_config_path(), "désactivé"))
+            except (OSError, subprocess.SubprocessError):
+                pass
 
     target = prime_settings_path()
     settings = _read_json(target)

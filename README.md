@@ -36,6 +36,17 @@ mutuel : Thot sait sans demander, Hermes et Prime agissent.
 Chaque agent garde sa configuration. `thot fusion unwire` défait tout, et le
 `settings.json` de Prime est sauvegardé avant la première modification.
 
+`thot fusion status` mesure ce qui **fonctionne**, pas ce qui est écrit :
+Hermes installe les plugins portables désactivés, par sécurité, donc écrire
+les deux fichiers ne branche rien tant que `plugins.enabled` ne le nomme pas.
+L'activation passe par le CLI de Hermes, jamais par une édition de son
+`config.yaml` — ce fichier est le sien, avec son schéma et ses migrations.
+
+Ce qui n'est **pas** fusionné, et le reste sciemment : les trois gardent leur
+configuration séparée (`~/.thot`, `~/.hermes`, `~/.prime`), leurs bibliothèques de
+méthodes et leurs mémoires. Hermes et Prime ne sont pas encore des moteurs
+pour `thot audit --deep`, qui passe toujours par le CLI Claude.
+
 ## Installation
 
 ```bash

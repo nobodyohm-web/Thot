@@ -8,10 +8,14 @@ network. This file is the executable form of that promise."""
 
 from pathlib import Path
 
-FORBIDDEN = (
-    "import hermes", "from hermes", "import prime", "from prime",
-    "pi_coding_agent", "prime_agent",
-)
+# Top-level module names Thot must never import. Matched against the module
+# an import statement actually names, not as substrings: `from thot.fusion
+# import hermes_command` is Thot's own seam and contains "import hermes".
+FORBIDDEN_MODULES = frozenset({
+    "hermes", "hermes_cli", "hermes_state", "hermes_constants", "hermes_logging",
+    "agent", "tools", "gateway", "acp_adapter", "tui_gateway", "cron",
+    "prime", "prime_agent", "pi_coding_agent",
+})
 
 SOURCE_ROOT = Path(__file__).resolve().parents[1] / "src" / "thot"
 
@@ -40,13 +44,39 @@ def core_files():
                 yield path
 
 
+def _imported_modules(path):
+    """Every top-level module name this file imports, by parsing it.
+
+    `thot.gateway` is Thot's own; `gateway` is Hermes's. A substring scan
+    cannot tell them apart, and an AST can.
+    """
+    import ast
+
+    try:
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+    except (SyntaxError, ValueError, OSError):
+        return set()
+
+    found = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            found.update(alias.name.split(".")[0] for alias in node.names)
+        elif isinstance(node, ast.ImportFrom) and node.level == 0 and node.module:
+            found.add(node.module.split(".")[0])
+    return found
+
+
 def test_core_imports_nothing_from_the_agents():
+    """Thot dispatches to Hermes and Prime; it never imports them.
+
+    They are whole programs with their own dependency trees. Importing one
+    would make `thot audit` fail on a machine that has only Thot — which is
+    the machine the deterministic core exists for.
+    """
     offenders = []
     for path in SOURCE_ROOT.rglob("*.py"):
-        text = path.read_text(encoding="utf-8")
-        for needle in FORBIDDEN:
-            if needle in text:
-                offenders.append(f"{path.name}: {needle}")
+        for module in sorted(_imported_modules(path) & FORBIDDEN_MODULES):
+            offenders.append(f"{path.relative_to(SOURCE_ROOT)}: {module}")
     assert offenders == [], f"Le noyau doit rester autonome : {offenders}"
 
 

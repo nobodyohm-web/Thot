@@ -60,9 +60,14 @@ def test_the_server_entry_is_what_both_agents_accept(homes):
     assert "/" not in entry["command"]
 
 
-def test_wiring_is_idempotent(homes):
+def test_wiring_is_idempotent(homes, monkeypatch):
+    # The enable step shells out to Hermes; stubbed so this test measures
+    # idempotence and not whether a subprocess ran.
+    monkeypatch.setattr(wiring, "enable_hermes_plugin", lambda: (True, ""))
+    monkeypatch.setattr(wiring, "hermes_enabled", lambda: True)
+
     first = wiring.wire()
-    assert all(step.changes for step in first)
+    assert any(step.changes for step in first)
 
     second = wiring.plan()
     assert not any(step.changes for step in second)
@@ -183,3 +188,40 @@ def test_two_projects_do_not_share_one_map(toy_repo, tmp_path):
     assert "src/app.py" in first
     assert "seul.py" in second
     assert "src/app.py" not in second
+
+
+# -- presence is not function ------------------------------------------------
+
+
+def test_writing_the_files_is_not_enabling_the_plugin(homes):
+    """Hermes installs portable plugins disabled, on purpose.
+
+    A status that counted files reported "branché 3/3" while Hermes ignored
+    the plugin entirely.
+    """
+    hermes_home, _ = homes
+    wiring.wire_hermes()
+
+    assert wiring.hermes_enabled() is False
+    steps = {step.action for step in wiring.plan()}
+    assert "activer" in steps
+
+
+def test_an_enabled_plugin_is_read_from_hermes_own_config(homes):
+    hermes_home, _ = homes
+    hermes_home.mkdir(parents=True)
+    (hermes_home / "config.yaml").write_text(
+        "plugins:\n  enabled:\n    - thot\n", encoding="utf-8"
+    )
+    assert wiring.hermes_enabled() is True
+
+
+def test_an_unreadable_config_is_unknown_not_false(homes):
+    """Absence of evidence is not evidence of absence — the whole file
+    could be missing because Hermes has never been run here."""
+    hermes_home, _ = homes
+    hermes_home.mkdir(parents=True)
+    (hermes_home / "config.yaml").write_text("[: pas du yaml", encoding="utf-8")
+
+    assert wiring.hermes_enabled() is None
+    assert wiring.plan_enable()[0].action == "à vérifier"
