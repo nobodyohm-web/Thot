@@ -608,3 +608,28 @@ def test_the_three_histories_come_back_newest_first(homes, tmp_path):
 
     found = sessions.merged()
     assert [s.source for s in found] == ["prime", "hermes"]
+
+
+def test_syncing_takes_the_lock_hermes_takes(homes, tmp_path, monkeypatch):
+    """Two programs sharing a file have to agree on a protocol. Hermes locks
+    a sibling `<file>.lock` for the whole read-modify-write."""
+    from thot.fusion import memory
+    from thot.harness import Harness
+
+    hermes_home, _ = homes
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    Harness.open(repo).remember(title="x", content="y", scope="global")
+
+    taken: list[str] = []
+    original = memory._locked
+
+    def watched(path):
+        taken.append(str(path))
+        return original(path)
+
+    monkeypatch.setattr(memory, "_locked", watched)
+    memory.project_hermes(repo)
+
+    assert taken == [str(memory.hermes_memory_path())]
+    assert (hermes_home / "memories" / "MEMORY.md.lock").exists()

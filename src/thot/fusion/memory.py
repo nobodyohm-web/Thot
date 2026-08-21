@@ -18,6 +18,7 @@ up before the first change.
 from __future__ import annotations
 
 import re
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -214,6 +215,49 @@ def _backup(path: Path) -> None:
         backup.write_text(path.read_text(encoding="utf-8"), encoding="utf-8")
 
 
+try:  # Unix only; a machine without it simply writes unlocked.
+    import fcntl
+except ImportError:  # pragma: no cover - Windows
+    fcntl = None
+
+
+@contextmanager
+def _locked(path: Path):
+    """Hold the lock Hermes holds, on the file Hermes locks.
+
+    Its memory tool takes an exclusive `flock` on a sibling `<file>.lock`
+    for the whole read-modify-write, then replaces the file atomically.
+    Writing without taking that lock means a `--sync` landing during a live
+    Hermes session silently drops whichever write finished second.
+
+    This is not reaching into Hermes: it is speaking the file protocol two
+    programs sharing a file have to agree on, and it is documented in
+    `hermes/tools/memory_tool.py`.
+    """
+    if fcntl is None:
+        yield
+        return
+
+    lock_path = path.with_suffix(path.suffix + ".lock")
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    handle = None
+    try:
+        handle = lock_path.open("a+")
+        fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+        yield
+    except OSError:
+        # A lock we cannot take must not cost the sync. Losing a race is
+        # recoverable; refusing to write at all is not what was asked.
+        yield
+    finally:
+        if handle is not None:
+            try:
+                fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+            except OSError:
+                pass
+            handle.close()
+
+
 def _atomic_write(path: Path, text: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     temporary = path.with_suffix(path.suffix + ".thot-tmp")
@@ -225,13 +269,15 @@ def project_hermes(root: Path | str | None = None) -> Written:
     """Add Thot's facts to Hermes's memory, in Hermes's own format."""
     path = hermes_memory_path()
     mine = _thot_entries(root)
-    theirs = [e for e in _entries(path) if not e.lstrip().startswith(TAG)]
 
-    if not mine and not path.is_file():
-        return Written(path, 0, "rien à faire")
-
-    _backup(path)
-    _atomic_write(path, ENTRY_DELIMITER.join([*theirs, *mine]) + "\n")
+    # Read and write inside one lock: reading first and locking second is
+    # the race this exists to close.
+    with _locked(path):
+        theirs = [e for e in _entries(path) if not e.lstrip().startswith(TAG)]
+        if not mine and not path.is_file():
+            return Written(path, 0, "rien à faire")
+        _backup(path)
+        _atomic_write(path, ENTRY_DELIMITER.join([*theirs, *mine]) + "\n")
     return Written(path, len(mine), "écrit")
 
 
