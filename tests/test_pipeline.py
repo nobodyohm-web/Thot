@@ -42,3 +42,47 @@ def test_store_persists_the_run(toy_repo, tmp_path):
     assert len(store.findings_for_run(result.run_id)) == len(result.findings)
     assert store.cached_symbol_hashes()
     store.close()
+
+
+def test_a_taint_path_inside_a_test_is_demoted_too(tmp_path):
+    """The role is not a pattern-rule concept: a proven taint path through a
+    fixture is still a path nobody outside the repository walks."""
+    import textwrap
+
+    from thot.contracts import Severity
+    from thot.pipeline import run_audit
+
+    for folder in ("src", "tests"):
+        (tmp_path / folder).mkdir()
+        (tmp_path / folder / "app.py").write_text(
+            textwrap.dedent(
+                """
+                import os
+                import sys
+
+
+                def read_input():
+                    return sys.argv[1]
+
+
+                def run(argument):
+                    os.system("echo " + argument)
+
+
+                def main():
+                    target = read_input()
+                    run(target)
+                """
+            )
+        )
+
+    result = run_audit(tmp_path, require_authorization=False)
+    by_path = {f.location.path: f for f in result.findings
+               if f.rule.startswith("sink.")}
+    assert "src/app.py" in by_path and "tests/app.py" in by_path
+
+    production = by_path["src/app.py"]
+    in_test = by_path["tests/app.py"]
+    order = list(Severity)
+    assert order.index(production.severity) <= order.index(in_test.severity)
+    assert (in_test.provenance or {}).get("rôle") == "test"

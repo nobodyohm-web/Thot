@@ -117,3 +117,28 @@ def test_broken_yaml_names_the_file(tmp_path):
     write_rules(tmp_path, "sinks: [\n  unclosed", name="cassé.yaml")
     with pytest.raises(rules.RuleError, match="cassé.yaml"):
         rules.load_catalog(tmp_path, user_dir=tmp_path / "absent")
+
+
+def test_a_dangerous_pattern_in_a_test_file_says_it_is_a_test(tmp_path):
+    """Half of Hermes's and Prime's HIGH findings were test code scored as
+    production. The demotion has to be legible, not just arithmetic."""
+    from thot.guard.scanner import scan_text
+
+    payload = 'const { exec } = require("child_process"); exec(cmd);\n'
+
+    production = scan_text("src/core/clipboard.ts", payload)
+    in_test = scan_text("packages/ai/test/stream.test.ts", payload)
+    assert production and in_test, "la règle doit se déclencher dans les deux"
+
+    assert production[0].severity is not in_test[0].severity
+    assert (production[0].provenance or {}).get("rôle") is None
+    assert (in_test[0].provenance or {}).get("rôle") == "test"
+
+
+def test_a_test_finding_is_still_reported(tmp_path):
+    from thot.contracts import Severity
+    from thot.guard.scanner import scan_text
+
+    found = scan_text("tests/conftest.py", "import os\nos.system(cmd)\n")
+    assert found
+    assert found[0].severity is not Severity.INFO

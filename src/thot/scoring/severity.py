@@ -14,6 +14,7 @@ a mild penalty instead of a burial.
 from __future__ import annotations
 
 from thot.contracts import Confidence, Severity
+from thot.scoring.role import Role, role_weight
 
 _IMPACT_SCORE = {
     Severity.CRITICAL: 1.0,
@@ -66,12 +67,21 @@ def compute_severity(
     *,
     entrypoints_known: bool = True,
     escapes: bool = False,
+    role: Role = Role.PRODUCTION,
 ) -> Severity:
+    """`role` is the fourth term the graph cannot supply.
+
+    Reachability answers "can an entry point get here". It has nothing to say
+    about a file that is not an attack surface at all — a test, a fixture, an
+    example — and on the two programs Thot ships with, half the HIGH findings
+    were exactly that.
+    """
     score = (
         _IMPACT_SCORE[impact]
         * accessibility_weight(distance, entrypoints_known=entrypoints_known,
                                escapes=escapes)
         * _CONFIDENCE_SCORE[confidence]
+        * role_weight(role)
     )
     if score >= 0.7:
         return Severity.CRITICAL

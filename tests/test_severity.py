@@ -1,4 +1,7 @@
+import pytest
+
 from thot.contracts import Confidence, Severity
+from thot.scoring.role import Role
 from thot.scoring.severity import accessibility_weight, compute_severity
 
 
@@ -89,3 +92,57 @@ def test_a_reachable_symbol_is_unaffected_by_the_escape_signal():
     for distance in (0, 1, 5):
         assert accessibility_weight(distance) == \
             accessibility_weight(distance, escapes=True)
+
+
+# -- what a file is for --------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "path, expected",
+    [
+        ("packages/ai/test/stream.test.ts", Role.TEST),
+        ("tests/conftest.py", Role.TEST),
+        ("hermes_cli/test_helpers.py", Role.TEST),
+        ("src/core/clipboard.ts", Role.PRODUCTION),
+        ("packages/coding-agent/examples/extensions/sandbox/index.ts", Role.EXAMPLE),
+        # A directory wins over a filename: this is an example whose helper
+        # happens to be named like a test.
+        ("examples/foo/test_helper.py", Role.EXAMPLE),
+        # Segments, never substrings.
+        ("src/latest/handler.py", Role.PRODUCTION),
+        ("contest.py", Role.PRODUCTION),
+        ("src/protests/model.py", Role.PRODUCTION),
+    ],
+)
+def test_the_role_of_a_path(path, expected):
+    from thot.scoring.role import role_of
+
+    assert role_of(path) is expected
+
+
+def test_a_test_file_is_demoted_not_buried():
+    """It still runs on developer machines and in CI — that is a real
+    surface, just not one an adversary reaches."""
+    from thot.scoring.role import Role
+
+    production = compute_severity(
+        Severity.CRITICAL, None, Confidence.PLAUSIBLE, entrypoints_known=False
+    )
+    in_test = compute_severity(
+        Severity.CRITICAL, None, Confidence.PLAUSIBLE,
+        entrypoints_known=False, role=Role.TEST,
+    )
+    assert production is Severity.HIGH
+    assert in_test is Severity.MEDIUM
+    assert in_test is not Severity.INFO, "démotion, pas suppression"
+
+
+def test_production_code_is_untouched_by_the_role_term():
+    from thot.scoring.role import Role
+
+    for distance in (0, 1, 3, None):
+        assert compute_severity(
+            Severity.HIGH, distance, Confidence.CONFIRMED
+        ) is compute_severity(
+            Severity.HIGH, distance, Confidence.CONFIRMED, role=Role.PRODUCTION
+        )

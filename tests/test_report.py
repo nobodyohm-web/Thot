@@ -96,3 +96,19 @@ def test_a_mixed_report_keeps_the_caveat_for_the_unproven_half():
     assert "réfuté" in note
     assert "plausible" in note
     assert "pas encore prouvé" in note
+
+
+def test_a_report_says_which_languages_it_only_pattern_scanned():
+    """912 TypeScript files and 23 Python ones got very different analyses.
+    A file count alone let a reader assume they got the same."""
+    from thot.console import _pattern_only
+
+    said = _pattern_only({"python": 23, "typescript": 912, "javascript": 3})
+    assert "typescript 912" in said
+    assert "python" not in said
+
+
+def test_an_all_python_repository_says_nothing_extra():
+    from thot.console import _pattern_only
+
+    assert _pattern_only({"python": 162}) == ""

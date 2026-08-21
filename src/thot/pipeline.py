@@ -18,6 +18,7 @@ from thot.plugins import annotate_findings
 from thot.scope.authorization import load_authorization
 from thot.scope.detect import detect_scope
 from thot.scope.manifest import ScopeManifest
+from thot.scoring.role import Role, role_of
 from thot.scoring.severity import compute_severity
 from thot.store.db import Store
 from thot.taint.engine import find_candidates
@@ -63,17 +64,22 @@ def findings_from_graph(root: Path, graph: CodeGraph) -> list[Finding]:
     entrypoints_known = bool(graph.entrypoints)
     for candidate in find_candidates(root, graph):
         distance = graph.distance_from_entrypoints(candidate.sink.symbol or "")
+        role = role_of(candidate.sink.path)
         severity = compute_severity(
             candidate.impact,
             distance,
             Confidence.PLAUSIBLE,
             entrypoints_known=entrypoints_known,
             escapes=graph.reach_unknown(candidate.sink.symbol or ""),
+            role=role,
         )
         scenario = (
             f"{candidate.description} : une valeur issue de `{candidate.source}` "
             f"atteint `{candidate.sink}` sans validation intermédiaire détectée."
         )
+        provenance = None
+        if role is not Role.PRODUCTION:
+            provenance = {"rôle": role.value}
         findings.append(
             Finding(
                 id=Finding.compute_id(candidate.rule, candidate.sink),
@@ -83,6 +89,7 @@ def findings_from_graph(root: Path, graph: CodeGraph) -> list[Finding]:
                 location=candidate.sink,
                 taint_path=candidate.path,
                 failure_scenario=scenario,
+                provenance=provenance,
             )
         )
     return findings

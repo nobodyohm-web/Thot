@@ -36,6 +36,9 @@ def print_report(result, hidden: int = 0) -> None:
         + f" · {len(result.manifest.entrypoints)} points d'entrée"
         + f" · {result.elapsed:.2f} s[/dim]"
     )
+    shallow = _pattern_only(result.manifest.languages)
+    if shallow:
+        console.print(f"[dim]{shallow}[/dim]")
     console.print()
 
     if not result.findings:
@@ -85,6 +88,28 @@ def print_report(result, hidden: int = 0) -> None:
         f"[bold]{len(result.findings)}[/bold] finding(s) — {breakdown}{suffix}"
     )
     console.print(_confidence_note(result.findings))
+
+
+def _pattern_only(languages: dict) -> str:
+    """Name the languages that got the pattern rules and nothing else.
+
+    Thot indexes Python: AST, call graph, taint, reachability. Everything
+    else in scope is scanned by the pattern rules, which is a real analysis
+    but a shallower one. Printing a file count without that distinction let
+    a reader assume 912 TypeScript files had been analysed the same way as
+    23 Python ones.
+    """
+    from thot.codemap import INDEXED_LANGUAGES
+
+    shallow = {
+        name: count
+        for name, count in languages.items()
+        if name not in INDEXED_LANGUAGES and count
+    }
+    if not shallow:
+        return ""
+    named = " · ".join(f"{name} {count}" for name, count in sorted(shallow.items()))
+    return f"motifs seuls, sans index ni graphe : {named}"
 
 
 def _confidence_note(findings) -> str:

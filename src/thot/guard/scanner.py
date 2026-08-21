@@ -20,6 +20,7 @@ from pathlib import Path
 
 from thot.contracts import CodeRef, Confidence, Finding, Severity
 from thot.guard.patterns import SECURITY_PATTERNS
+from thot.scoring.role import Role, role_of
 from thot.scoring.severity import compute_severity
 
 # Impact per rule. The upstream data carries a reminder but no severity, and
@@ -186,17 +187,24 @@ def scan_text(relative: str, text: str) -> list[Finding]:
             ast_hash=_line_identity(scannable, line),
         )
         rule = f"pattern.{name}"
+        role = role_of(relative)
+        provenance = {"phase": "motif", "source": "hermes/security-guidance"}
+        if role is not Role.PRODUCTION:
+            # Said on the finding, not only folded into the number: a reader
+            # has to see *why* a dangerous-looking call was ranked low.
+            provenance["rôle"] = role.value
         findings.append(
             Finding(
                 id=Finding.compute_id(rule, location),
                 rule=rule,
                 severity=compute_severity(
-                    impact, None, Confidence.PLAUSIBLE, entrypoints_known=False
+                    impact, None, Confidence.PLAUSIBLE,
+                    entrypoints_known=False, role=role,
                 ),
                 confidence=Confidence.PLAUSIBLE,
                 location=location,
                 failure_scenario=_scenario(pattern),
-                provenance={"phase": "motif", "source": "hermes/security-guidance"},
+                provenance=provenance,
             )
         )
     return findings
