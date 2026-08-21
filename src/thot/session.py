@@ -7,6 +7,7 @@ startup and refreshed whenever a tool changes a file.
 
 from __future__ import annotations
 
+import sys
 from pathlib import Path
 
 from prompt_toolkit import PromptSession
@@ -26,6 +27,22 @@ from thot.ui import theme
 
 HISTORY_PATH = Path.home() / ".thot" / "history"
 MAX_TOOL_ROUNDS = 24
+
+CLI_BRIEF = """Tu travailles sous Thot, qui a déjà cartographié ce dépôt.
+
+Les outils `mcp__thot__code_map`, `mcp__thot__find_symbol`, `mcp__thot__callers` \
+et `mcp__thot__audit` répondent depuis un index AST et un graphe d'appels \
+précalculés : leurs réponses sont exhaustives et instantanées.
+
+Utilise-les EN PREMIER pour toute question de localisation ou de structure. \
+Un `grep` ou un `Read` exploratoire est presque toujours inutile ici : le graphe \
+sait déjà qui appelle quoi. N'ouvre un fichier que pour en lire le contenu réel, \
+jamais pour le chercher.
+
+Réponds en français, brièvement.
+
+Carte du dépôt :
+{brief}"""
 
 SYSTEM_PROMPT = """Tu es Thot, un assistant de développement qui travaille dans le \
 terminal de l'utilisateur.
@@ -61,7 +78,10 @@ class Session:
             else None
         )
         self.messages: list[Message] = []
-        self._prompt = PromptSession(history=self._history())
+        self._interactive = sys.stdin.isatty()
+        self._prompt = (
+            PromptSession(history=self._history()) if self._interactive else None
+        )
 
     # -- setup -----------------------------------------------------------
 
@@ -155,7 +175,7 @@ class Session:
         self.greet()
         while True:
             try:
-                line = self._prompt.prompt(ANSI("\x1b[38;5;179m   › \x1b[0m")).strip()
+                line = self._read_line()
             except (EOFError, KeyboardInterrupt):
                 theme.console.print()
                 theme.hint("À bientôt.")
@@ -179,6 +199,13 @@ class Session:
                 theme.console.print()
                 theme.hint("Interrompu.")
                 theme.console.print()
+
+    def _read_line(self) -> str:
+        """Read one instruction. Falls back to plain input when piped."""
+        if self._prompt is not None:
+            return self._prompt.prompt(ANSI("\x1b[38;5;179m   › \x1b[0m")).strip()
+        theme.console.print(f"   [{theme.ACCENT}]›[/] ", end="")
+        return input().strip()
 
     def _turn(self) -> None:
         if self.claude is not None:
@@ -232,7 +259,9 @@ class Session:
         )
         try:
             answer = self.claude.send(
-                prompt, brief=context_brief(self.recon), events=events
+                prompt,
+                brief=CLI_BRIEF.format(brief=context_brief(self.recon)),
+                events=events,
             )
         finally:
             streamed.close()

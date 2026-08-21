@@ -54,19 +54,33 @@ l'a déjà cartographié avant ta première phrase.
 
 | Choix | Ce qu'il faut |
 |---|---|
-| **Claude** | une clé API Anthropic (`sk-ant-…`) |
+| **Claude — ton compte** | le CLI `claude` installé et connecté. Rien à copier. |
+| **Claude — clé API** | une clé `sk-ant-…` |
 | **OpenAI** | une clé API, ou `OPENAI_API_KEY` dans l'environnement |
 | **Local** | Ollama ou LM Studio qui tourne — gratuit, hors ligne |
 | **Autre** | n'importe quel endpoint compatible OpenAI |
 
 `thot login` pour changer, `thot logout` pour oublier. La configuration vit dans
-`~/.thot/config.json`, en `0600`.
+`~/.thot/config.json`, en `0600`. Aucun jeton n'y est stocké en mode compte.
 
-**Un abonnement Claude ne fonctionne pas ici.** Anthropic n'accepte les jetons
-d'abonnement que depuis ses propres clients ; les faire passer depuis un
-programme tiers demanderait d'usurper l'identité de Claude Code, ce que Thot ne
-fait pas. Thot détecte l'abonnement uniquement pour te l'expliquer au bon
-moment.
+#### Comment le mode compte fonctionne
+
+L'API Messages refuse les jetons d'abonnement venant d'un programme tiers. Y
+passer demanderait de se faire passer pour Claude Code — user-agent maquillé,
+prompt système emprunté. Thot ne le fait pas.
+
+Il fait l'inverse : il **délègue au client officiel**. Chaque tour lance
+
+```
+claude -p --output-format stream-json --session-id <uuid> \
+       --mcp-config <outils Thot> --append-system-prompt <carte du dépôt>
+```
+
+L'inférence est faite par `claude`, sous ton compte, exactement comme si tu
+l'avais tapé toi-même. Thot fournit la carte du dépôt, branche ses outils
+déterministes via un petit serveur MCP, et met en forme le flux d'événements.
+Le fil de conversation est porté par `--resume` sur le même identifiant de
+session.
 
 ## Les outils du modèle
 
@@ -82,6 +96,10 @@ la carte et non le modèle :
 | `find_symbol` | fichier, lignes et paramètres d'une fonction |
 | `callers` | qui appelle quoi, et la distance à un point d'entrée |
 | `audit` | les chemins de teinte source → sink |
+
+En mode compte, ces quatre-là sont servis au CLI officiel par
+`thot.mcp_server` — un serveur MCP en lecture seule, incapable d'écrire ou
+d'exécuter quoi que ce soit.
 
 Quand le modèle cherche qui appelle `process_payment`, il interroge le graphe et
 obtient la réponse complète — au lieu de grep trois fichiers au hasard.

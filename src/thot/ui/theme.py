@@ -61,7 +61,7 @@ def rule(label: str = "") -> None:
     console.rule(Text(label, style=INK) if label else "", style=LAPIS)
 
 
-FIELD_WIDTH = 7
+FIELD_WIDTH = 9
 
 
 def field(label: str, value: str, *, bullet: str = "▪") -> Text:
