@@ -117,7 +117,22 @@ dossier par méthode. C'est la seule raison pour laquelle ceci est possible.
 thot fusion skills            # qui possède quoi, et ce qui n'est qu'à un seul
 thot fusion skills --share    # donner la bibliothèque de Thot à Prime
 thot fusion sessions          # l'historique des trois, du plus récent au plus ancien
+thot fusion audit             # auditer les trois arbres en une passe
 ```
+
+`thot fusion audit` existe parce que l'inverse était une friction du
+programme : trois commandes et une fusion mentale de trois rapports.
+
+```
+thot       163 fichiers     4 finding(s) — 1 low · 3 info
+hermes    6924 fichiers   365 finding(s) — 13 high · 52 medium · 300 low
+prime      938 fichiers    14 finding(s) — 5 high · 8 medium · 1 low
+
+383 finding(s) sur l'ensemble — 18 high · 60 medium · 302 low · 3 info
+```
+
+Une partie qui ne peut pas être auditée coûte sa ligne et jamais la passe :
+un Prime absent ne doit pas cacher ce que Hermes a dit.
 
 Aucune copie : les fichiers restent chez leur propriétaire et chaque
 programme est pointé vers les dossiers des autres. Une méthode copiée deux
@@ -307,6 +322,34 @@ jusqu'à ce que plus personne ne lise le rapport.
 | `refute` | faux positif — passe en INFO, sort du rapport, garde sa raison |
 | `accept` | risque réel, assumé — passe en INFO, annoté |
 | `fixed` | corrigé — s'il **revient**, c'est signalé comme régression |
+
+### Ce qu'un fichier est *pour*
+
+La sévérité est impact × accessibilité × confiance, et l'accessibilité vient
+du graphe d'appels. Le graphe répond « un point d'entrée peut-il arriver
+ici ». Il n'a rien à dire sur un fichier qui n'est pas une surface d'attaque
+du tout.
+
+Mesuré sur les deux programmes livrés avec Thot : **12 des 25 findings HIGH
+de Hermes et 6 des 11 de Prime** étaient dans du code de test ou d'exemple.
+Presque la moitié du haut du rapport portait sur du code qu'aucun attaquant
+n'atteint — c'est ainsi qu'un rapport cesse d'être lu.
+
+| | avant | après |
+|---|---|---|
+| hermes | 25 high · 88 medium · 252 low | **13** high · 52 medium · 300 low |
+| prime | 11 high · 2 medium · 1 low | **5** high · 8 medium · 1 low |
+
+Aucun finding ajouté, aucun perdu. C'est une démotion, jamais une
+suppression : du code de test tourne sur les machines des développeurs et
+dans la CI, ce qui est la forme exacte d'une attaque par la chaîne
+d'approvisionnement. Le finding reste, et porte son rôle en provenance.
+
+La classification est conservatrice — segments entiers, jamais des
+sous-chaînes (`latest/` n'est pas un dossier de test, `contest.py` n'est pas
+un fichier de test), et tout ce qui n'est pas reconnu est de la production.
+Se tromper vers « test » cacherait un vrai défaut ; se tromper vers
+« production » ne coûte qu'un cran.
 
 ### Pourquoi c'est sûr
 
