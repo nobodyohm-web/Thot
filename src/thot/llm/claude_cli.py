@@ -97,6 +97,22 @@ class ClaudeCli:
     isolated: bool = False  # cut the user's own MCP servers out of the session
     _started: bool = False
 
+    def resume(self, session_id: str) -> None:
+        """Continue an existing CLI conversation instead of opening a new one.
+
+        Thot indexes threads; the CLI owns them. Handing the id back is what
+        makes `/resume` restore the model's actual context rather than replay
+        a transcript at a model that has forgotten it.
+        """
+        self.session_id = session_id
+        self._started = True
+
+    def forget_thread(self) -> None:
+        """Start a fresh CLI conversation — the point of `/compact`."""
+        self.session_id = str(uuid.uuid4())
+        self._started = False
+        self.active_model = ""
+
     @staticmethod
     def available() -> bool:
         return shutil.which("claude") is not None

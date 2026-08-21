@@ -7,6 +7,7 @@ startup and refreshed whenever a tool changes a file.
 
 from __future__ import annotations
 
+import sqlite3
 import sys
 from pathlib import Path
 
@@ -23,10 +24,11 @@ from thot.contracts import Confidence
 from thot.llm.base import Message, Provider, ProviderError
 from thot.llm.claude_cli import ClaudeCli, Events
 from thot.llm.credentials import Config, build_provider, forget
+from thot.paths import history_file
 from thot.recon import Recon, context_brief, sweep
+from thot.state import SessionStore
 from thot.ui import theme
 
-HISTORY_PATH = Path.home() / ".thot" / "history"
 MAX_TOOL_ROUNDS = 24
 
 CLI_BRIEF = """Tu travailles sous Thot, qui a déjà cartographié ce dépôt.
@@ -77,7 +79,8 @@ Contexte du dépôt :
 
 
 class Session:
-    def __init__(self, root: Path, config: Config) -> None:
+    def __init__(self, root: Path, config: Config,
+                 store: SessionStore | None = None) -> None:
         self.root = root
         self.config = config
         self.recon: Recon = sweep(root)
@@ -88,17 +91,49 @@ class Session:
             else None
         )
         self.messages: list[Message] = []
+        self.carry = ""  # a summary handed forward across a /compact
+        self.store, self.session_id = self._open_state(store)
         self._interactive = sys.stdin.isatty()
         self._prompt = (
             PromptSession(history=self._history()) if self._interactive else None
         )
 
+    # -- persistent state -------------------------------------------------
+
+    def _open_state(self, store: SessionStore | None) -> tuple[SessionStore | None, str]:
+        """Open the session log. A store that will not open costs history, not the session."""
+        try:
+            store = store or SessionStore.open()
+            session_id = store.start(self.root, model=self._model_label())
+            if self.claude is not None:
+                store.link_cli(session_id, self.claude.session_id)
+            return store, session_id
+        except (sqlite3.Error, OSError):
+            return None, ""
+
+    def _record(self, role: str, content: str, *, tool_name: str = "") -> None:
+        """Write one turn down. Never let the log break the conversation."""
+        if not (self.store and self.session_id and content.strip()):
+            return
+        try:
+            self.store.append(self.session_id, role, content, tool_name=tool_name)
+        except (sqlite3.Error, OSError, KeyError):
+            pass
+
+    def _close_state(self) -> None:
+        if self.store and self.session_id:
+            try:
+                self.store.end(self.session_id)
+            except (sqlite3.Error, OSError):
+                pass
+
     # -- setup -----------------------------------------------------------
 
     @staticmethod
     def _history() -> FileHistory:
-        HISTORY_PATH.parent.mkdir(parents=True, exist_ok=True)
-        return FileHistory(str(HISTORY_PATH))
+        path = history_file()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        return FileHistory(str(path))
 
     def _tool_context(self) -> ToolContext:
         return ToolContext(
@@ -287,16 +322,19 @@ class Session:
             except (EOFError, KeyboardInterrupt):
                 theme.console.print()
                 theme.hint("À bientôt.")
+                self._close_state()
                 return 0
 
             if not line:
                 continue
             if line.startswith("/"):
                 if self._command(line) is False:
+                    self._close_state()
                     return 0
                 continue
 
             self.messages.append(Message(role="user", content=line))
+            self._record("user", line)
             try:
                 self._turn()
             except ProviderError as exc:
@@ -335,6 +373,7 @@ class Session:
 
             if not reply.message.tool_calls:
                 theme.console.print()
+                self._record("assistant", reply.message.content or "")
                 return
 
             context = self._tool_context()
@@ -357,6 +396,11 @@ class Session:
         """
         assert self.claude is not None
         prompt = self.messages[-1].content
+        if self.carry:
+            # A compacted thread starts empty on the CLI side; the summary
+            # rides in with the first question so nothing is re-derived.
+            prompt = f"{self.carry}\n\n---\n\n{prompt}"
+            self.carry = ""
         streamed = _Streamer()
 
         theme.console.print()
@@ -375,6 +419,7 @@ class Session:
             streamed.close()
 
         self.messages.append(Message(role="assistant", content=answer))
+        self._record("assistant", answer)
         self._refresh()  # the CLI may have edited files
         theme.console.print()
 
@@ -402,6 +447,11 @@ class Session:
             ("/verdict", "écarter ou accepter un finding : /verdict 2 refute raison"),
             ("/audit", "relancer l'analyse et afficher les findings"),
             ("/audit deep", "faire analyser puis réfuter les candidats par le modèle"),
+                ("/sessions", "les sessions précédentes sur ce dépôt"),
+                ("/resume", "reprendre une session : /resume <id> (défaut : la dernière)"),
+                ("/search", "chercher dans tout ce que Thot a déjà dit ou trouvé"),
+                ("/compact", "résumer la session et repartir avec le contexte vidé"),
+                ("/export", "écrire la session en JSON : /export chemin.json"),
                 ("/scan", "recalculer la carte du dépôt"),
                 ("/model", "changer de modèle"),
                 ("/clear", "oublier la conversation en cours"),
@@ -427,6 +477,14 @@ class Session:
                     theme.field("écriture", "sur confirmation")
                 )
             theme.console.print(theme.field("outils", "carte AST + graphe d'appels"))
+            if self.store is not None:
+                stats = self.store.stats()
+                theme.console.print(
+                    theme.field("journal", f"{self.session_id[:8]} · "
+                                f"{stats['sessions']} sessions, "
+                                f"{stats['messages']} messages, "
+                                f"recherche {stats['search']}")
+                )
             from thot.plugins import discover as discover_plugins
             from thot.skills import discover as discover_skills
 
@@ -472,6 +530,27 @@ class Session:
         if command == "verdict":
             return self._verdict(argument)
 
+        if command in {"sessions", "historique"}:
+            return self._sessions(argument)
+
+        if command in {"resume", "reprendre"}:
+            return self._resume(argument)
+
+        if command in {"search", "cherche", "rechercher"}:
+            return self._search(argument)
+
+        if command in {"compact", "compacter"}:
+            return self._compact(argument)
+
+        if command == "export":
+            return self._export(argument)
+
+        if command == "import":
+            return self._import(argument)
+
+        if command in {"forget", "oublier"}:
+            return self._forget(argument)
+
         if command == "skills":
             from thot.skills import discover
 
@@ -510,6 +589,7 @@ class Session:
                 elapsed=self.recon.elapsed,
             )
             print_report(result)
+            self._record_audit(findings)
             theme.console.print()
             return None
 
@@ -554,6 +634,273 @@ class Session:
             return False
 
         theme.warn(f"Commande inconnue : /{command} — /help pour la liste.")
+        theme.console.print()
+        return None
+
+
+    def _record_audit(self, findings) -> None:
+        """Write the findings into the session log so `/search` reaches them.
+
+        A finding you half-remember from last week is worth as much as one
+        found today, and only if you can get back to it.
+        """
+        if not (self.store and self.session_id and findings):
+            return
+        lines = [
+            f"{f.severity.value.upper():<8} {f.rule}  "
+            f"{f.location.path}:{f.location.line}"
+            for f in findings[:40]
+        ]
+        extra = f"\n… et {len(findings) - 40} autres" if len(findings) > 40 else ""
+        try:
+            self.store.note(
+                self.session_id,
+                f"audit · {len(findings)} findings\n" + "\n".join(lines) + extra,
+            )
+        except (sqlite3.Error, OSError, KeyError):
+            pass
+
+    # -- session history --------------------------------------------------
+
+    def _need_store(self) -> bool:
+        if self.store is None:
+            theme.warn("Le journal des sessions n'a pas pu s'ouvrir.")
+            theme.console.print()
+            return False
+        return True
+
+    def _sessions(self, argument: str) -> None:
+        """What was worked on here before, most recent first."""
+        if not self._need_store():
+            return None
+        everywhere = argument.strip().lower() in {"all", "tout", "--all"}
+        found = self.store.sessions(None if everywhere else self.root, limit=20)
+
+        theme.console.print()
+        if not found:
+            theme.hint("Aucune session enregistrée.")
+            theme.console.print()
+            return None
+
+        for info in found:
+            mark = "▸ " if info.id == self.session_id else "  "
+            title = info.title or "(sans titre)"
+            if len(title) > 46:
+                title = title[:46].rsplit(" ", 1)[0] + "…"
+            detail = f"{title}  [dim]{info.message_count} msg[/dim]"
+            if everywhere:
+                detail += f"  [dim]{Path(info.root).name}[/dim]"
+            theme.console.print(theme.entry(mark + info.id[:8], detail, width=26))
+        theme.console.print()
+        theme.hint("`/resume <id>` pour en reprendre une.")
+        theme.console.print()
+        return None
+
+    def _resume(self, argument: str) -> None:
+        """Reopen a previous session — its transcript, and its live context."""
+        if not self._need_store():
+            return None
+
+        wanted = argument.strip()
+        if wanted:
+            resolved = self.store.resolve(wanted)
+            if resolved is None:
+                theme.warn(f"Aucune session ne commence par « {wanted} ».")
+                theme.console.print()
+                return None
+        else:
+            candidates = [
+                s for s in self.store.sessions(self.root, limit=5)
+                if s.id != self.session_id and s.message_count
+            ]
+            if not candidates:
+                theme.hint("Aucune session précédente sur ce dépôt.")
+                theme.console.print()
+                return None
+            resolved = candidates[0].id
+
+        info = self.store.info(resolved)
+        if info is None:
+            theme.warn("Session introuvable.")
+            theme.console.print()
+            return None
+
+        turns = self.store.turns(resolved, roles=("user", "assistant", "summary"))
+        self.messages = [
+            Message(role="user" if turn.role != "assistant" else "assistant",
+                    content=turn.content)
+            for turn in turns
+        ]
+        # The empty session opened at startup would otherwise litter the log.
+        if self.store and self.session_id and self.session_id != resolved:
+            current = self.store.info(self.session_id)
+            if current is not None and current.message_count == 0:
+                self.store.forget(self.session_id)
+
+        self.session_id = resolved
+        self.store.reopen(resolved)
+
+        restored = ""
+        if self.claude is not None and info.cli_session_id:
+            self.claude.resume(info.cli_session_id)
+            restored = " · fil du CLI restauré"
+
+        theme.console.print()
+        theme.ok(f"Session {resolved[:8]} reprise — {len(turns)} messages{restored}")
+        if info.title:
+            theme.hint(info.title)
+        theme.console.print()
+        return None
+
+    def _search(self, argument: str) -> None:
+        """Find a moment again: what was said, and what was found."""
+        if not self._need_store():
+            return None
+        query = argument.strip()
+        if not query:
+            theme.hint("Usage : /search <mots>")
+            theme.console.print()
+            return None
+
+        hits = self.store.find(query, limit=15)
+        theme.console.print()
+        if not hits:
+            theme.hint(f"Rien pour « {query} ».")
+            theme.console.print()
+            return None
+
+        from thot.state.search import CLOSE, OPEN
+
+        for hit in hits:
+            text = Text("   ")
+            text.append(f"{hit.session_id[:8]} ", style=theme.LAPIS)
+            text.append(f"{hit.role:<9} ", style="dim")
+            for index, chunk in enumerate(hit.snippet.replace(CLOSE, OPEN).split(OPEN)):
+                clean = " ".join(chunk.split())
+                if clean:
+                    text.append(clean, style=theme.ACCENT if index % 2 else theme.INK)
+                    text.append(" ")
+            theme.console.print(text)
+        theme.console.print()
+        theme.hint(f"{len(hits)} résultat(s) · `/resume <id>` pour y retourner.")
+        theme.console.print()
+        return None
+
+    def _compact(self, argument: str) -> None:
+        """Close this session on a summary and continue with a clean context.
+
+        The old session is kept whole and linked as the parent, so compacting
+        loses context, never evidence.
+        """
+        if not self._need_store():
+            return None
+
+        summary = argument.strip() or self._summarise()
+        if not summary:
+            theme.warn("Rien à résumer pour l'instant.")
+            theme.console.print()
+            return None
+
+        child = self.store.branch(self.session_id, summary)
+        self.session_id = child
+
+        recap = f"Résumé de la session précédente :\n{summary}"
+        if self.claude is not None:
+            self.claude.forget_thread()
+            self.store.link_cli(child, self.claude.session_id)
+            self.carry = recap
+            self.messages = []
+        else:
+            self.messages = [Message(role="user", content=recap)]
+
+        theme.console.print()
+        theme.ok(f"Session compactée → {child[:8]}")
+        theme.hint(" ".join(summary.split())[:100])
+        theme.console.print()
+        return None
+
+    def _summarise(self) -> str:
+        """Ask the model for the summary; fall back to the questions asked."""
+        spoken = [m for m in self.messages if m.role in {"user", "assistant"} and m.content]
+        if not spoken:
+            return ""
+
+        instruction = (
+            "Résume cette session en 10 lignes maximum : ce qui a été cherché, "
+            "ce qui a été trouvé, ce qui reste à faire. Pas de préambule."
+        )
+        try:
+            if self.claude is not None:
+                return self.claude.send(instruction).strip()
+            if self.provider is None:
+                self.provider = build_provider(self.config)
+            reply = self.provider.complete(
+                system="Tu résumes une session de travail.",
+                messages=[*self.messages, Message(role="user", content=instruction)],
+                tools=(),
+            )
+            return (reply.message.content or "").strip()
+        except (ProviderError, OSError):
+            asked = [m.content for m in spoken if m.role == "user"]
+            return "Questions posées :\n" + "\n".join(f"- {a}" for a in asked[-10:])
+
+    def _export(self, argument: str) -> None:
+        if not self._need_store():
+            return None
+        from thot.state import write_export
+
+        target = Path(argument.strip() or f"thot-session-{self.session_id[:8]}.json")
+        try:
+            written = write_export(self.store, self.session_id, target)
+        except (OSError, KeyError) as exc:
+            theme.error(str(exc))
+            theme.console.print()
+            return None
+        theme.console.print()
+        theme.ok(f"Session écrite dans {written}")
+        theme.console.print()
+        return None
+
+    def _import(self, argument: str) -> None:
+        if not self._need_store():
+            return None
+        from thot.state import read_import
+
+        source = argument.strip()
+        if not source:
+            theme.hint("Usage : /import <fichier.json>")
+            theme.console.print()
+            return None
+        try:
+            created = read_import(self.store, Path(source), root=self.root)
+        except (OSError, ValueError) as exc:
+            theme.error(str(exc))
+            theme.console.print()
+            return None
+        theme.console.print()
+        theme.ok(f"{len(created)} session(s) importée(s) — `/resume {created[-1][:8]}`")
+        theme.console.print()
+        return None
+
+    def _forget(self, argument: str) -> None:
+        if not self._need_store():
+            return None
+        wanted = argument.strip()
+        if not wanted:
+            theme.hint("Usage : /forget <id>")
+            theme.console.print()
+            return None
+        resolved = self.store.resolve(wanted)
+        if resolved is None:
+            theme.warn(f"Aucune session ne commence par « {wanted} ».")
+            theme.console.print()
+            return None
+        if resolved == self.session_id:
+            theme.warn("C'est la session en cours : `/clear` pour la vider.")
+            theme.console.print()
+            return None
+        self.store.forget(resolved)
+        theme.ok(f"Session {resolved[:8]} oubliée.")
         theme.console.print()
         return None
 

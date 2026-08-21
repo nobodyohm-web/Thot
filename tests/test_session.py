@@ -173,3 +173,78 @@ def test_deep_analysis_replaces_findings_with_verdicts(session, monkeypatch):
     )
     out = session._deep_analyse(session.recon.findings)
     assert any(f.confidence is Confidence.CONFIRMED for f in out)
+
+
+# -- the session log ---------------------------------------------------------
+
+
+def test_the_conversation_is_written_down_as_it_happens(session):
+    session.provider = ScriptedProvider([Message(role="assistant", content="Voilà.")])
+    session.messages.append(Message(role="user", content="salut"))
+    session._record("user", "salut")
+    session._turn()
+
+    turns = session.store.turns(session.session_id)
+    assert [(t.role, t.content) for t in turns] == [
+        ("user", "salut"),
+        ("assistant", "Voilà."),
+    ]
+
+
+def test_findings_are_searchable_long_after_the_audit(session):
+    session._record_audit(session.recon.findings)
+
+    hits = session.store.find("sink.os.system")
+    assert hits, "un finding doit rester retrouvable par /search"
+    assert "app.py" in hits[0].plain() or "src" in hits[0].plain()
+
+
+def test_resume_restores_the_transcript(session):
+    previous = session.store.start(session.root)
+    session.store.append(previous, "user", "question d'hier")
+    session.store.append(previous, "assistant", "réponse d'hier")
+
+    session._resume(previous[:8])
+
+    assert session.session_id == previous
+    assert [m.content for m in session.messages] == [
+        "question d'hier",
+        "réponse d'hier",
+    ]
+
+
+def test_resume_hands_the_thread_back_to_the_official_cli(session):
+    """Restoring a transcript is not restoring context; the CLI owns that."""
+    from thot.llm.claude_cli import ClaudeCli
+
+    session.claude = ClaudeCli(root=session.root)
+    previous = session.store.start(session.root)
+    session.store.append(previous, "user", "hier")
+    session.store.link_cli(previous, "cli-thread-42")
+
+    session._resume(previous)
+
+    assert session.claude.session_id == "cli-thread-42"
+    assert session.claude._started is True  # so the next call passes --resume
+
+
+def test_compacting_starts_a_new_thread_and_keeps_the_old_one(session):
+    session._record("user", "beaucoup de travail")
+    old = session.session_id
+
+    session._compact("résumé fourni à la main")
+
+    assert session.session_id != old
+    assert session.store.info(old).ended_at, "l'ancienne session doit être close"
+    assert session.store.info(session.session_id).parent_id == old
+    assert "résumé fourni" in session.messages[0].content
+
+
+def test_an_empty_startup_session_is_not_left_behind_by_resume(session):
+    previous = session.store.start(session.root)
+    session.store.append(previous, "user", "hier")
+    empty = session.session_id
+
+    session._resume(previous)
+
+    assert session.store.info(empty) is None

@@ -24,7 +24,6 @@ _SEVERITY_RANK = [
     Severity.INFO, Severity.LOW, Severity.MEDIUM, Severity.HIGH, Severity.CRITICAL
 ]
 
-DEFAULT_STORE = Path.home() / ".thot" / "store.db"
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -69,6 +68,50 @@ def build_parser() -> argparse.ArgumentParser:
         "run", help="Exécuter maintenant (ce que le planificateur appelle)"
     )
     sched_run.add_argument("name", nargs="?")
+
+    skills_cmd = subparsers.add_parser(
+        "skills", help="Les méthodes disponibles, et la bibliothèque optionnelle"
+    )
+    skills_sub = skills_cmd.add_subparsers(dest="action")
+    skills_list = skills_sub.add_parser("list", help="Les méthodes chargées")
+    skills_list.add_argument("query", nargs="*", help="Filtrer")
+    skills_search = skills_sub.add_parser(
+        "search", help="Chercher dans la bibliothèque optionnelle aussi"
+    )
+    skills_search.add_argument("query", nargs="+")
+    skills_show = skills_sub.add_parser("show", help="Afficher une méthode en entier")
+    skills_show.add_argument("name")
+    skills_install = skills_sub.add_parser(
+        "install", help="Activer une méthode de la bibliothèque optionnelle"
+    )
+    skills_install.add_argument("name", nargs="+")
+    skills_remove = skills_sub.add_parser("remove", help="Désactiver une méthode")
+    skills_remove.add_argument("name")
+
+    sessions = subparsers.add_parser(
+        "sessions", help="Les sessions de travail enregistrées"
+    )
+    sessions.add_argument("path", nargs="?", default=".",
+                          help="Limiter à un dépôt (défaut : le dossier courant)")
+    sessions.add_argument("--all", action="store_true",
+                          help="Toutes les sessions, tous dépôts confondus")
+    sessions.add_argument("--show", metavar="ID", help="Afficher une session entière")
+    sessions.add_argument("--forget", metavar="ID", help="Supprimer une session")
+
+    search = subparsers.add_parser(
+        "search", help="Chercher dans tout ce que Thot a déjà dit ou trouvé"
+    )
+    search.add_argument("query", nargs="+", help="Les mots à chercher")
+    search.add_argument("--all", action="store_true",
+                        help="Chercher hors du dépôt courant aussi")
+    search.add_argument("--limit", type=int, default=20)
+
+    export = subparsers.add_parser("export", help="Écrire une session en JSON")
+    export.add_argument("session", help="Identifiant de session (préfixe accepté)")
+    export.add_argument("--out", help="Fichier de sortie")
+
+    importer = subparsers.add_parser("import", help="Recharger une session exportée")
+    importer.add_argument("file")
 
     verdicts = subparsers.add_parser(
         "verdicts", help="Les décisions d'audit mémorisées"
@@ -183,6 +226,7 @@ def _cmd_audit(args) -> int:
     from thot.pipeline import run_audit
     from thot.report.json_report import render_json
     from thot.report.markdown_report import render_markdown
+    from thot.paths import run_store
     from thot.store.db import Store
 
     root = Path(args.path).resolve()
@@ -202,7 +246,7 @@ def _cmd_audit(args) -> int:
             file=sys.stderr,
         )
 
-    store = None if args.no_store else Store.open(DEFAULT_STORE)
+    store = None if args.no_store else Store.open(run_store())
 
     memory = None
     if not args.no_memory:
@@ -318,6 +362,7 @@ def _cmd_schedule(args) -> int:
 def _run_scheduled(name: str | None) -> int:
     """Execute due jobs and print only what is new. Silence is the success case."""
     from thot.memory.sqlite import SqliteMemory
+    from thot.paths import run_store
     from thot.schedule import jobs
     from thot.schedule.runner import run_job
     from thot.store.db import Store
@@ -327,7 +372,7 @@ def _run_scheduled(name: str | None) -> int:
         print(f"Aucun audit nommé « {name} ».", file=sys.stderr)
         return EXIT_USAGE
 
-    store = Store.open(DEFAULT_STORE)
+    store = Store.open(run_store())
     memory = SqliteMemory.open()
     found_something = False
     try:
@@ -376,6 +421,162 @@ def _cmd_verdicts(args) -> int:
         memory.close()
 
 
+def _cmd_skills(args) -> int:
+    """Browse the library, and move an optional skill into the loaded set."""
+    from thot.skills.loader import discover, install, optional, uninstall
+
+    action = getattr(args, "action", None) or "list"
+    root = Path.cwd().resolve()
+
+    if action == "install":
+        for name in args.name:
+            try:
+                target = install(name)
+            except KeyError:
+                print(f"« {name} » n'est pas dans la bibliothèque optionnelle.",
+                      file=sys.stderr)
+                return EXIT_USAGE
+            print(f"{target.name} activé → {target}")
+        return 0
+
+    if action == "remove":
+        if uninstall(args.name):
+            print(f"{args.name} désactivé.")
+            return 0
+        print(f"« {args.name} » n'est pas une méthode installée par toi.",
+              file=sys.stderr)
+        return EXIT_USAGE
+
+    if action == "show":
+        for item in discover(root):
+            if item.name == args.name:
+                print(f"# {item.name}\n\n{item.description}\n")
+                print(item.body)
+                return 0
+        print(f"Méthode inconnue : {args.name}", file=sys.stderr)
+        return EXIT_USAGE
+
+    query = " ".join(getattr(args, "query", []) or [])
+    loaded = discover(root)
+    shown = [s for s in loaded if not query or s.matches(query)]
+
+    for item in shown:
+        label = f"{item.category}/{item.name}" if item.category else item.name
+        print(f"{label:<52} {' '.join(item.description.split())[:64]}")
+    print(f"\n{len(shown)}/{len(loaded)} méthode(s) chargée(s).")
+
+    if action == "search" or not shown:
+        spare = [s for s in optional() if not query or s.matches(query)]
+        installed = {s.name for s in loaded}
+        spare = [s for s in spare if s.name not in installed]
+        if spare:
+            print(f"\nBibliothèque optionnelle ({len(spare)}) — "
+                  f"`thot skills install <nom>` :")
+            for item in spare[:40]:
+                label = f"{item.category}/{item.name}" if item.category else item.name
+                print(f"  {label:<50} {' '.join(item.description.split())[:60]}")
+    return 0
+
+
+def _cmd_sessions(args) -> int:
+    """List, show, or delete recorded sessions."""
+    from thot.state import SessionStore
+
+    store = SessionStore.open()
+    try:
+        if args.forget:
+            resolved = store.resolve(args.forget)
+            if resolved is None:
+                print(f"Aucune session « {args.forget} ».", file=sys.stderr)
+                return EXIT_USAGE
+            store.forget(resolved)
+            print(f"Session {resolved[:8]} supprimée.")
+            return 0
+
+        if args.show:
+            resolved = store.resolve(args.show)
+            if resolved is None:
+                print(f"Aucune session « {args.show} ».", file=sys.stderr)
+                return EXIT_USAGE
+            info = store.info(resolved)
+            print(f"{info.id}  {info.title or '(sans titre)'}")
+            print(f"{info.root}  ·  {info.started_at}")
+            print()
+            for turn in store.turns(resolved):
+                print(f"— {turn.role} —")
+                print(turn.content)
+                print()
+            return 0
+
+        root = None if args.all else str(Path(args.path).resolve())
+        found = store.sessions(root, limit=50)
+        if not found:
+            print("Aucune session enregistrée.")
+            return 0
+        for info in found:
+            title = info.title or "(sans titre)"
+            marker = " " if info.ended_at else "*"
+            print(f"{marker}{info.id[:8]}  {info.message_count:>4} msg  "
+                  f"{info.started_at[:16]}  {title[:60]}")
+        return 0
+    finally:
+        store.close()
+
+
+def _cmd_search(args) -> int:
+    """Search every session, or just this repository's."""
+    from thot.state import SessionStore
+    from thot.state.search import CLOSE, OPEN
+
+    store = SessionStore.open()
+    try:
+        root = None if args.all else str(Path.cwd().resolve())
+        hits = store.find(" ".join(args.query), root=root, limit=args.limit)
+        if not hits and not args.all:
+            hits = store.find(" ".join(args.query), limit=args.limit)
+        if not hits:
+            print("Aucun résultat.")
+            return 0
+        for hit in hits:
+            text = hit.snippet.replace(OPEN, "\033[1m").replace(CLOSE, "\033[0m")
+            print(f"{hit.session_id[:8]}  {hit.role:<9} {' '.join(text.split())}")
+        return 0
+    finally:
+        store.close()
+
+
+def _cmd_export(args) -> int:
+    from thot.state import SessionStore, write_export
+
+    store = SessionStore.open()
+    try:
+        resolved = store.resolve(args.session)
+        if resolved is None:
+            print(f"Aucune session « {args.session} ».", file=sys.stderr)
+            return EXIT_USAGE
+        target = Path(args.out or f"thot-session-{resolved[:8]}.json")
+        print(write_export(store, resolved, target))
+        return 0
+    finally:
+        store.close()
+
+
+def _cmd_import(args) -> int:
+    from thot.state import SessionStore, read_import
+
+    store = SessionStore.open()
+    try:
+        created = read_import(store, Path(args.file))
+        print(f"{len(created)} session(s) importée(s) : "
+              + ", ".join(i[:8] for i in created))
+        return 0
+    except (OSError, ValueError) as exc:
+        print(f"Erreur : {exc}", file=sys.stderr)
+        return EXIT_USAGE
+    finally:
+        store.close()
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     try:
@@ -397,6 +598,16 @@ def main(argv: list[str] | None = None) -> int:
             return _cmd_schedule(args)
         if args.command == "verdicts":
             return _cmd_verdicts(args)
+        if args.command == "skills":
+            return _cmd_skills(args)
+        if args.command == "sessions":
+            return _cmd_sessions(args)
+        if args.command == "search":
+            return _cmd_search(args)
+        if args.command == "export":
+            return _cmd_export(args)
+        if args.command == "import":
+            return _cmd_import(args)
         if args.command == "audit":
             return _cmd_audit(args)
     except AuthorizationError as exc:

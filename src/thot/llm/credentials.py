@@ -25,7 +25,7 @@ from thot.llm.openai_compat import (
     list_local_models,
 )
 
-CONFIG_PATH = Path.home() / ".thot" / "config.json"
+from thot.paths import config_file
 CLAUDE_CREDENTIALS_FILE = Path.home() / ".claude" / ".credentials.json"
 KEYCHAIN_SERVICE = "Claude Code-credentials"
 
@@ -55,20 +55,21 @@ class Config:
 
 def load_config() -> Config | None:
     try:
-        raw = json.loads(CONFIG_PATH.read_text())
+        raw = json.loads(config_file().read_text())
         return Config(**raw)
     except (OSError, ValueError, TypeError):
         return None
 
 
 def save_config(config: Config) -> None:
-    CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
-    CONFIG_PATH.write_text(json.dumps(asdict(config), indent=2))
-    os.chmod(CONFIG_PATH, 0o600)
+    path = config_file()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(asdict(config), indent=2))
+    os.chmod(path, 0o600)
 
 
 def forget() -> None:
-    CONFIG_PATH.unlink(missing_ok=True)
+    config_file().unlink(missing_ok=True)
 
 
 # --------------------------------------------------------------------------

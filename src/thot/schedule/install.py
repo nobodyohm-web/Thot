@@ -15,6 +15,8 @@ from pathlib import Path
 
 from thot.schedule.jobs import Job, cron_expression
 
+from thot.paths import log_file
+
 LAUNCH_AGENTS = Path.home() / "Library" / "LaunchAgents"
 
 
@@ -55,8 +57,8 @@ def launchd_plist(job: Job) -> str:
   <dict>
 {_launchd_calendar(job.schedule)}
   </dict>
-  <key>StandardOutPath</key><string>{Path.home()}/.thot/{job.name}.log</string>
-  <key>StandardErrorPath</key><string>{Path.home()}/.thot/{job.name}.log</string>
+  <key>StandardOutPath</key><string>{log_file(job.name)}</string>
+  <key>StandardErrorPath</key><string>{log_file(job.name)}</string>
   <key>RunAtLoad</key><false/>
 </dict>
 </plist>
@@ -66,7 +68,7 @@ def launchd_plist(job: Job) -> str:
 def crontab_line(job: Job) -> str:
     return (
         f"{cron_expression(job.schedule)} {_thot_binary()} schedule run {job.name} "
-        f">> {Path.home()}/.thot/{job.name}.log 2>&1"
+        f">> {log_file(job.name)} 2>&1"
     )
 
 

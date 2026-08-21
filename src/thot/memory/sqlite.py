@@ -12,7 +12,7 @@ from pathlib import Path
 
 from thot.memory.base import Decision, Verdict
 
-DEFAULT_PATH = Path.home() / ".thot" / "memory.db"
+from thot.paths import memory_db
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS verdicts (
@@ -45,7 +45,7 @@ class SqliteMemory:
 
     @classmethod
     def open(cls, path: Path | None = None) -> "SqliteMemory":
-        target = Path(path or DEFAULT_PATH)
+        target = Path(path or memory_db())
         target.parent.mkdir(parents=True, exist_ok=True)
         connection = sqlite3.connect(str(target))
         connection.row_factory = sqlite3.Row

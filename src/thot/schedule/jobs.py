@@ -13,7 +13,9 @@ from pathlib import Path
 
 from thot.contracts import Severity
 
-REGISTRY_PATH = Path.home() / ".thot" / "schedule.json"
+from thot.paths import schedule_file
+
+REGISTRY_PATH = schedule_file()
 
 # Deliberately not a raw cron expression. Someone reading `daily` in a config
 # knows what it means; nobody reads `17 3 * * *` and feels the same.

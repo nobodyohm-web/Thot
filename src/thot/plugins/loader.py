@@ -157,7 +157,9 @@ def library_dir() -> Path | None:
 
 
 def user_dir() -> Path:
-    return Path.home() / ".thot" / PLUGINS_DIRNAME
+    from thot.paths import user_dir as thot_user_dir
+
+    return thot_user_dir(PLUGINS_DIRNAME)
 
 
 def repo_dir(root: Path) -> Path:

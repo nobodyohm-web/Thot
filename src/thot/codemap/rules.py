@@ -39,7 +39,9 @@ class RuleError(ThotError):
 
 
 def user_rules_dir() -> Path:
-    return Path.home() / ".thot" / RULES_DIRNAME
+    from thot.paths import user_dir as thot_user_dir
+
+    return thot_user_dir(RULES_DIRNAME)
 
 
 def _rule_files(directory: Path) -> list[Path]:
