@@ -62,6 +62,10 @@ class EngineCapabilities:
     max_parallel: int = 1
     tiering: bool = False  # can route cheap work to a smaller model
     stateful: bool = False  # keeps heavy state outside the context window
+    # Whether the backend hands back real token counts. Hermes's one-shot
+    # mode does not, and an engine that says so must return an empty `Usage`
+    # rather than a plausible-looking zero-cost figure.
+    reports_usage: bool = True
 
 
 class Engine(Protocol):

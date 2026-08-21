@@ -262,6 +262,10 @@ def build_parser() -> argparse.ArgumentParser:
     audit.add_argument("path", nargs="?", default=".")
     audit.add_argument("--deps", action="store_true",
                        help="Vérifier aussi les dépendances contre OSV.dev (réseau)")
+    audit.add_argument(
+        "--engine", choices=["claude", "hermes", "prime"], default="",
+        help="Quel agent argumente les findings avec --deep (défaut : celui de `thot login`)",
+    )
     audit.add_argument("--sandbox", choices=["local", "docker"],
                        help="Où s'exécutent les commandes de la session")
     audit.add_argument("--json", action="store_true", help="Sortie JSON")
@@ -369,11 +373,22 @@ def _cmd_audit(args) -> int:
     root = Path(args.path).resolve()
 
     engine = None
+    if getattr(args, "engine", "") and not args.deep:
+        # Choosing who argues the findings, without asking anyone to argue
+        # them. Silently ignoring the flag would read as if it had worked.
+        print(
+            f"`--engine {args.engine}` ne sert qu'avec `--deep` : sans lui, "
+            "aucun agent n'est appelé.",
+            file=sys.stderr,
+        )
     if args.deep:
         from thot.engine.factory import NoEngine, build_engine
 
         try:
-            engine = build_engine(root, max_parallel=args.parallel)
+            engine = build_engine(
+                root, max_parallel=args.parallel,
+                prefer=getattr(args, "engine", ""),
+            )
         except NoEngine as exc:
             print(f"Analyse assistée impossible : {exc}", file=sys.stderr)
             return EXIT_ERROR
@@ -1283,6 +1298,16 @@ def _cmd_fusion(args) -> int:
         if len(wired) != len(steps):
             print()
             print("`thot fusion wire` pour donner la carte aux deux agents.")
+
+        from thot.engine.factory import available_engines
+
+        usable = available_engines()
+        print()
+        # The reverse direction: the map goes out to the agents, and the
+        # agents come back as engines that argue findings.
+        print(f"Moteurs pour `--deep` : {', '.join(usable) if usable else 'aucun'}")
+        if usable:
+            print(f"   thot audit . --deep --engine {usable[-1]}")
         return EXIT_OK
 
     if action == "wire":

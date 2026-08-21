@@ -42,10 +42,35 @@ les deux fichiers ne branche rien tant que `plugins.enabled` ne le nomme pas.
 L'activation passe par le CLI de Hermes, jamais par une édition de son
 `config.yaml` — ce fichier est le sien, avec son schéma et ses migrations.
 
+Et le renfort marche dans les deux sens : Hermes et Prime sont aussi des
+**moteurs** pour `thot audit --deep`, l'étape qui fait argumenter puis réfuter
+chaque finding par un modèle.
+
+```bash
+thot audit . --deep                    # l'agent de `thot login`
+thot audit . --deep --engine hermes    # Hermes argumente et réfute
+thot audit . --deep --engine prime     # Prime, idem
+```
+
+Chaque agent s'authentifie **comme lui-même**, sur ton compte : Thot lance sa
+ligne de commande, ne l'importe jamais et ne détient aucun jeton. Le verdict
+mémorisé porte le nom de celui qui a décidé — `refuted · hermes` — parce
+qu'une décision doit rester attribuable.
+
+Ce que chacun apporte, mesuré sur la même injection :
+
+| moteur | durée | jetons rapportés |
+|---|---|---|
+| `prime` | 48 s | oui, avec estimation de coût |
+| `hermes` | 159 s | **non** — `-z` n'imprime que la réponse |
+
+Un moteur qui ne sait pas compter ne fabrique pas de chiffre : il le déclare
+(`reports_usage`), et l'appelant peut dire « non mesuré » au lieu d'afficher un
+zéro qui aurait l'air vrai.
+
 Ce qui n'est **pas** fusionné, et le reste sciemment : les trois gardent leur
-configuration séparée (`~/.thot`, `~/.hermes`, `~/.prime`), leurs bibliothèques de
-méthodes et leurs mémoires. Hermes et Prime ne sont pas encore des moteurs
-pour `thot audit --deep`, qui passe toujours par le CLI Claude.
+configuration séparée (`~/.thot`, `~/.hermes`, `~/.prime`), leurs bibliothèques
+de méthodes et leurs mémoires.
 
 ## Installation
 
