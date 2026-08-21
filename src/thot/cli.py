@@ -263,6 +263,24 @@ def build_parser() -> argparse.ArgumentParser:
     skills_scan.add_argument("--source", default="community",
                              choices=["builtin", "trusted", "community"])
 
+    plugins_cmd = subparsers.add_parser(
+        "plugins", help="Les plugins chargés, et ceux qu'un dépôt propose"
+    )
+    plugins_sub = plugins_cmd.add_subparsers(dest="action")
+    plugins_list = plugins_sub.add_parser(
+        "list", help="Ce qui est chargé ici, et ce qui a été refusé"
+    )
+    plugins_list.add_argument("root", nargs="?", default=".",
+                              help="Dépôt à inspecter")
+    plugins_trust = plugins_sub.add_parser(
+        "trust", help="Autoriser un plugin de dépôt — après l'avoir lu"
+    )
+    plugins_trust.add_argument("path", help="Le dossier qui contient plugin.yaml")
+    plugins_untrust = plugins_sub.add_parser(
+        "untrust", help="Retirer cette autorisation"
+    )
+    plugins_untrust.add_argument("path")
+
     sessions = subparsers.add_parser(
         "sessions", help="Les sessions de travail enregistrées"
     )
@@ -483,10 +501,20 @@ def _cmd_audit(args) -> int:
         if memory is not None:
             memory.close()
 
-    from thot.plugins import discover as _discover_plugins
+    from thot.plugins import discover_report as _discover_plugins
     from thot.plugins import invoke_hook as _invoke_hook
 
-    _invoke_hook(_discover_plugins(root), "post_audit", result=result, root=root)
+    _plugins, _refused = _discover_plugins(root)
+    _invoke_hook(_plugins, "post_audit", result=result, root=root)
+
+    # Said on stderr, next to the report rather than inside it: a repository
+    # that ships an auto-loading plugin is telling you something about itself,
+    # and silence would read as "there was nothing there".
+    for _item in _refused:
+        print(
+            f"Plugin non exécuté : {_item.name} ({_item.path}) — {_item.reason}",
+            file=sys.stderr,
+        )
 
     if result.remembered:
         print(
@@ -967,6 +995,13 @@ def _cmd_gateway(args) -> int:
         allow = tuple(dict.fromkeys([*existing.allow, *args.sender]))
         config.upsert(args.platform, existing.settings, allow)
         print(f"{args.platform} : {len(allow)} identifiant(s) autorisé(s).")
+        # Recorded either way — but say so when the platform has no inbound
+        # side, rather than let someone wait for an answer that cannot come.
+        from thot.gateway.base import RECEIVING
+
+        if args.platform not in RECEIVING:
+            print(f"Note : {args.platform} n'a pas de réception — ce canal "
+                  f"restera sortant seulement.")
         return 0
 
     if action == "remove":
@@ -1084,6 +1119,50 @@ def _cmd_mcp(args) -> int:
         print("\nHors catalogue, déjà connectés : " + ", ".join(extra))
     print(f"\n{len(connected & {s.name for s in entries})}/{len(entries)} "
           f"connecté(s) · `thot mcp add <nom>`")
+    return 0
+
+
+def _cmd_plugins(args) -> int:
+    """What runs inside Thot, and what asked to run and was not allowed to.
+
+    Trust is granted per directory and per content: `trust` records a digest
+    of everything in the plugin, so the next edit — theirs or anyone's —
+    revokes it and says so.
+    """
+    from thot.plugins import discover_report, trust
+    from thot.plugins.loader import MANIFEST
+
+    action = getattr(args, "action", None) or "list"
+
+    if action == "untrust":
+        folder = Path(args.path).expanduser().resolve()
+        if trust.revoke(folder):
+            print(f"{folder.name} : autorisation retirée.")
+            return 0
+        print(f"{folder} n'était pas autorisé.", file=sys.stderr)
+        return EXIT_USAGE
+
+    if action == "trust":
+        folder = Path(args.path).expanduser().resolve()
+        if not (folder / MANIFEST).is_file():
+            print(f"Aucun {MANIFEST} dans {folder}.", file=sys.stderr)
+            return EXIT_USAGE
+        digest = trust.trust(folder)
+        print(f"{folder.name} autorisé — empreinte {digest[:12]}…")
+        print("Toute modification du dossier annule cette autorisation.")
+        return 0
+
+    root = Path(getattr(args, "root", ".") or ".").expanduser().resolve()
+    loaded, refused = discover_report(root)
+    for plugin in loaded:
+        state = plugin.error or " ".join(plugin.description.split()) or "chargé"
+        mark = " " if plugin.ok else "▲"
+        print(f"{mark} {plugin.name:<24} {state[:60]}")
+    for item in refused:
+        print(f"▲ {item.name:<24} {item.reason}")
+        print(f"  {item.path}")
+    if not loaded and not refused:
+        print("Aucun plugin.")
     return 0
 
 
@@ -1324,6 +1403,8 @@ def main(argv: list[str] | None = None) -> int:
             return _cmd_mcp(args)
         if args.command == "skills":
             return _cmd_skills(args)
+        if args.command == "plugins":
+            return _cmd_plugins(args)
         if args.command == "sessions":
             return _cmd_sessions(args)
         if args.command == "search":

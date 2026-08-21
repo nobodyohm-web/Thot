@@ -62,6 +62,10 @@ class Platform(Protocol):
         """Messages since the last call. Empty when the platform is one-way."""
 
 
+# The platforms whose `poll` can actually return something.
+RECEIVING = frozenset({"telegram"})
+
+
 @dataclass
 class Channel:
     """One configured destination, and who may command through it."""
@@ -72,13 +76,19 @@ class Channel:
 
     @property
     def two_way(self) -> bool:
-        """Inbound commands need an allowlist. No allowlist, no commands.
+        """Inbound commands need an allowlist *and* a platform that listens.
 
         Hermes offers an `ALLOW_ALL_USERS` escape hatch for development.
         Thot does not: this gateway can start audits and record verdicts,
         so an unnamed commander is not a convenience, it is an open door.
+
+        The second half of the condition is the one that bites. Of the five
+        platforms only Telegram has an inbound side; the rest return an empty
+        list for ever. An allowlist on those made `serve` announce it was
+        listening on a channel that can never hear anything — and, worse,
+        suppressed the warning that says nothing can.
         """
-        return bool(self.allow)
+        return bool(self.allow) and self.platform in RECEIVING
 
     def allows(self, sender: str) -> bool:
         return bool(sender) and str(sender) in self.allow

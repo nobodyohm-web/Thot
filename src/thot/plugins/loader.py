@@ -11,6 +11,12 @@ something shipped uses it. Adding a sixth is a decision, not a convenience.
 The property that matters is isolation. A plugin that raises costs its own
 feature and nothing else: an audit that dies because a notification hook threw
 is worse than an audit with no notifications.
+
+Isolation says nothing about trust, and the two must not be confused. Loading
+a plugin executes its module body; a plugin supplied by the repository under
+audit is therefore code Thot was asked to distrust, running under the account
+of the person auditing it. Those are loaded only once their exact content has
+been approved — see `thot.plugins.trust`.
 """
 
 from __future__ import annotations
@@ -66,6 +72,29 @@ class Plugin:
     @property
     def ok(self) -> bool:
         return self.error is None
+
+
+@dataclass(frozen=True)
+class Refused:
+    """A repository plugin that was found and not executed, and why."""
+
+    name: str
+    path: Path
+    reason: str
+
+
+# What the user is told, per trust state. `changed` is worth its own sentence:
+# an approved plugin that was edited is what a supply-chain update looks like
+# from here, and "not approved" would bury that.
+REFUSAL = {
+    "unknown": (
+        "code non approuvé — lis-le, puis `thot plugins trust <chemin>`"
+    ),
+    "changed": (
+        "le code a changé depuis son approbation — relis-le, puis "
+        "`thot plugins trust <chemin>`"
+    ),
+}
 
 
 def _read_manifest(path: Path) -> dict | None:
@@ -171,17 +200,61 @@ def bundled() -> list[Plugin]:
     return load_from(directory) if directory else []
 
 
-def discover(root: Path | None = None) -> list[Plugin]:
-    """Shipped, then personal, then repo. Later wins on name."""
-    sources = [p for p in (library_dir(), user_dir()) if p is not None]
-    if root is not None:
-        sources.append(repo_dir(root))
+def _candidate_folders(directory: Path) -> list[Path]:
+    """Directories that claim to be plugins, without importing any of them."""
+    directory = Path(directory)
+    if not directory.is_dir():
+        return []
+    return sorted(
+        p for p in directory.iterdir() if p.is_dir() and (p / MANIFEST).is_file()
+    )
+
+
+def _declared_name(folder: Path) -> str:
+    """The plugin's name, read from the manifest — parsed, never executed."""
+    manifest = _read_manifest(folder / MANIFEST) or {}
+    return str(manifest.get("name") or folder.name)
+
+
+def discover_report(root: Path | None = None) -> tuple[list[Plugin], list[Refused]]:
+    """Everything loaded here, plus what this repository offered and was refused.
+
+    Shipped and personal plugins are the user's own installation: they are
+    loaded. The repository's are not — they are code from the subject of the
+    audit, and each one is imported only when its current content has been
+    approved by name and by digest.
+    """
+    from thot.plugins import trust
 
     by_name: dict[str, Plugin] = {}
-    for source in sources:
-        for plugin in load_from(source):
-            by_name[plugin.name] = plugin
-    return sorted(by_name.values(), key=lambda p: p.name)
+    for source in (library_dir(), user_dir()):
+        if source is not None:
+            for plugin in load_from(source):
+                by_name[plugin.name] = plugin
+
+    refused: list[Refused] = []
+    if root is not None:
+        for folder in _candidate_folders(repo_dir(root)):
+            state = trust.status(folder)
+            if state != "trusted":
+                refused.append(
+                    Refused(
+                        name=_declared_name(folder),
+                        path=folder,
+                        reason=REFUSAL[state],
+                    )
+                )
+                continue
+            plugin = _load_one(folder)
+            if plugin is not None:
+                by_name[plugin.name] = plugin
+
+    return sorted(by_name.values(), key=lambda p: p.name), refused
+
+
+def discover(root: Path | None = None) -> list[Plugin]:
+    """Shipped, then personal, then this repository's approved ones."""
+    return discover_report(root)[0]
 
 
 def invoke_hook(plugins: list[Plugin], name: str, **kwargs: Any) -> list[Any]:

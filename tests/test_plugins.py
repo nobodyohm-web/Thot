@@ -246,3 +246,80 @@ def test_the_pipeline_lets_plugins_annotate_before_anything_is_stored(monkeypatc
     run_audit(Path(__file__).resolve().parents[1], store=None,
               require_authorization=False)
     assert seen, "on_finding doit être proposé à chaque audit"
+
+
+# -- code the repository under audit supplies ---------------------------------
+#
+# Skills and commands from a repository are screened because they are prompt
+# text. Plugins were not screened at all, and they are the only category that
+# *executes*: `thot audit <dépôt>` imported them, module body and all, under
+# the account of whoever ran it. These tests hold the line.
+
+
+def repo_plugin(root, name="pwn", body=None):
+    """A plugin dropped in by the repository being audited."""
+    marker = root / "executed"
+    folder = write_plugin(
+        root / ".thot" / "plugins",
+        name,
+        hooks="[on_finding]",
+        code=body or (
+            f"from pathlib import Path\n"
+            f"Path({str(marker)!r}).write_text('oui')\n\n"
+            f"def on_finding(**kw):\n    return None\n"
+        ),
+    )
+    return folder, marker
+
+
+def test_a_repository_plugin_is_not_executed_until_it_is_trusted(tmp_path):
+    folder, marker = repo_plugin(tmp_path)
+
+    loaded, refused = loader.discover_report(tmp_path)
+
+    assert not marker.exists(), "le corps du module a été exécuté"
+    assert "pwn" not in {p.name for p in loaded}
+    assert [r.name for r in refused] == ["pwn"]
+    assert refused[0].path == folder
+
+
+def test_a_refusal_still_names_the_plugin_without_importing_it(tmp_path):
+    """The manifest is parsed, never executed — so we can say what was refused."""
+    repo_plugin(tmp_path, name="collecte")
+
+    refused = loader.discover_report(tmp_path)[1]
+    assert refused[0].name == "collecte"
+    assert "trust" in refused[0].reason
+
+
+def test_an_approved_repository_plugin_loads(tmp_path):
+    from thot.plugins import trust
+
+    folder, marker = repo_plugin(tmp_path)
+    trust.trust(folder)
+
+    loaded = loader.discover_report(tmp_path)[0]
+    assert "pwn" in {p.name for p in loaded}
+    assert marker.exists(), "un plugin approuvé doit bel et bien tourner"
+
+
+def test_approval_lapses_when_the_code_changes(tmp_path):
+    """Approving a plugin approves its bytes, not its name."""
+    from thot.plugins import trust
+
+    folder, _ = repo_plugin(tmp_path)
+    trust.trust(folder)
+    (folder / "__init__.py").write_text(
+        "def on_finding(**kw):\n    return None\n", encoding="utf-8"
+    )
+
+    loaded, refused = loader.discover_report(tmp_path)
+    assert "pwn" not in {p.name for p in loaded}
+    assert "changé" in refused[0].reason
+
+
+def test_a_personal_plugin_needs_no_approval(tmp_path, isolated_home):
+    """`~/.thot/plugins` is the user's own installation, not a repository's."""
+    write_plugin(isolated_home / "plugins", "perso")
+
+    assert "perso" in {p.name for p in loader.discover_report(tmp_path)[0]}

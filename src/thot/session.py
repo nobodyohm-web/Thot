@@ -343,6 +343,7 @@ class Session:
             theme.hint(f"Reconnaissance en {recon.elapsed:.2f} s. Prêt.")
 
         self._warn_about_refused_skills()
+        self._warn_about_refused_plugins()
         theme.console.print()
 
     def _warn_about_refused_skills(self) -> None:
@@ -364,6 +365,26 @@ class Session:
         )
         for item in refused:
             theme.console.print(theme.entry(item.name, item.summary()[:70], width=20))
+
+    def _warn_about_refused_plugins(self) -> None:
+        """Say out loud when this repository tried to supply executable code.
+
+        Louder than the skills warning, and deliberately so: a refused skill
+        was text this repository wanted the model to read, a refused plugin
+        was code it wanted this machine to run.
+        """
+        from thot.plugins import discover_report
+
+        refused = discover_report(self.root)[1]
+        if not refused:
+            return
+        theme.console.print()
+        theme.warn(
+            f"{len(refused)} plugin(s) fourni(s) par ce dépôt n'ont pas été "
+            f"exécutés — charger un plugin, c'est lancer son code ici."
+        )
+        for item in refused:
+            theme.console.print(theme.entry(item.name, item.reason[:70], width=20))
 
     @staticmethod
     def _whoami() -> str:
@@ -770,11 +791,11 @@ class Session:
             return None
 
         if command == "plugins":
-            from thot.plugins import discover
+            from thot.plugins import discover_report
 
-            loaded = discover(self.root)
+            loaded, refused = discover_report(self.root)
             theme.console.print()
-            if not loaded:
+            if not loaded and not refused:
                 theme.hint("Aucun plugin.")
             for plugin in loaded:
                 detail = plugin.error or " ".join(plugin.description.split())
@@ -782,8 +803,17 @@ class Session:
                     detail = detail[:48].rsplit(" ", 1)[0] + "…"
                 mark = "" if plugin.ok else "▲ "
                 theme.console.print(theme.entry(plugin.name, mark + detail, width=26))
+            for item in refused:
+                theme.console.print(
+                    theme.entry(item.name, "▲ " + item.reason[:60], width=26)
+                )
             theme.console.print()
             theme.hint("~/.thot/plugins/<nom>/ pour en ajouter un.")
+            if refused:
+                theme.hint(
+                    "Un plugin de ce dépôt s'exécute ici : lis-le, puis "
+                    "`thot plugins trust <chemin>`."
+                )
             theme.console.print()
             return None
 

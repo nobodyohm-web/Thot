@@ -13,21 +13,27 @@ from thot.plugins.notify import (
 from thot.plugins.loader import (
     VALID_HOOKS,
     Plugin,
+    Refused,
     bundled,
     discover,
+    discover_report,
     invoke_hook,
     load_from,
 )
+from thot.plugins import trust
 
 __all__ = [
     "VALID_HOOKS",
     "Plugin",
+    "Refused",
     "bundled",
     "discover",
+    "discover_report",
     "annotate_findings",
     "forget_plugins",
     "invoke_hook",
     "notify_verdict",
     "notify_write",
     "load_from",
+    "trust",
 ]

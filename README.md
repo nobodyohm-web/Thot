@@ -645,6 +645,20 @@ Un plugin est un dossier avec `plugin.yaml` et `__init__.py`, dans
 Agent. Un plugin qui plante coûte sa propre fonctionnalité et rien d'autre :
 son erreur est enregistrée et affichée par `/plugins`.
 
+**Ceux du dépôt audité ne sont pas exécutés sans ton accord.** Charger un
+plugin, c'est lancer son code ici, sous ton compte — et le dépôt audité est
+précisément celui dont Thot se méfie. Ses plugins sont donc nommés, jamais
+importés, tant que tu ne les as pas approuvés :
+
+```bash
+thot plugins list <dépôt>                 # chargés, et refusés avec la raison
+thot plugins trust <dépôt>/.thot/plugins/x   # après l'avoir lu
+thot plugins untrust <dépôt>/.thot/plugins/x
+```
+
+L'approbation porte sur le contenu, pas sur le nom : Thot enregistre une
+empreinte du dossier, et la moindre modification la révoque en le disant.
+
 Trois sont livrés :
 
 | Plugin | Ce qu'il fait |

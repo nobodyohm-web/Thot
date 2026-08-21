@@ -49,10 +49,23 @@ def test_the_environment_overrides_the_file_field_by_field(isolated_home, monkey
 
 def test_an_allowlist_can_be_given_as_one_environment_variable(isolated_home,
                                                                monkeypatch):
-    monkeypatch.setenv("NTFY_TOPIC", "t")
-    monkeypatch.setenv("NTFY_ALLOWED_USERS", "alice, bob;carol")
+    monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "t")
+    monkeypatch.setenv("TELEGRAM_HOME_CHANNEL", "1")
+    monkeypatch.setenv("TELEGRAM_ALLOWED_USERS", "alice, bob;carol")
 
     assert config.load()[0].allow == ("alice", "bob", "carol")
+
+
+def test_a_send_only_platform_never_claims_it_can_be_commanded(isolated_home):
+    """An allowlist is a permission, not a receiver.
+
+    ntfy's `poll` returns an empty list for ever. Letting an allowlist make
+    it `two_way` had `serve` announce it was listening on that channel — and
+    suppress the warning that says no channel can hear anything at all.
+    """
+    config.upsert("ntfy", {"topic": "a"}, allow=("alice",))
+
+    assert config.load()[0].two_way is False
 
 
 def test_removing_a_channel_leaves_the_others(isolated_home):
@@ -341,3 +354,25 @@ def test_serving_with_nothing_that_can_listen_says_so(isolated_home, monkeypatch
 
     monkeypatch.setattr(server, "channels", lambda: [])
     assert server.serve(once=True) == 2
+
+
+def test_the_token_file_is_created_private_not_chmodded_afterwards(
+    isolated_home, monkeypatch
+):
+    """0600 has to be true of the file's first byte, not of its last.
+
+    Writing with the umask and chmod-ing next left the bot tokens and the
+    SMTP password readable by every local account for the width of that
+    window. Neutralising the chmod is how the test tells the two apart:
+    the mode must already be right without it.
+    """
+    import os
+
+    monkeypatch.setattr(os, "chmod", lambda *a, **kw: None)
+    previous = os.umask(0o022)
+    try:
+        path = config.upsert("telegram", {"token": "secret", "chat_id": "1"})
+    finally:
+        os.umask(previous)
+
+    assert oct(path.stat().st_mode & 0o777) == "0o600"

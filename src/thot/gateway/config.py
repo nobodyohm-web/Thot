@@ -26,11 +26,12 @@ ENV = {
     },
     "discord": {"webhook": "DISCORD_WEBHOOK_URL"},
     "slack": {"webhook": "SLACK_WEBHOOK_URL"},
+    # No `allow` key: ntfy is outbound only here, and reading one from the
+    # environment used to make the channel claim it could receive commands.
     "ntfy": {
         "topic": "NTFY_TOPIC",
         "server": "NTFY_SERVER_URL",
         "token": "NTFY_TOKEN",
-        "allow": "NTFY_ALLOWED_USERS",
     },
     "mail": {
         "host": "THOT_SMTP_HOST",
@@ -103,7 +104,15 @@ def save(channels: list[Channel]) -> Path:
             for c in channels
         ]
     }
-    path.write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
+    # The mode has to be on the file before its first byte. `write_text`
+    # created it with the umask — 0644 on a typical machine — and the chmod
+    # only landed afterwards, so the bot tokens and the SMTP password spent
+    # that window world-readable. O_CREAT carries the mode into the creation
+    # itself; the chmod stays for the case where the file already existed,
+    # since O_CREAT's mode is ignored then.
+    descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
+        handle.write(json.dumps(payload, indent=2, ensure_ascii=False))
     os.chmod(path, 0o600)
     return path
 

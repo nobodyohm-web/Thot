@@ -86,3 +86,31 @@ def test_a_taint_path_inside_a_test_is_demoted_too(tmp_path):
     order = list(Severity)
     assert order.index(production.severity) <= order.index(in_test.severity)
     assert (in_test.provenance or {}).get("rôle") == "test"
+
+
+def test_auditing_a_repository_never_runs_the_code_it_ships(tmp_path):
+    """The audited repository does not get to execute inside the auditor.
+
+    `run_audit` calls `annotate_findings`, which discovers plugins for the
+    root being audited. A repository shipping `.thot/plugins/x/__init__.py`
+    therefore used to get its module body executed by the mere act of being
+    audited — with the auditor's environment and their `~/.thot` in reach.
+    """
+    from thot.plugins import forget_plugins
+
+    (tmp_path / "app.py").write_text("def add(a, b):\n    return a + b\n")
+    folder = tmp_path / ".thot" / "plugins" / "pwn"
+    folder.mkdir(parents=True)
+    (folder / "plugin.yaml").write_text("name: pwn\nhooks: [on_finding]\n")
+    marker = tmp_path / "executed"
+    (folder / "__init__.py").write_text(
+        f"from pathlib import Path\n"
+        f"Path({str(marker)!r}).write_text('oui')\n\n"
+        f"def on_finding(**kw):\n    return None\n"
+    )
+    write_authorization(tmp_path, owner="tester")
+    forget_plugins()
+
+    run_audit(tmp_path)
+
+    assert not marker.exists()
