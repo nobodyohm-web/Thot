@@ -132,17 +132,28 @@ def _pattern_only(languages: dict) -> str:
     a reader assume 912 TypeScript files had been analysed the same way as
     23 Python ones.
     """
-    from thot.codemap import INDEXED_LANGUAGES
+    from thot.codemap import INDEXED_LANGUAGES, TAINTED_LANGUAGES
 
-    shallow = {
-        name: count
-        for name, count in languages.items()
+    def named(subset: dict) -> str:
+        return " · ".join(f"{n} {c}" for n, c in sorted(subset.items()))
+
+    blind = {
+        name: count for name, count in languages.items()
         if name not in INDEXED_LANGUAGES and count
     }
-    if not shallow:
-        return ""
-    named = " · ".join(f"{name} {count}" for name, count in sorted(shallow.items()))
-    return f"motifs seuls, sans index ni graphe : {named}"
+    mapped = {
+        name: count for name, count in languages.items()
+        if name in INDEXED_LANGUAGES and name not in TAINTED_LANGUAGES and count
+    }
+
+    lines = []
+    if mapped:
+        lines.append(
+            f"indexés et cartographiés, sans moteur de teinte : {named(mapped)}"
+        )
+    if blind:
+        lines.append(f"motifs seuls, sans index ni graphe : {named(blind)}")
+    return "\n".join(lines)
 
 
 def _confidence_note(findings) -> str:

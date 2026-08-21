@@ -1,0 +1,70 @@
+"""The self-improvement loop: bounded rounds that converge.
+
+What is under test is convergence. A loop that re-argues the same confirmed
+finding every round is not improvement, it is a bill — and the mechanism
+that prevents it is subtle enough to deserve a test of its own: refutations
+converge because they are remembered, confirmations converge because the
+session carries the ids it has already judged.
+"""
+
+from __future__ import annotations
+
+from thot.analysis.probe import select_for_analysis
+from thot.contracts import CodeRef, Confidence, Finding, Severity
+from thot.improve import PartRound, backlog_of, improve
+
+
+def _finding(name="a.py", confidence=Confidence.PLAUSIBLE):
+    location = CodeRef(path=name, line=1, symbol="f", ast_hash="h")
+    return Finding(
+        id=Finding.compute_id("sink.os.system", location),
+        rule="sink.os.system",
+        severity=Severity.HIGH,
+        confidence=confidence,
+        location=location,
+    )
+
+
+def test_a_confirmed_finding_is_not_re_argued_next_round():
+    """Confirmations are never written to memory — the session must remember."""
+    finding = _finding()
+
+    assert select_for_analysis([finding], 10) == [finding]
+    assert select_for_analysis([finding], 10, skip={finding.id}) == []
+
+
+def test_the_backlog_counts_what_a_further_round_could_still_judge():
+    live, refuted = _finding("a.py"), _finding("b.py", Confidence.REFUTED)
+
+    assert backlog_of([live, refuted]) == 1
+
+
+def test_the_loop_stops_as_soon_as_a_round_judges_nothing(monkeypatch):
+    """Paying for identical empty rounds answers nothing."""
+    calls = []
+
+    def _round(**kwargs):
+        calls.append(kwargs)
+        judged = 2 if len(calls) == 1 else 0
+        return [PartRound(part="thot", judged=judged, backlog=0)]
+
+    monkeypatch.setattr("thot.improve.one_round", _round)
+
+    session = improve(rounds=5)
+
+    assert len(calls) == 2, "un tour productif, un tour vide, puis on arrête"
+    assert session.judged == 2
+
+
+def test_each_round_is_told_what_the_previous_ones_judged(monkeypatch):
+    seen_sizes = []
+
+    def _round(*, seen, **kwargs):
+        seen_sizes.append(len(seen))
+        seen.update({f"f{len(seen_sizes)}"})
+        return [PartRound(part="thot", judged=1, backlog=1)]
+
+    monkeypatch.setattr("thot.improve.one_round", _round)
+    improve(rounds=3)
+
+    assert seen_sizes == [0, 1, 2]

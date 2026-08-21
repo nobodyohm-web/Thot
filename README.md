@@ -67,8 +67,19 @@ Analyse assistée : panel — claude-cli contre hermes contre prime
 Argumenté par claude-cli 1 · hermes 1 — attaqué par hermes 1 · prime 1
 ```
 
-Si un agent échoue sur une tâche, elle est reprise **une fois** par un autre —
-pas de cascade : une tâche que tous refusent a un problème à elle.
+**La cascade.** Un finding est argumenté, puis attaqué. Ce qui *survit* à
+l'attaque est ce qui sera montré à un humain — donc ça repart à un
+**troisième** agent, qui n'a vu ni l'argument se construire ni la première
+attaque s'écrire. Un finding confirmé l'a été contre deux adversaires
+indépendants.
+
+L'escalade est volontairement à sens unique : une réfutation n'est jamais
+rejugée. L'attaquant a pour consigne de réfuter au moindre doute, donc une
+réfutation est déjà la réponse prudente ; la remettre en cause fabriquerait
+des faux positifs.
+
+Si un agent échoue sur une tâche, elle est reprise **une fois** par un autre.
+Pas plus : une tâche que tout le monde refuse a un problème à elle.
 
 Chaque agent s'authentifie **comme lui-même**, sur ton compte : Thot lance sa
 ligne de commande, ne l'importe jamais et ne détient aucun jeton. Le verdict
@@ -340,6 +351,28 @@ jusqu'à ce que plus personne ne lise le rapport.
 | `refute` | faux positif — passe en INFO, sort du rapport, garde sa raison |
 | `accept` | risque réel, assumé — passe en INFO, annoté |
 | `fixed` | corrigé — s'il **revient**, c'est signalé comme régression |
+
+### Deux profondeurs, dites à voix haute
+
+| | Python | TypeScript · JavaScript | le reste |
+|---|---|---|---|
+| symboles, graphe d'appels, `code_map` / `callers` | oui | oui | non |
+| moteur de teinte (chemin prouvé source → sink) | oui | non | non |
+| règles par motif | oui | oui | oui |
+
+Le rapport le dit lui-même plutôt que de laisser croire à une couverture
+uniforme :
+
+```
+indexés et cartographiés, sans moteur de teinte : typescript 912
+```
+
+L'indexeur TypeScript est un scanner, pas `tsc` : il masque commentaires et
+littéraux puis lit les déclarations par appariement d'accolades. Sortir vers
+`tsc` aurait rendu la carte dépendante d'une chaîne node installée,
+résoluble et à la bonne version — une carte qui marche sur certaines
+machines vaut moins qu'une carte dont les limites sont écrites. Mesuré :
+**8 777 symboles sur Prime en 2,9 s**, 11 189 de plus sur Hermes.
 
 ### Ce qu'un fichier est *pour*
 
@@ -684,6 +717,31 @@ Trois sont livrés :
 | `write-guard` | relit ce que le modèle écrit et fait remonter un avertissement si un motif dangereux apparaît. Non bloquant — un faux positif qui bloque une session est pire que l'écriture. |
 | `regression-alert` | un défaut marqué `fixed` qui réapparaît passe en CRITICAL : une régression vaut plus qu'un candidat neuf. |
 | `audit-log` | un journal JSONL local de chaque audit, verdict et écriture, dans `~/.thot/journal.jsonl`. Aucun réseau. |
+
+## L'amélioration permanente
+
+Un audit qui argumente vingt candidats et s'arrête laisse le reste sans
+jugement pour toujours. Une passe sans budget tourne encore quand tu
+reviens t'asseoir. `thot improve` est l'entre-deux : des tours bornés, chacun
+écrit sur disque, chacun repartant là où le précédent s'est arrêté.
+
+```bash
+thot improve                      # un tour sur les trois arbres
+thot improve --rounds 5           # jusqu'à ce qu'un tour ne juge plus rien
+thot improve --every daily        # la boucle devient permanente
+```
+
+Deux propriétés la font converger au lieu de tourner en rond : une réfutation
+est mémorisée, donc la sélection suivante la saute ; une confirmation ne l'est
+délibérément **pas** — un vrai défaut doit continuer à apparaître jusqu'à ce
+que quelqu'un le corrige — donc la boucle porte son propre jeu d'identifiants
+déjà jugés. Sans ça, chaque tour après le premier dépenserait tout son budget
+à ré-argumenter ce que le premier venait de confirmer.
+
+Elle ne modifie jamais de code. « Amélioration » veut dire ici que le jugement
+du programme sur lui-même devient plus net et moins cher : moins de candidats
+sans décision, plus de décisions sur disque, chacune attribuable à l'agent qui
+l'a prise.
 
 ## Skills — les méthodes que Thot connaît
 

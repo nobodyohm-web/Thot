@@ -1,0 +1,174 @@
+"""Work the whole program's backlog down, one bounded round at a time.
+
+An audit that argues twenty candidates and stops leaves the rest unjudged
+for ever; a run with no budget at all is still going when you sit back down.
+Neither is self-improvement. This is the middle: bounded rounds, each one
+persisted, each one starting where the last stopped, run as often as you
+like — by hand now, by the scheduler for ever.
+
+Two facts make the loop converge instead of spinning:
+
+- a refutation is remembered, so the next round's selection skips it;
+- a confirmation is deliberately *not* remembered — a real defect must keep
+  showing up until someone fixes it — so the loop carries its own set of
+  ids judged this session. Without it, every round after the first would
+  spend its whole budget re-arguing what the first one confirmed.
+
+What it never does is edit code. "Improvement" here means the program's
+judgement of itself gets sharper and cheaper: fewer unjudged candidates,
+more decisions on disk, each one attributable to the agent that took it.
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass, field
+from typing import Callable
+
+
+@dataclass
+class PartRound:
+    """What one round did to one tree."""
+
+    part: str
+    findings: int = 0
+    judged: int = 0  # decided this round
+    refuted: int = 0
+    confirmed: int = 0
+    backlog: int = 0  # still unjudged after this round
+    error: str = ""
+
+    def line(self) -> str:
+        if self.error:
+            return f"{self.part:<8} — {self.error}"
+        return (
+            f"{self.part:<8} {self.judged:>3} jugé(s) "
+            f"({self.refuted} réfuté · {self.confirmed} confirmé) · "
+            f"{self.backlog} en attente"
+        )
+
+
+@dataclass
+class Session:
+    """Every round of one `thot improve` invocation."""
+
+    rounds: list[list[PartRound]] = field(default_factory=list)
+    seen: set[str] = field(default_factory=set)
+
+    @property
+    def judged(self) -> int:
+        return sum(part.judged for run in self.rounds for part in run)
+
+    @property
+    def backlog(self) -> int:
+        """What the last round left behind, across every tree."""
+        return sum(part.backlog for part in self.rounds[-1]) if self.rounds else 0
+
+    def summary(self) -> str:
+        refuted = sum(p.refuted for run in self.rounds for p in run)
+        confirmed = sum(p.confirmed for run in self.rounds for p in run)
+        return (
+            f"{len(self.rounds)} tour(s) · {self.judged} jugement(s) "
+            f"({refuted} réfuté · {confirmed} confirmé) · "
+            f"{self.backlog} candidat(s) encore sans décision"
+        )
+
+
+def backlog_of(findings: list) -> int:
+    """How many candidates a further round could still judge.
+
+    Measured with the selector the deep pass itself uses, so the number is
+    the real remaining work rather than a count of everything on screen.
+    """
+    from thot.analysis.probe import select_for_analysis
+
+    return len(select_for_analysis(findings, limit=len(findings) or 1))
+
+
+def one_round(
+    *,
+    budget: int,
+    parallel: int,
+    engine_name: str = "",
+    seen: set[str] | None = None,
+    on_decided: Callable | None = None,
+) -> list[PartRound]:
+    """One bounded pass over every tree of the fused program."""
+    from thot.contracts import Confidence
+    from thot.fusion.audit import audit_all
+
+    seen = seen if seen is not None else set()
+    decided: list = []
+
+    def record(finding) -> None:
+        decided.append(finding)
+        seen.add(finding.id)
+        if on_decided is not None:
+            on_decided(finding)
+
+    done = audit_all(
+        deep=True,
+        engine_name=engine_name,
+        budget=budget,
+        parallel=parallel,
+        skip=seen,
+        on_decided=record,
+    )
+
+    # Attribution by tree: `audit_all` runs them in order, so the findings
+    # decided during a part's audit are the ones recorded since the previous
+    # part finished.
+    rounds: list[PartRound] = []
+    consumed = 0
+    for part in done:
+        if not part.ok:
+            rounds.append(PartRound(part=part.name, error=part.error))
+            continue
+        mine = decided[consumed:]
+        consumed = len(decided)
+        rounds.append(
+            PartRound(
+                part=part.name,
+                findings=len(part.result.findings),
+                judged=len(mine),
+                refuted=sum(
+                    1 for f in mine if f.confidence is Confidence.REFUTED
+                ),
+                confirmed=sum(
+                    1 for f in mine if f.confidence is Confidence.CONFIRMED
+                ),
+                backlog=backlog_of(part.result.findings),
+            )
+        )
+    return rounds
+
+
+def improve(
+    *,
+    rounds: int = 1,
+    budget: int = 20,
+    parallel: int = 4,
+    engine_name: str = "",
+    on_round: Callable[[int, list[PartRound]], None] | None = None,
+    on_decided: Callable | None = None,
+) -> Session:
+    """Run bounded rounds until the budget stops buying anything.
+
+    Stops early on a round that judged nothing: the backlog is either empty
+    or made of candidates this engine cannot settle, and paying for more
+    identical rounds would answer neither.
+    """
+    session = Session()
+    for index in range(max(1, rounds)):
+        done = one_round(
+            budget=budget,
+            parallel=parallel,
+            engine_name=engine_name,
+            seen=session.seen,
+            on_decided=on_decided,
+        )
+        session.rounds.append(done)
+        if on_round is not None:
+            on_round(index + 1, done)
+        if not any(part.judged for part in done):
+            break
+    return session

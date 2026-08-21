@@ -263,6 +263,26 @@ def build_parser() -> argparse.ArgumentParser:
     skills_scan.add_argument("--source", default="community",
                              choices=["builtin", "trusted", "community"])
 
+    improve = subparsers.add_parser(
+        "improve",
+        help="Faire juger au programme ce qu'il n'a pas encore jugé, en boucle",
+    )
+    improve.add_argument(
+        "--rounds", type=int, default=1,
+        help="Tours successifs ; s'arrête tout seul quand un tour ne juge rien",
+    )
+    improve.add_argument("--budget", type=int, default=20,
+                         help="Candidats par tour et par arbre")
+    improve.add_argument("--parallel", type=int, default=4)
+    improve.add_argument(
+        "--engine", choices=["panel", "claude", "hermes", "prime"], default="",
+        help="Défaut : tous les agents installés, en panel",
+    )
+    improve.add_argument(
+        "--every", choices=list(SCHEDULES), default="",
+        help="Rendre la boucle permanente au lieu de la lancer une fois",
+    )
+
     plugins_cmd = subparsers.add_parser(
         "plugins", help="Les plugins chargés, et ceux qu'un dépôt propose"
     )
@@ -1171,6 +1191,57 @@ def _deep_progress():
     return show
 
 
+def _cmd_improve(args) -> int:
+    """Judge what has not been judged, and keep doing it.
+
+    Without `--every` this is one bounded pass over the whole fused program.
+    With it, the same pass becomes a scheduled job — which is the only sense
+    in which improvement can be permanent: something has to run when nobody
+    is watching, and it has to remember what it decided.
+    """
+    from thot.improve import improve as run_improvement
+    from thot.schedule import install as scheduler
+    from thot.schedule.jobs import FUSION, Job, add as add_job
+
+    if args.every:
+        job = Job(
+            name="improve",
+            root=FUSION,
+            schedule=args.every,
+            deep=True,
+            budget=args.budget,
+            parallel=args.parallel,
+        )
+        add_job(job)
+        written, step = scheduler.install(job)
+        print(f"Boucle d'amélioration programmée : {args.every}, "
+              f"{args.budget} candidats par arbre et par tour.")
+        if written:
+            print(f"Unité écrite : {written}")
+        print(step)
+        return 0
+
+    def announce(number: int, done) -> None:
+        print(f"\n— tour {number} —", file=sys.stderr)
+        for part in done:
+            print("  " + part.line(), file=sys.stderr)
+
+    session = run_improvement(
+        rounds=args.rounds,
+        budget=args.budget,
+        parallel=args.parallel,
+        engine_name=args.engine,
+        on_round=announce,
+        on_decided=_deep_progress(),
+    )
+    print()
+    print(session.summary())
+    if session.backlog:
+        print(f"`thot improve --rounds {max(2, args.rounds)}` pour continuer, "
+              f"ou `thot improve --every daily` pour ne plus y penser.")
+    return 0
+
+
 def _cmd_plugins(args) -> int:
     """What runs inside Thot, and what asked to run and was not allowed to.
 
@@ -1454,6 +1525,8 @@ def main(argv: list[str] | None = None) -> int:
             return _cmd_skills(args)
         if args.command == "plugins":
             return _cmd_plugins(args)
+        if args.command == "improve":
+            return _cmd_improve(args)
         if args.command == "sessions":
             return _cmd_sessions(args)
         if args.command == "search":

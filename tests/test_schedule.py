@@ -194,3 +194,87 @@ def test_the_crontab_line_is_runnable():
     line = crontab_line(jobs.Job(name="nuit", root="/repo", schedule="daily"))
     assert line.startswith("0 3 * * *")
     assert "schedule run nuit" in line
+
+
+# -- a deep job has to actually be deep ---------------------------------------
+
+
+def _toy(tmp_path):
+    (tmp_path / "app.py").write_text(
+        "import os, sys\n\ndef run():\n    os.system('ls ' + sys.argv[1])\n"
+    )
+    return tmp_path
+
+
+def _scripted(verdict="refuted"):
+    from thot.engine.base import AgentResult, EngineCapabilities
+
+    class _Engine:
+        ran = 0
+
+        @property
+        def capabilities(self):
+            return EngineCapabilities(name="scripted", max_parallel=2)
+
+        def run(self, task):
+            type(self).ran += 1
+            return AgentResult(
+                task_id=task.id,
+                data={"verdict": verdict, "scenario": "entrée constante"},
+            )
+
+        def fan_out(self, tasks):
+            return [self.run(task) for task in tasks]
+
+    return _Engine
+
+
+def test_a_deep_job_argues_instead_of_only_sweeping(tmp_path, monkeypatch):
+    """`deep: true` was written to the registry and never read.
+
+    The flag existed, `thot schedule add --deep` set it, and the nightly run
+    was a plain deterministic sweep — a promise the job never kept.
+    """
+    from thot.schedule.jobs import Job
+    from thot.schedule.runner import run_job
+
+    engine = _scripted()
+    monkeypatch.setattr(
+        "thot.engine.factory.build_engine", lambda *a, **kw: engine()
+    )
+
+    job = Job(name="nuit", root=str(_toy(tmp_path)), deep=True, budget=5)
+    run_job(job)
+
+    assert engine.ran > 0, "aucun agent n'a été sollicité"
+
+
+def test_a_shallow_job_never_builds_an_engine(tmp_path, monkeypatch):
+    from thot.schedule.jobs import Job
+    from thot.schedule.runner import run_job
+
+    def _forbidden(*a, **kw):
+        raise AssertionError("un job non-deep ne doit rien faire tourner")
+
+    monkeypatch.setattr("thot.engine.factory.build_engine", _forbidden)
+    run_job(Job(name="jour", root=str(_toy(tmp_path))))
+
+
+def test_a_fusion_job_audits_every_tree(tmp_path, monkeypatch):
+    """One unit, one log, the whole program."""
+    from thot.schedule.jobs import FUSION, Job
+    from thot.schedule.runner import run_job
+
+    first, second = tmp_path / "un", tmp_path / "deux"
+    for root in (first, second):
+        root.mkdir()
+        _toy(root)
+    monkeypatch.setattr(
+        "thot.fusion.audit.parts", lambda: [("un", first), ("deux", second)]
+    )
+
+    fresh, total = run_job(Job(name="tout", root=FUSION, threshold="info"))
+
+    assert total > 0
+    assert {f.location.path for f in fresh} == {"app.py"}
+    assert len(fresh) >= 2, "les deux arbres doivent avoir été audités"

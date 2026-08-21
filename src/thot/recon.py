@@ -13,7 +13,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from thot.codemap.graph import CodeGraph
-from thot.codemap.python_indexer import PythonIndexer
+from thot.codemap.index import index_files
 from thot.contracts import Finding, Symbol
 from thot.scope.detect import detect_scope
 from thot.scope.manifest import ScopeManifest
@@ -72,11 +72,7 @@ def sweep(root: Path, *, deep: bool = True) -> Recon:
         recon.elapsed = time.monotonic() - started
         return recon
 
-    indexer = PythonIndexer()
-    symbols: list[Symbol] = []
-    for relative in manifest.files:
-        if relative.endswith(".py"):
-            symbols.extend(indexer.index_file(root, relative))
+    symbols: list[Symbol] = index_files(root, manifest.files)
     recon.symbols = symbols
     recon.graph = CodeGraph.build(symbols, manifest.entrypoints)
 

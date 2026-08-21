@@ -69,7 +69,9 @@ def parts() -> list[tuple[str, Path]]:
 
 def audit_all(*, deep: bool = False, engine_name: str = "",
               budget: int = 20, parallel: int = 4,
-              require_authorization: bool = True) -> list[Part]:
+              require_authorization: bool = True,
+              skip: set[str] | None = None,
+              on_decided=None) -> list[Part]:
     """Audit every part. One failure never costs the others.
 
     `require_authorization` mirrors `run_audit`'s own knob rather than
@@ -93,7 +95,8 @@ def audit_all(*, deep: bool = False, engine_name: str = "",
         memory = _memory(root)
         try:
             result = run_audit(root, engine=engine, memory=memory, budget=budget,
-                               require_authorization=require_authorization)
+                               require_authorization=require_authorization,
+                               skip=skip, on_decided=on_decided)
             done.append(Part(name, root, result=result))
         except AuthorizationError:
             done.append(

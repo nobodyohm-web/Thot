@@ -26,6 +26,13 @@ SCHEDULES: dict[str, str] = {
 }
 
 
+# A job whose root is this token audits every tree of the fused program
+# rather than one directory. Spelled out rather than inferred: a path and a
+# whole-program run are different enough that guessing between them would be
+# the kind of surprise a scheduled job must never spring at 3 a.m.
+FUSION = "fusion"
+
+
 @dataclass
 class Job:
     name: str
@@ -33,6 +40,14 @@ class Job:
     schedule: str = "daily"
     threshold: str = Severity.HIGH.value
     deep: bool = False
+    # Only read when `deep`. A nightly pass has to be bounded: an unbounded
+    # one on a large repository is still running when you sit down.
+    budget: int = 20
+    parallel: int = 4
+
+    @property
+    def whole_program(self) -> bool:
+        return self.root == FUSION
 
     def validate(self) -> None:
         if self.schedule not in SCHEDULES:
@@ -41,6 +56,8 @@ class Job:
                 f"(attendu : {', '.join(SCHEDULES)})"
             )
         Severity(self.threshold)  # raises on a bad value
+        if self.budget < 1:
+            raise ValueError("le budget doit être d'au moins 1 candidat")
 
 
 def cron_expression(schedule: str) -> str:

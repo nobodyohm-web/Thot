@@ -11,7 +11,7 @@ from typing import TYPE_CHECKING
 
 from thot.analysis.probe import DEFAULT_LIMIT, analyse
 from thot.codemap.graph import CodeGraph
-from thot.codemap.python_indexer import PythonIndexer
+from thot.codemap.index import index_files
 from thot.guard.scanner import sweep_patterns
 from thot.memory.base import Memory, apply_memory, record_verdicts
 from thot.errors import ScopeError
@@ -107,6 +107,7 @@ def run_audit(
     memory: Memory | None = None,
     dependencies: bool = False,
     on_decided: "Callable[[Finding], None] | None" = None,
+    skip: set[str] | None = None,
 ) -> AuditResult:
     """Map, taint, score — then, if an engine is given, probe and refute.
 
@@ -131,11 +132,7 @@ def run_audit(
         load_authorization(root)  # raises AuthorizationError when not mandated
     manifest = detect_scope(root)
 
-    indexer = PythonIndexer()
-    symbols = []
-    for relative in manifest.files:
-        if relative.endswith(".py"):
-            symbols.extend(indexer.index_file(root, relative))
+    symbols = index_files(root, manifest.files)
 
     graph = CodeGraph.build(symbols, manifest.entrypoints)
     findings = findings_from_graph(root, graph)
@@ -183,7 +180,7 @@ def run_audit(
                 on_decided(finding)
 
         findings = analyse(
-            root, findings, engine, limit=budget, on_decided=settled
+            root, findings, engine, limit=budget, on_decided=settled, skip=skip
         )
 
     # Plugins see the finished findings, before anything is written down.

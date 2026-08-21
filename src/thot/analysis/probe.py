@@ -56,8 +56,18 @@ REFUTE_SCHEMA = {
 }
 
 
-def select_for_analysis(findings: list[Finding], limit: int = DEFAULT_LIMIT) -> list[Finding]:
+def select_for_analysis(
+    findings: list[Finding],
+    limit: int = DEFAULT_LIMIT,
+    skip: set[str] | None = None,
+) -> list[Finding]:
     """The candidates worth a model, worst first.
+
+    `skip` is for a caller running several rounds against the same tree. A
+    confirmed finding is deliberately never written to memory — it must keep
+    showing up until someone fixes it — which means without `skip` a second
+    round would spend its whole budget re-arguing what the first round just
+    confirmed, and never reach anything new.
 
     Anything already decided is dropped. Refuted, because paying twice to
     reach the same conclusion is the easiest waste to avoid — and accepted or
@@ -67,10 +77,13 @@ def select_for_analysis(findings: list[Finding], limit: int = DEFAULT_LIMIT) -> 
     A regression is the one thing a deep pass must never be allowed to
     silence: it has already been judged real once.
     """
+    skip = skip or set()
     live = [
         f
         for f in findings
-        if f.confidence is not Confidence.REFUTED and not carries_decision(f)
+        if f.confidence is not Confidence.REFUTED
+        and not carries_decision(f)
+        and f.id not in skip
     ]
     ranked = sorted(live, key=lambda f: SEVERITY_ORDER.get(f.severity, 9))
     return ranked[:limit]
@@ -180,6 +193,7 @@ def analyse(
     engine: Engine,
     limit: int = DEFAULT_LIMIT,
     on_decided: Callable[[Finding], None] | None = None,
+    skip: set[str] | None = None,
 ) -> list[Finding]:
     """Probe, attack, and attack again what survived — in batches.
 
@@ -202,7 +216,7 @@ def analyse(
     started: what an interruption costs is one batch, not the run.
     """
     root = Path(root)
-    selected = select_for_analysis(findings, limit)
+    selected = select_for_analysis(findings, limit, skip)
     if not selected:
         return list(findings)
 
