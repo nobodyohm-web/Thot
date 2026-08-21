@@ -68,9 +68,48 @@ Un moteur qui ne sait pas compter ne fabrique pas de chiffre : il le déclare
 (`reports_usage`), et l'appelant peut dire « non mesuré » au lieu d'afficher un
 zéro qui aurait l'air vrai.
 
-Ce qui n'est **pas** fusionné, et le reste sciemment : les trois gardent leur
-configuration séparée (`~/.thot`, `~/.hermes`, `~/.prime`), leurs bibliothèques
-de méthodes et leurs mémoires.
+## Une configuration, une mémoire
+
+Les trois écrivent chacun dans leur dossier, et c'est très bien : `config.yaml`
+appartient à Hermes, `settings.json` à Prime. Ce que Thot ajoute, c'est une
+**vue unique** et un endroit unique pour décider.
+
+```bash
+thot fusion config                          # le modèle que chacun utilisera
+thot fusion config --model claude-opus-5    # le dire une fois, l'écrire aux trois
+thot fusion memory                          # ce que les trois ont retenu
+thot fusion memory --sync                   # y verser les faits appris par Thot
+```
+
+La configuration est **lue** dans les fichiers — instantané, sans risque — et
+**écrite** par l'outil de chacun : `hermes config set` plutôt qu'une réécriture
+de son YAML, qui porte des commentaires et un historique de migrations qui ne
+sont pas à Thot. Thot déléguant son modèle au CLI officiel n'est pas un
+désaccord : une opinion absente n'entre en conflit avec rien.
+
+La mémoire est le même principe dans les deux sens :
+
+| | où | forme |
+|---|---|---|
+| thot | `~/.thot/harness.json` | structuré, titre + contenu |
+| hermes | `~/.hermes/memories/MEMORY.md` | entrées séparées par des `§` |
+| prime | `~/.prime/agent/AGENTS.md` | markdown, chargé globalement |
+
+Thot **lit** les trois à chaque briefing : un fait que Hermes a appris la
+semaine dernière est un fait que Thot connaît aujourd'hui. Il **écrit** dans
+les deux autres seulement sur `--sync`, dans leur format natif, en ne touchant
+jamais qu'aux entrées qu'il a lui-même posées — taguées `[thot]` chez Hermes,
+dans un bloc délimité chez Prime. Sauvegarde avant la première modification,
+et trois synchronisations d'affilée écrivent une seule copie.
+
+Un `USER.md` fraîchement créé est un formulaire vide : `**Name:**`, des
+instructions en italique, un trait horizontal. Les injecter dirait à Thot que
+« Context: --- » est un fait. Ils sont écartés — et **comptés à l'écran**,
+parce que distinguer un formulaire d'une note laconique n'est pas une chose
+qu'un programme sait faire avec certitude.
+
+Ce qui n'est **pas** fusionné, et le reste sciemment : les bibliothèques de
+méthodes et les historiques de session de chacun.
 
 ## Installation
 

@@ -6,14 +6,23 @@ import pytest
 
 @pytest.fixture(autouse=True)
 def isolated_home(tmp_path_factory, monkeypatch):
-    """No test may read or write the real ~/.thot.
+    """No test may read or write the real ~/.thot, ~/.hermes or ~/.prime.
 
     Autouse on purpose: a suite that touches the user's own sessions,
     verdicts or schedule is a suite that can destroy their work, and the
     one test that forgets the fixture is the one that does it.
+
+    The two agent homes are here for a second reason as well. Since the
+    briefing folds in what Hermes and Prime remember, a suite reading the
+    real ones would pass or fail according to notes the developer happened
+    to have written that week.
     """
     home = tmp_path_factory.mktemp("thot-home")
     monkeypatch.setenv("THOT_HOME", str(home))
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path_factory.mktemp("hermes-home")))
+    monkeypatch.setenv(
+        "PRIME_AGENT_CONFIG_DIR", str(tmp_path_factory.mktemp("prime-home"))
+    )
     return home
 
 

@@ -70,6 +70,26 @@ def build_parser() -> argparse.ArgumentParser:
     )
     fusion_sub.add_parser("unwire", help="Retirer Thot des deux agents")
 
+    fusion_config = fusion_sub.add_parser(
+        "config", help="Le modèle que chacun des trois utilisera"
+    )
+    fusion_config.add_argument(
+        "--model", metavar="ID",
+        help="Dire le même modèle aux trois (ex. claude-opus-5)",
+    )
+    fusion_config.add_argument(
+        "--provider", metavar="NOM", default="",
+        help="Le fournisseur qui va avec, quand il change aussi",
+    )
+
+    fusion_memory = fusion_sub.add_parser(
+        "memory", help="Ce que les trois ont retenu, en une seule vue"
+    )
+    fusion_memory.add_argument(
+        "--sync", action="store_true",
+        help="Écrire les faits de Thot dans la mémoire de Hermes et de Prime",
+    )
+
     schedule = subparsers.add_parser(
         "schedule", help="Auditer un dépôt automatiquement"
     )
@@ -1308,6 +1328,18 @@ def _cmd_fusion(args) -> int:
         print(f"Moteurs pour `--deep` : {', '.join(usable) if usable else 'aucun'}")
         if usable:
             print(f"   thot audit . --deep --engine {usable[-1]}")
+
+        from thot.fusion import config as fusion_config
+        from thot.fusion import memory as fusion_memory
+
+        print()
+        disagreement = fusion_config.divergence()
+        print(f"Modèle : {disagreement or 'le même pour les trois'}")
+        try:
+            shared = len(fusion_memory.merged(Path.cwd()))
+        except Exception:
+            shared = 0
+        print(f"Mémoire partagée : {shared} note(s) — `thot fusion memory`")
         return EXIT_OK
 
     if action == "wire":
@@ -1324,6 +1356,45 @@ def _cmd_fusion(args) -> int:
             print("Hermes et Prime voient maintenant `code_map`, `find_symbol`,")
             print("`callers`, `audit`, `skills` et `skill` — sans appel modèle.")
             print("Redémarre-les pour que le serveur soit chargé.")
+        return EXIT_OK
+
+    if action == "config":
+        from thot.fusion import config as fusion_config
+
+        model = getattr(args, "model", None)
+        if model:
+            for applied in fusion_config.apply(model, getattr(args, "provider", "")):
+                print(applied.line())
+            print()
+
+        for choice in fusion_config.read_all():
+            print(choice.line())
+        disagreement = fusion_config.divergence()
+        if disagreement:
+            print()
+            print(disagreement)
+            print("`thot fusion config --model <id>` pour n'en avoir qu'un.")
+        return EXIT_OK
+
+    if action == "memory":
+        from thot.fusion import memory as fusion_memory
+
+        if getattr(args, "sync", False):
+            for written in fusion_memory.project(Path.cwd()):
+                print(written.line())
+            print()
+
+        notes = fusion_memory.merged(Path.cwd())
+        ignored = fusion_memory.skipped()
+        if not notes:
+            print("Rien en mémoire, dans aucun des trois.")
+        for note in notes:
+            print(f"  {note.line()}")
+        if ignored:
+            print()
+            # Said, not swallowed: Thot cannot tell an unfilled form from a
+            # terse note with certainty, so the number is on screen.
+            print(f"{ignored} entrée(s) écartée(s) : gabarit non rempli.")
         return EXIT_OK
 
     if action == "unwire":

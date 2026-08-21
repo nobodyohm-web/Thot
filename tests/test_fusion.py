@@ -225,3 +225,209 @@ def test_an_unreadable_config_is_unknown_not_false(homes):
 
     assert wiring.hermes_enabled() is None
     assert wiring.plan_enable()[0].action == "à vérifier"
+
+
+# -- one configuration, three files ------------------------------------------
+
+
+def test_the_three_model_choices_are_read_together(homes):
+    import json
+
+    from thot.fusion import config
+
+    hermes_home, prime = homes
+    hermes_home.mkdir(parents=True, exist_ok=True)
+    (hermes_home / "config.yaml").write_text(
+        "model:\n  default: claude-opus-5\n  provider: anthropic\n", encoding="utf-8"
+    )
+    prime.mkdir(parents=True, exist_ok=True)
+    (prime / "settings.json").write_text(
+        json.dumps({"defaultModel": "claude-opus-5", "defaultProvider": "anthropic"}),
+        encoding="utf-8",
+    )
+
+    found = {choice.program: choice for choice in config.read_all()}
+    assert found["hermes"].model == "claude-opus-5"
+    assert found["prime"].provider == "anthropic"
+    assert config.divergence() == ""
+
+
+def test_two_programs_on_different_models_is_reported(homes):
+    import json
+
+    from thot.fusion import config
+
+    hermes_home, prime = homes
+    hermes_home.mkdir(parents=True, exist_ok=True)
+    (hermes_home / "config.yaml").write_text(
+        "model:\n  default: claude-opus-5\n", encoding="utf-8"
+    )
+    prime.mkdir(parents=True, exist_ok=True)
+    (prime / "settings.json").write_text(
+        json.dumps({"defaultModel": "claude-sonnet-5"}), encoding="utf-8"
+    )
+
+    said = config.divergence()
+    assert "claude-opus-5" in said and "claude-sonnet-5" in said
+
+
+def test_thot_deferring_to_the_cli_is_not_a_disagreement(homes):
+    """An absent opinion cannot conflict with anything."""
+    import json
+
+    from thot.fusion import config
+
+    hermes_home, prime = homes
+    hermes_home.mkdir(parents=True, exist_ok=True)
+    (hermes_home / "config.yaml").write_text(
+        "model:\n  default: claude-opus-5\n", encoding="utf-8"
+    )
+    prime.mkdir(parents=True, exist_ok=True)
+    (prime / "settings.json").write_text(
+        json.dumps({"defaultModel": "claude-opus-5"}), encoding="utf-8"
+    )
+    assert config.divergence() == ""
+
+
+# -- one memory, three formats -----------------------------------------------
+
+
+def test_projecting_keeps_what_each_agent_wrote_itself(homes, tmp_path):
+    from thot.fusion import memory
+    from thot.harness import Harness
+
+    hermes_home, prime = homes
+    (hermes_home / "memories").mkdir(parents=True)
+    (hermes_home / "memories" / "MEMORY.md").write_text(
+        "Une note de Hermes.\n§\nUne deuxième.\n", encoding="utf-8"
+    )
+    prime.mkdir(parents=True)
+    (prime / "AGENTS.md").write_text("# À moi\n\nRépondre en français.\n",
+                                     encoding="utf-8")
+
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    Harness.open(repo).remember(title="team.shell.run", content="échappe tout",
+                                scope="global")
+
+    memory.project(repo)
+
+    hermes_text = (hermes_home / "memories" / "MEMORY.md").read_text(encoding="utf-8")
+    assert "Une note de Hermes." in hermes_text
+    assert "Une deuxième." in hermes_text
+    assert "[thot] team.shell.run" in hermes_text
+
+    prime_text = (prime / "AGENTS.md").read_text(encoding="utf-8")
+    assert "Répondre en français." in prime_text
+    assert "team.shell.run" in prime_text
+
+
+def test_projecting_three_times_writes_one_copy(homes, tmp_path):
+    from thot.fusion import memory
+    from thot.harness import Harness
+
+    hermes_home, prime = homes
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    Harness.open(repo).remember(title="un.fait", content="vrai", scope="global")
+
+    for _ in range(3):
+        memory.project(repo)
+
+    hermes_text = (hermes_home / "memories" / "MEMORY.md").read_text(encoding="utf-8")
+    assert hermes_text.count("[thot] un.fait") == 1
+    prime_text = (prime / "AGENTS.md").read_text(encoding="utf-8")
+    assert prime_text.count(memory.PRIME_HEADER) == 1
+
+
+def test_a_fact_dropped_from_thot_leaves_both_agents(homes, tmp_path):
+    from thot.fusion import memory
+    from thot.harness import Harness
+
+    hermes_home, prime = homes
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    harness = Harness.open(repo)
+    entry = harness.remember(title="périmé", content="plus vrai", scope="global")
+    memory.project(repo)
+    assert "périmé" in (prime / "AGENTS.md").read_text(encoding="utf-8")
+
+    harness.forget(entry.id)
+    memory.project(repo)
+
+    assert "périmé" not in (prime / "AGENTS.md").read_text(encoding="utf-8")
+    assert "périmé" not in (hermes_home / "memories" / "MEMORY.md").read_text(
+        encoding="utf-8"
+    )
+
+
+def test_a_synced_fact_does_not_come_back_as_a_second_copy(homes, tmp_path):
+    """Read what was written and you have it twice; sync again and thrice."""
+    from thot.fusion import memory
+    from thot.harness import Harness
+
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    Harness.open(repo).remember(title="unique", content="une seule fois",
+                                scope="global")
+    memory.project(repo)
+
+    texts = [note.text for note in memory.merged(repo)]
+    assert sum("unique" in text for text in texts) == 1
+
+
+def test_an_unfilled_template_is_not_knowledge(homes):
+    from thot.fusion import memory
+
+    hermes_home, _ = homes
+    (hermes_home / "memories").mkdir(parents=True)
+    (hermes_home / "memories" / "USER.md").write_text(
+        "_Learn about the person you're helping._\n§\n**Name:**\n§\n"
+        "**Pronouns:** _(optional)_\n§\nContext: ---\n§\n"
+        "Il travaille surtout le soir.\n",
+        encoding="utf-8",
+    )
+
+    kept, ignored = memory.read_hermes()
+    assert [note.text for note in kept] == ["Il travaille surtout le soir."]
+    assert ignored == 4
+
+
+def test_a_truncated_block_is_left_alone_rather_than_eaten(homes, tmp_path):
+    """Header without footer means someone edited the file by hand. Removing
+    to the end of it would delete whatever they wrote after."""
+    from thot.fusion import memory
+    from thot.harness import Harness
+
+    _, prime = homes
+    prime.mkdir(parents=True)
+    (prime / "AGENTS.md").write_text(
+        f"{memory.PRIME_HEADER}\n\n- vieux fait\n\nCe que j'ai écrit après.\n",
+        encoding="utf-8",
+    )
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    Harness.open(repo).remember(title="neuf", content="fait", scope="global")
+
+    memory.project(repo)
+
+    text = (prime / "AGENTS.md").read_text(encoding="utf-8")
+    assert "Ce que j'ai écrit après." in text
+
+
+def test_the_file_is_backed_up_before_the_first_change(homes, tmp_path):
+    from thot.fusion import memory
+    from thot.harness import Harness
+
+    _, prime = homes
+    prime.mkdir(parents=True)
+    (prime / "AGENTS.md").write_text("des mois de notes\n", encoding="utf-8")
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    Harness.open(repo).remember(title="x", content="y", scope="global")
+
+    memory.project(repo)
+
+    backup = prime / "AGENTS.md.thot-backup"
+    assert backup.is_file()
+    assert backup.read_text(encoding="utf-8") == "des mois de notes\n"

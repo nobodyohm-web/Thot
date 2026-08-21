@@ -247,8 +247,26 @@ class Session:
             learned = self.harness.brief()
             if learned:
                 blocks.append(learned)
+        shared = self._shared_memory()
+        if shared:
+            blocks.append(shared)
         blocks.append(context_brief(self.recon))
         return "\n\n".join(blocks)
+
+    def _shared_memory(self) -> str:
+        """What Hermes and Prime know, so Thot does not have to be told twice.
+
+        Read-only and fail-soft: the two files belong to programs that may
+        not be installed, and a briefing is not worth an exception. Thot's
+        own harness entries are already in the block above, so what comes
+        back here is only the other two.
+        """
+        try:
+            from thot.fusion.memory import brief as shared_brief
+
+            return shared_brief(self.root)
+        except Exception:
+            return ""
 
     def _goal(self):
         if self.store is None:
