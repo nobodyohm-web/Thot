@@ -76,9 +76,8 @@ def first_run() -> Config | None:
 
 
 def _default_choice(found: Detected) -> int:
-    # A detected Claude subscription is deliberately not the default: Anthropic
-    # only accepts subscription tokens from its own clients, so it would fail
-    # on the first message.
+    if found.claude and found.claude_cli:
+        return 1
     if found.ollama or found.lmstudio:
         return 3
     if found.openai_key:
@@ -87,6 +86,10 @@ def _default_choice(found: Detected) -> int:
 
 
 def _claude_detail(found: Detected) -> str:
+    if found.claude and found.claude_cli:
+        return "ton compte — abonnement détecté"
+    if found.claude_cli:
+        return "compte ou clé API"
     return "clé API (sk-ant-…)"
 
 
@@ -121,12 +124,22 @@ def _ask(label: str, default: str = "") -> str:
 
 
 def _setup_claude(found: Detected) -> Config | None:
-    if found.claude:
-        theme.warn("Abonnement Claude détecté, mais Anthropic ne l'accepte que "
-                   "depuis ses propres clients. Thot a besoin d'une clé API.")
-        theme.console.print()
+    """The account path needs no key: the official CLI already holds the login."""
+    if found.claude and found.claude_cli:
+        theme.ok("Compte Claude connecté — Thot passe par le CLI officiel")
+        theme.hint("Ton abonnement, ton compte, aucun jeton à copier.")
+        return Config(provider="claude-cli", model="")
 
-    theme.hint("console.anthropic.com/settings/keys")
+    if found.claude_cli:
+        theme.warn("Le CLI `claude` est installé mais aucune session n'est ouverte.")
+        theme.hint("Lance `claude` dans un terminal, connecte-toi, puis relance Thot.")
+        theme.console.print()
+        theme.hint("Ou colle une clé API pour continuer maintenant.")
+    else:
+        theme.hint("Pour utiliser ton compte : npm install -g @anthropic-ai/claude-code")
+        theme.console.print()
+        theme.hint("Sinon, une clé API : console.anthropic.com/settings/keys")
+
     theme.console.print()
     key = _secret("clé API (sk-ant-…)")
     if not key:

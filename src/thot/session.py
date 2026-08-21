@@ -19,6 +19,7 @@ from rich.text import Text
 from thot import __version__, agent_tools
 from thot.agent_tools import ToolContext
 from thot.llm.base import Message, Provider, ProviderError
+from thot.llm.claude_cli import ClaudeCli, Events
 from thot.llm.credentials import Config, build_provider, forget
 from thot.recon import Recon, context_brief, sweep
 from thot.ui import theme
@@ -54,6 +55,11 @@ class Session:
         self.config = config
         self.recon: Recon = sweep(root)
         self.provider: Provider | None = None
+        self.claude: ClaudeCli | None = (
+            ClaudeCli(root=root, model=config.model)
+            if config.provider == "claude-cli"
+            else None
+        )
         self.messages: list[Message] = []
         self._prompt = PromptSession(history=self._history())
 
@@ -175,6 +181,8 @@ class Session:
                 theme.console.print()
 
     def _turn(self) -> None:
+        if self.claude is not None:
+            return self._turn_via_cli()
         if self.provider is None:
             self.provider = build_provider(self.config)
 
@@ -205,6 +213,38 @@ class Session:
                     context = self._tool_context()
 
         theme.warn("Trop d'appels d'outils enchaînés — tour interrompu.")
+
+    def _turn_via_cli(self) -> None:
+        """Delegate the turn to the official CLI, rendering its event stream.
+
+        The CLI owns the conversation, so Thot keeps no message history in this
+        mode — `--resume` on the same session id is what carries the thread.
+        """
+        assert self.claude is not None
+        prompt = self.messages[-1].content
+        streamed = _Streamer()
+
+        theme.console.print()
+        events = Events(
+            on_text=streamed.write,
+            on_tool=lambda name, args: self._show_tool(streamed, name, args),
+            on_error=lambda message: theme.error(message),
+        )
+        try:
+            answer = self.claude.send(
+                prompt, brief=context_brief(self.recon), events=events
+            )
+        finally:
+            streamed.close()
+
+        self.messages.append(Message(role="assistant", content=answer))
+        self._refresh()  # the CLI may have edited files
+        theme.console.print()
+
+    def _show_tool(self, streamed: "_Streamer", name: str, arguments: dict) -> None:
+        streamed.close()
+        pretty = name.replace("mcp__thot__", "")
+        theme.console.print(self._tool_line(pretty, arguments))
 
     # -- slash commands --------------------------------------------------
 
@@ -269,6 +309,11 @@ class Session:
                 save_config(config)
                 self.config = config
                 self.provider = None
+                self.claude = (
+                    ClaudeCli(root=self.root, model=config.model)
+                    if config.provider == "claude-cli"
+                    else None
+                )
                 theme.ok(f"Modèle : {config.label()}")
             theme.console.print()
             return None
@@ -300,6 +345,7 @@ class _Streamer:
         if self._started:
             theme.console.file.write("\n")
             theme.console.file.flush()
+            self._started = False
 
 
 def start(root: Path, config: Config) -> int:

@@ -37,12 +37,14 @@ DEFAULT_OPENAI_MODEL = "gpt-5.1"
 class Config:
     """What Thot remembers between runs. Never holds an OAuth access token."""
 
-    provider: str  # "claude" | "openai" | "local" | "custom"
+    provider: str  # "claude-cli" | "claude" | "openai" | "local" | "custom"
     model: str
     api_key: str = ""
     base_url: str = ""
 
     def label(self) -> str:
+        if self.provider == "claude-cli":
+            return f"{self.model or 'claude'} · ton compte"
         return self.model
 
 
