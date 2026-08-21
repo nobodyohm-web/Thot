@@ -27,6 +27,7 @@ from thot.llm.credentials import Config, build_provider, forget
 from thot.paths import history_file
 from thot.recon import Recon, context_brief, sweep
 from thot.state import SessionStore
+from thot import toolsets
 from thot.ui import theme
 
 MAX_TOOL_ROUNDS = 24
@@ -80,13 +81,16 @@ Contexte du dépôt :
 
 class Session:
     def __init__(self, root: Path, config: Config,
-                 store: SessionStore | None = None) -> None:
+                 store: SessionStore | None = None,
+                 toolset: str = "") -> None:
         self.root = root
         self.config = config
+        self.toolset = (toolset or toolsets.DEFAULT).lower()
         self.recon: Recon = sweep(root)
         self.provider: Provider | None = None
         self.claude: ClaudeCli | None = (
-            ClaudeCli(root=root, model=config.model)
+            ClaudeCli(root=root, model=config.model,
+                      denied=toolsets.denied_cli_tools(self.toolset))
             if config.provider == "claude-cli"
             else None
         )
@@ -462,7 +466,7 @@ class Session:
             reply = self.provider.complete(
                 system=self._system(),
                 messages=self.messages,
-                tools=agent_tools.SPECS,
+                tools=toolsets.select(agent_tools.SPECS, self.toolset),
                 on_text=streamed.write,
             )
             streamed.close()
@@ -475,9 +479,19 @@ class Session:
                 return
 
             context = self._tool_context()
+            allowed = set(toolsets.resolve(self.toolset))
             for call in reply.message.tool_calls:
                 theme.console.print(self._tool_line(call.name, call.arguments))
-                result = agent_tools.dispatch(context, call.name, call.arguments)
+                # A model can ask for a tool it was not offered, so the
+                # posture holds at the dispatch and not only at the menu.
+                # A name that is not a tool at all is a different mistake
+                # and must keep saying so.
+                if call.name in agent_tools.NAMES and call.name not in allowed:
+                    result = (f"L'outil `{call.name}` est désactivé : session "
+                              f"en mode {self.toolset}.")
+                else:
+                    result = agent_tools.dispatch(context, call.name,
+                                                  call.arguments)
                 self.messages.append(
                     Message(role="tool", content=result, tool_call_id=call.id)
                 )
@@ -547,6 +561,7 @@ class Session:
             ("/verdict", "écarter ou accepter un finding : /verdict 2 refute raison"),
             ("/audit", "relancer l'analyse et afficher les findings"),
             ("/audit deep", "faire analyser puis réfuter les candidats par le modèle"),
+                ("/tools", "ce que le modèle peut faire : /tools lecture|complet|carte"),
                 ("/deps", "vérifier les dépendances contre OSV.dev"),
                 ("/sandbox", "où tournent les commandes : /sandbox docker|local"),
                 ("/goal", "fixer un objectif suivi : /goal <texte> [--budget N]"),
@@ -589,7 +604,10 @@ class Session:
                 theme.console.print(
                     theme.field("écriture", "sur confirmation")
                 )
-            theme.console.print(theme.field("outils", "carte AST + graphe d'appels"))
+            theme.console.print(
+                theme.field("outils", f"{self.toolset} — "
+                                      f"{toolsets.describe(self.toolset)}")
+            )
             goal = self._goal()
             if goal is not None:
                 theme.console.print(
@@ -647,6 +665,9 @@ class Session:
 
         if command == "verdict":
             return self._verdict(argument)
+
+        if command in {"tools", "outils"}:
+            return self._toolset(argument)
 
         if command in {"deps", "dépendances", "dependances"}:
             return self._deps()
@@ -779,7 +800,8 @@ class Session:
                 self.config = config
                 self.provider = None
                 self.claude = (
-                    ClaudeCli(root=self.root, model=config.model)
+                    ClaudeCli(root=self.root, model=config.model,
+                              denied=toolsets.denied_cli_tools(self.toolset))
                     if config.provider == "claude-cli"
                     else None
                 )
@@ -903,6 +925,31 @@ class Session:
             theme.hint(f"Budget : {created.token_budget} jetons.")
         theme.hint("Il sera rappelé au modèle à chaque tour, y compris après /compact.")
         self._record("goal", f"objectif fixé : {created.objective}")
+        theme.console.print()
+        return None
+
+    def _toolset(self, argument: str) -> None:
+        wanted = argument.strip().lower()
+        theme.console.print()
+        if not wanted:
+            for name, description in toolsets.DESCRIPTIONS.items():
+                mark = "▸ " if name == self.toolset else "  "
+                theme.console.print(theme.entry(mark + name, description,
+                                                width=12))
+            theme.console.print()
+            return None
+        try:
+            toolsets.resolve(wanted)
+        except KeyError as exc:
+            theme.warn(str(exc))
+            theme.console.print()
+            return None
+        self.toolset = wanted
+        if self.claude is not None:
+            # The posture has to reach the official CLI too, or it stops
+            # meaning anything in account mode.
+            self.claude.denied = toolsets.denied_cli_tools(wanted)
+        theme.ok(f"{wanted} — {toolsets.describe(wanted)}")
         theme.console.print()
         return None
 
@@ -1135,15 +1182,32 @@ class Session:
         return None
 
     def _compact(self, argument: str) -> None:
-        """Close this session on a summary and continue with a clean context.
+        """Summarise the middle, keep the beginning and the end verbatim.
 
-        The old session is kept whole and linked as the parent, so compacting
-        loses context, never evidence.
+        Hermes Agent's compression strategy, ported: the opening frames the
+        task and the closing exchanges *are* the task, so neither is
+        paraphrased. Only the middle is, and only as much of it as the
+        budget requires.
+
+        The stored session is still branched, so the whole conversation
+        survives on disk: compacting costs context, never evidence.
         """
         if not self._need_store():
             return None
 
-        summary = argument.strip() or self._summarise()
+        from thot.state import compaction
+
+        manual = argument.strip()
+        proposal = compaction.plan(self.messages)
+
+        if not manual and not proposal.worth_doing:
+            theme.console.print()
+            theme.hint(f"Rien à compacter — ~{proposal.before} jetons, "
+                       f"sous le seuil.")
+            theme.console.print()
+            return None
+
+        summary = manual or self._summarise(proposal)
         if not summary:
             theme.warn("Rien à résumer pour l'instant.")
             theme.console.print()
@@ -1152,30 +1216,63 @@ class Session:
         child = self.store.branch(self.session_id, summary)
         self.session_id = child
 
-        recap = f"Résumé de la session précédente :\n{summary}"
+        if manual and not proposal.worth_doing:
+            kept = [Message(role="user",
+                            content=f"{compaction.MARKER} :\n{summary}")]
+        else:
+            kept = compaction.apply(
+                self.messages, proposal, summary,
+                make_message=lambda role, content: Message(role=role,
+                                                           content=content),
+            )
+
         if self.claude is not None:
+            # The CLI owns its own context, so compacting there means a new
+            # thread; the summary and the tail ride in with the next prompt.
             self.claude.forget_thread()
             self.store.link_cli(child, self.claude.session_id)
-            self.carry = recap
+            self.carry = self._carry_text(kept)
             self.messages = []
         else:
-            self.messages = [Message(role="user", content=recap)]
+            self.messages = kept
 
         theme.console.print()
         theme.ok(f"Session compactée → {child[:8]}")
-        theme.hint(" ".join(summary.split())[:100])
+        theme.hint(proposal.describe() if proposal.worth_doing
+                   else "résumé fourni à la main")
         theme.console.print()
         return None
 
-    def _summarise(self) -> str:
-        """Ask the model for the summary; fall back to the questions asked."""
-        spoken = [m for m in self.messages if m.role in {"user", "assistant"} and m.content]
-        if not spoken:
+    @staticmethod
+    def _carry_text(messages) -> str:
+        """What a fresh CLI thread is told about the one it replaces."""
+        lines = []
+        for message in messages:
+            content = (message.content or "").strip()
+            if content:
+                lines.append(f"[{message.role}] {content}")
+        return "\n\n".join(lines)
+
+    def _summarise(self, proposal=None) -> str:
+        """Summarise the span being dropped — not the whole conversation.
+
+        Summarising everything is what made `/compact` lose the answer you
+        were about to ask a follow-up question about.
+        """
+        from thot.state import compaction
+
+        if proposal is not None and proposal.worth_doing:
+            material = compaction.excerpt(self.messages, proposal.start,
+                                          proposal.end)
+        else:
+            material = compaction.excerpt(self.messages, 0, len(self.messages))
+        if not material.strip():
             return ""
 
         instruction = (
-            "Résume cette session en 10 lignes maximum : ce qui a été cherché, "
-            "ce qui a été trouvé, ce qui reste à faire. Pas de préambule."
+            "Résume ce passage d'une session de travail en 10 lignes maximum : "
+            "ce qui a été cherché, ce qui a été trouvé, ce qui reste à faire. "
+            "Pas de préambule.\n\n---\n\n" + material
         )
         try:
             if self.claude is not None:
@@ -1184,12 +1281,13 @@ class Session:
                 self.provider = build_provider(self.config)
             reply = self.provider.complete(
                 system="Tu résumes une session de travail.",
-                messages=[*self.messages, Message(role="user", content=instruction)],
+                messages=[Message(role="user", content=instruction)],
                 tools=(),
             )
             return (reply.message.content or "").strip()
         except (ProviderError, OSError):
-            asked = [m.content for m in spoken if m.role == "user"]
+            asked = [m.content for m in self.messages
+                     if m.role == "user" and m.content]
             return "Questions posées :\n" + "\n".join(f"- {a}" for a in asked[-10:])
 
     def _export(self, argument: str) -> None:
@@ -1295,5 +1393,5 @@ class _Streamer:
             self._started = False
 
 
-def start(root: Path, config: Config) -> int:
-    return Session(root=root, config=config).run()
+def start(root: Path, config: Config, *, toolset: str = "") -> int:
+    return Session(root=root, config=config, toolset=toolset).run()

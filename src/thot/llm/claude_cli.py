@@ -30,6 +30,14 @@ PERMISSION_MODE = "acceptEdits"
 # name. They only read the precomputed map — none of them touches the disk.
 ALLOWED_TOOLS = tuple(f"mcp__thot__{name}" for name in EXPOSED)
 
+# The official CLI brings its own file and shell tools, which Thot's toolset
+# postures know nothing about. In account mode a read-only posture that only
+# filtered Thot's tools would be a lie: the CLI could still write. These are
+# the names to hand to --disallowed-tools so the posture means the same
+# thing in both modes.
+WRITING_TOOLS = ("Write", "Edit", "MultiEdit", "NotebookEdit", "Bash")
+READING_TOOLS = ("Read", "Glob", "Grep", "WebFetch", "WebSearch")
+
 
 CLAUDE_SETTINGS = Path.home() / ".claude" / "settings.json"
 CLAUDE_CONFIG = Path.home() / ".claude.json"
@@ -124,6 +132,7 @@ class ClaudeCli:
     active_model: str = ""  # what the CLI actually used, learned from the stream
     last_tokens: int = 0  # what the last turn cost, learned from the result event
     isolated: bool = False  # cut the user's own MCP servers out of the session
+    denied: tuple[str, ...] = ()  # CLI tools the session's posture forbids
     _started: bool = False
 
     def resume(self, session_id: str) -> None:
@@ -167,6 +176,8 @@ class ClaudeCli:
             "--mcp-config", json.dumps(config_payload(self.root)),
             "--allowed-tools", " ".join(allowed),
         ]
+        if self.denied:
+            command += ["--disallowed-tools", *self.denied]
         if self.isolated:
             command.append("--strict-mcp-config")
         if self.model:

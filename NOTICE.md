@@ -106,6 +106,27 @@ machinery — file sync, long-lived containers, Modal, Daytona, Vercel,
 Singularity, SSH — is not ported: Thot needs one command to run and the
 container to be gone. No upstream code copied.
 
+**Compaction strategy** (`src/thot/state/compaction.py`) — the strategy in
+`trajectory_compressor.py`: protect the first turns, protect the last
+turns, compress only the middle and only as much as needed, never split a
+tool call from its result. Hermes applies it to finished trajectories for
+training; Thot applies it live to `/compact`. Token counting is an
+estimate here rather than a real tokenizer — the number only decides *how
+much* to compress. No upstream code copied.
+
+**Logging** (`src/thot/logs.py`) — the one-entry-point, rotating-file
+shape of `hermes_logging.py`, under `~/.thot/logs/`. No upstream code
+copied.
+
+**Windows UTF-8 bootstrap** (`src/thot/bootstrap.py`) — the fix from
+`hermes_bootstrap.py`, and the reason it matters more here: Thot's entire
+interface is French, so a cp1252 console raises before the first finding
+is printed. Windows only, POSIX untouched.
+
+**Toolsets** (`src/thot/toolsets.py`) — the named-tool-group idea from
+`toolsets.py`, reduced from a composable alias system to three postures.
+No upstream code copied.
+
 **Local observability** (`plugins/audit-log/`) — the useful half of Hermes's
 `plugins/observability/*`, without the vendor: a JSONL journal on this
 machine instead of a Langfuse or Datadog client.

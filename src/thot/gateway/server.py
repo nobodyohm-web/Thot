@@ -14,6 +14,7 @@ from __future__ import annotations
 import sys
 import time
 
+from thot import logs
 from thot.gateway import config
 from thot.gateway.base import Channel, Delivery
 from thot.gateway.commands import Board, handle
@@ -24,8 +25,17 @@ from thot.gateway.platforms import build
 IDLE_SECONDS = 3
 
 
+_logger = logs.get("gateway")
+
+
 def _log(message: str) -> None:
+    """On screen for whoever started the daemon, and in the file for later.
+
+    A daemon that ran for three days and then misbehaved leaves nothing on
+    a terminal that has since been closed.
+    """
     print(f"[thot-gateway] {message}", file=sys.stderr, flush=True)
+    _logger.info(message)
 
 
 def channels() -> list[Channel]:

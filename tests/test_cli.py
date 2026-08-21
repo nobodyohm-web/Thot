@@ -19,7 +19,7 @@ def test_no_command_opens_the_session(monkeypatch):
     monkeypatch.setattr(
         "thot.onboarding.ensure_configured", lambda: "fake-config"
     )
-    def fake_start(root, config):
+    def fake_start(root, config, **kwargs):
         calls["started"] = (root, config)
         return 0
 

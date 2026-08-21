@@ -34,6 +34,10 @@ def build_parser() -> argparse.ArgumentParser:
         "aucun appel modèle, aucun réseau.",
     )
     parser.add_argument("--version", action="version", version=f"thot {__version__}")
+    parser.add_argument(
+        "--tools", choices=["complet", "lecture", "carte"], default="",
+        help="Ce que le modèle peut faire dans la session (défaut : complet)",
+    )
     subparsers = parser.add_subparsers(dest="command")
 
     subparsers.add_parser("login", help="Choisir ou changer le modèle connecté")
@@ -270,7 +274,7 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def _cmd_session(path: str = ".") -> int:
+def _cmd_session(path: str = ".", *, toolset: str = "") -> int:
     """`thot` with no arguments: connect if needed, then open the session."""
     from thot.onboarding import ensure_configured
     from thot.session import start
@@ -281,7 +285,7 @@ def _cmd_session(path: str = ".") -> int:
         theme.console.print()
         theme.hint("Aucun modèle connecté. Relance `thot` quand tu veux.")
         return EXIT_USAGE
-    return start(Path(path).resolve(), config)
+    return start(Path(path).resolve(), config, toolset=toolset)
 
 
 def _cmd_login() -> int:
@@ -460,11 +464,15 @@ def _cmd_schedule(args) -> int:
 
 def _run_scheduled(name: str | None) -> int:
     """Execute due jobs and print only what is new. Silence is the success case."""
+    from thot import logs
     from thot.memory import build_memory
     from thot.paths import run_store
     from thot.schedule import jobs
     from thot.schedule.runner import run_job
     from thot.store.db import Store
+
+    logs.setup(mode="cron")
+    logger = logs.get("schedule")
 
     selected = [j for j in jobs.load() if name is None or j.name == name]
     if not selected:
@@ -482,6 +490,8 @@ def _run_scheduled(name: str | None) -> int:
                 fresh, total = run_job(job, store=store, memory=memory)
             finally:
                 getattr(memory, "close", lambda: None)()
+            logger.info("%s : %d nouveau(x) sur %d — %s",
+                        job.name, len(fresh), total, job.root)
             if not fresh:
                 continue
             found_something = True
@@ -809,7 +819,10 @@ def _cmd_gateway(args) -> int:
 
 
 def _cmd_serve(args) -> int:
+    from thot import logs
     from thot.gateway.server import serve
+
+    logs.setup(mode="gateway")
 
     try:
         return serve(once=args.once)
@@ -1066,7 +1079,7 @@ def main(argv: list[str] | None = None) -> int:
         return int(exc.code or 0)
 
     if not args.command:
-        return _cmd_session()
+        return _cmd_session(toolset=getattr(args, "tools", ""))
 
     try:
         if args.command == "login":
@@ -1113,4 +1126,8 @@ def main(argv: list[str] | None = None) -> int:
 
 
 def run() -> None:
+    """The console entry point. Bootstrap before anything prints."""
+    from thot import bootstrap
+
+    bootstrap.apply()
     sys.exit(main())

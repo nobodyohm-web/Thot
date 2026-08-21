@@ -315,3 +315,36 @@ def test_skills_answers_with_an_index_before_it_answers_with_a_wall(session, cap
     assert "vulnerability-triage" in listed
     # An index, not ninety descriptions.
     assert "Turn taint candidates" not in listed
+
+
+def test_compacting_keeps_the_last_exchanges_verbatim(session):
+    """The whole point: a follow-up question must meet the answer, not a gloss."""
+    for index in range(40):
+        session.messages.append(Message(role="assistant",
+                                        content=f"étape {index} " * 300))
+        session.messages.append(Message(role="tool", content=f"sortie {index} " * 300))
+    session.messages.append(Message(role="user", content="et le parseur JSON ?"))
+    session.messages.append(Message(role="assistant", content="il valide en amont"))
+
+    session.provider = ScriptedProvider(
+        [Message(role="assistant", content="résumé du milieu")]
+    )
+    session._compact("")
+
+    contents = [m.content for m in session.messages]
+    assert "et le parseur JSON ?" in contents
+    assert "il valide en amont" in contents
+    assert any("résumé du milieu" in c for c in contents)
+    assert len(session.messages) < 82
+
+
+def test_compacting_a_short_session_does_nothing_and_costs_nothing(session):
+    session.messages.append(Message(role="user", content="bonjour"))
+    provider = ScriptedProvider([Message(role="assistant", content="jamais appelé")])
+    session.provider = provider
+    before = session.session_id
+
+    session._compact("")
+
+    assert provider.calls == [], "rien à compacter ne doit rien coûter"
+    assert session.session_id == before

@@ -181,6 +181,23 @@ Rien n'est jamais supprimé en silence. Un finding écarté reste dans le rappor
 en `refuted`, avec sa raison et son auteur — un audit qui cache ce qu'on lui a
 dit d'ignorer n'est pas relisable.
 
+## Ce que le modèle a le droit de faire
+
+```bash
+thot --tools lecture      # lire et raisonner, jamais modifier
+thot --tools carte        # la carte seule : aucun fichier ouvert
+```
+
+En session : `/tools lecture`. Relire un dépôt qui n'est pas le tien, c'est
+lire du code dont tu as toute raison de te méfier — et que le modèle le
+modifie est rarement ce que tu voulais.
+
+La posture tient à **trois** endroits, pas un : les outils proposés au modèle,
+le moment où il en appelle un quand même, et — en mode compte — le CLI
+officiel, à qui `--disallowed-tools` interdit `Write`, `Edit` et `Bash`. Une
+posture qui ne filtrerait que les outils de Thot serait un mensonge là où ça
+compte le plus.
+
 ## La chaîne d'approvisionnement
 
 ```bash

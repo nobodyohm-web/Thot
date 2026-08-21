@@ -549,6 +549,8 @@ HANDLERS: dict[str, Callable[..., str]] = {
 }
 
 # Tools that change the world; the session shows them differently.
+NAMES = frozenset(spec.name for spec in SPECS)
+
 MUTATING = frozenset({"write_file", "edit_file", "run_command"})
 
 
