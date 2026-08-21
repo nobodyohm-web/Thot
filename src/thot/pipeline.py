@@ -12,6 +12,7 @@ from thot.analysis.probe import DEFAULT_LIMIT, analyse
 from thot.codemap.graph import CodeGraph
 from thot.codemap.python_indexer import PythonIndexer
 from thot.guard.scanner import sweep_patterns
+from thot.memory.base import Memory, apply_memory, record_verdicts
 from thot.contracts import Confidence, Finding
 from thot.scope.authorization import load_authorization
 from thot.scope.detect import detect_scope
@@ -31,6 +32,7 @@ class AuditResult:
     elapsed: float
     run_id: int | None = None
     engine: str | None = None  # None when the run stayed deterministic
+    remembered: int = 0  # findings a stored verdict applied to
 
     @property
     def confirmed(self) -> list[Finding]:
@@ -90,6 +92,7 @@ def run_audit(
     require_authorization: bool = True,
     engine: "Engine | None" = None,
     budget: int = DEFAULT_LIMIT,
+    memory: Memory | None = None,
 ) -> AuditResult:
     """Map, taint, score — then, if an engine is given, probe and refute.
 
@@ -121,10 +124,23 @@ def run_audit(
     # CI workflows — and shapes that are dangerous without a provable path.
     findings += sweep_patterns(root, list(manifest.files))
 
+    # Past decisions land before the model does: select_for_analysis skips
+    # refuted findings, so remembering a dismissal is what stops Thot paying
+    # to re-litigate it every single run.
+    remembered = 0
+    if memory is not None and findings:
+        before = findings
+        findings = apply_memory(findings, memory)
+        remembered = sum(
+            1 for old, new in zip(before, findings) if old is not new
+        )
+
     engine_name = None
     if engine is not None and findings:
         findings = analyse(root, findings, engine, limit=budget)
         engine_name = engine.capabilities.name
+        if memory is not None:
+            record_verdicts(findings, memory)
 
     elapsed = time.monotonic() - started
     run_id = None
@@ -139,4 +155,5 @@ def run_audit(
         elapsed=elapsed,
         run_id=run_id,
         engine=engine_name,
+        remembered=remembered,
     )

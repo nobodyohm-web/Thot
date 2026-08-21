@@ -112,3 +112,28 @@ def test_unparseable_python_still_gets_scanned():
 
 def test_non_python_files_are_unaffected():
     assert scan_text("ui.jsx", "el.innerHTML = x;\n")
+
+
+# -- identity must expire when the dangerous line changes --------------------
+# A pattern finding's id keys its stored verdict. Keying on the rule name alone
+# made that verdict immortal: dismiss one os.system in a file and any future
+# os.system in that same file inherits the dismissal.
+
+
+def test_identity_changes_when_the_matching_line_changes():
+    safe = scan_text("a.py", "import os\nos.system(FIXED_COMMAND)\n")
+    risky = scan_text("a.py", "import os\nos.system(user_input)\n")
+    assert safe and risky
+    assert safe[0].id != risky[0].id
+
+
+def test_identity_survives_edits_elsewhere_in_the_file():
+    before = scan_text("a.py", "import os\nos.system(cmd)\n")
+    after = scan_text("a.py", "import os\n\ndef helper():\n    pass\n\nos.system(cmd)\n")
+    assert before[0].id == after[0].id
+
+
+def test_identity_survives_reindentation():
+    flat = scan_text("a.py", "import os\nos.system(cmd)\n")
+    nested = scan_text("a.py", "import os\nif x:\n        os.system(cmd)\n")
+    assert flat[0].id == nested[0].id

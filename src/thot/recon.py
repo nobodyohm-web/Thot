@@ -85,8 +85,35 @@ def sweep(root: Path, *, deep: bool = True) -> Recon:
 
         recon.findings = findings_from_graph(root, recon.graph)
 
+    if deep:
+        # Same analysis the CLI runs, so /audit and `thot audit` never disagree.
+        from thot.guard.scanner import sweep_patterns
+
+        recon.findings += sweep_patterns(root, list(manifest.files))
+        recon.findings = _remember(recon.findings)
+
     recon.elapsed = time.monotonic() - started
     return recon
+
+
+def _remember(findings: list) -> list:
+    """Fold past verdicts in. A memory that cannot be opened is not fatal."""
+    if not findings:
+        return findings
+    try:
+        from thot.memory import apply_memory
+        from thot.memory.sqlite import SqliteMemory
+    except ImportError:
+        return findings
+
+    try:
+        memory = SqliteMemory.open()
+    except Exception:
+        return findings
+    try:
+        return apply_memory(findings, memory)
+    finally:
+        memory.close()
 
 
 def context_brief(recon: Recon, *, max_symbols: int = 60) -> str:

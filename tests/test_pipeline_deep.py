@@ -73,3 +73,57 @@ def test_verdicts_are_what_gets_persisted(toy_repo, tmp_path):
     finally:
         store.close()
     assert any(f.confidence is Confidence.CONFIRMED for f in stored)
+
+
+# -- memory in the loop ------------------------------------------------------
+
+
+def test_a_remembered_dismissal_is_applied_and_counted(toy_repo, tmp_path):
+    from thot.memory import Decision, Verdict
+    from thot.memory.sqlite import SqliteMemory
+
+    memory = SqliteMemory.open(tmp_path / "m.db")
+    try:
+        first = run_audit(toy_repo, require_authorization=False)
+        assert first.findings
+        memory.remember(
+            Verdict.of(first.findings[0], Decision.REFUTED, "faux positif", "dev")
+        )
+
+        second = run_audit(toy_repo, require_authorization=False, memory=memory)
+        assert second.remembered == 1
+        assert second.findings[0].confidence is Confidence.REFUTED
+        assert "faux positif" in second.findings[0].failure_scenario
+    finally:
+        memory.close()
+
+
+def test_a_dismissal_stops_the_model_being_paid_again(toy_repo, tmp_path):
+    """The economic point of the whole feature."""
+    from thot.memory import Decision, Verdict
+    from thot.memory.sqlite import SqliteMemory
+
+    memory = SqliteMemory.open(tmp_path / "m.db")
+    try:
+        baseline = run_audit(toy_repo, require_authorization=False)
+        for finding in baseline.findings:
+            memory.remember(Verdict.of(finding, Decision.REFUTED, "tous écartés"))
+
+        engine = VerdictEngine()
+        run_audit(toy_repo, require_authorization=False, engine=engine, memory=memory)
+        assert engine.seen == []  # not one call made
+    finally:
+        memory.close()
+
+
+def test_adversarial_refutations_are_remembered_for_next_time(toy_repo, tmp_path):
+    from thot.memory.sqlite import SqliteMemory
+
+    memory = SqliteMemory.open(tmp_path / "m.db")
+    try:
+        run_audit(toy_repo, require_authorization=False,
+                  engine=VerdictEngine(refute=True), memory=memory)
+        assert memory.all_verdicts()
+        assert memory.all_verdicts()[0].author == "thot"
+    finally:
+        memory.close()

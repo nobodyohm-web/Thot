@@ -14,7 +14,7 @@ SOURCE_ROOT = Path(__file__).resolve().parents[1] / "src" / "thot"
 # The llm/, session and ui layers are allowed to reach the network.
 CORE_PACKAGES = (
     "codemap", "taint", "scope", "scoring", "store", "report", "analysis",
-    "guard",
+    "guard", "memory",
 )
 
 

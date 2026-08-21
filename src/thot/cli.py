@@ -38,6 +38,14 @@ def build_parser() -> argparse.ArgumentParser:
     subparsers.add_parser("login", help="Choisir ou changer le modèle connecté")
     subparsers.add_parser("logout", help="Oublier le modèle connecté")
 
+    verdicts = subparsers.add_parser(
+        "verdicts", help="Les décisions d'audit mémorisées"
+    )
+    verdicts.add_argument("--forget", metavar="ID", help="Oublier une décision")
+    verdicts.add_argument(
+        "--path", metavar="CHEMIN", help="Filtrer sur un chemin de fichier"
+    )
+
     init = subparsers.add_parser(
         "init", help="Déclarer l'autorisation d'auditer un dépôt"
     )
@@ -68,6 +76,10 @@ def build_parser() -> argparse.ArgumentParser:
     )
     audit.add_argument(
         "--no-store", action="store_true", help="Ne pas persister le run"
+    )
+    audit.add_argument(
+        "--no-memory", action="store_true",
+        help="Ignorer les verdicts enregistrés pour ce run",
     )
     audit.add_argument(
         "--deep", action="store_true",
@@ -160,11 +172,27 @@ def _cmd_audit(args) -> int:
 
     store = None if args.no_store else Store.open(DEFAULT_STORE)
 
+    memory = None
+    if not args.no_memory:
+        from thot.memory.sqlite import SqliteMemory
+
+        memory = SqliteMemory.open()
+
     try:
-        result = run_audit(root, store=store, engine=engine, budget=args.budget)
+        result = run_audit(
+            root, store=store, engine=engine, budget=args.budget, memory=memory
+        )
     finally:
         if store is not None:
             store.close()
+        if memory is not None:
+            memory.close()
+
+    if result.remembered:
+        print(
+            f"{result.remembered} finding(s) portent une décision mémorisée.",
+            file=sys.stderr,
+        )
 
     floor = 0 if args.all else _SEVERITY_RANK.index(Severity(args.min_severity))
     kept = [
@@ -204,6 +232,36 @@ def _cmd_audit(args) -> int:
     return EXIT_OK
 
 
+def _cmd_verdicts(args) -> int:
+    from thot.memory.sqlite import SqliteMemory
+
+    memory = SqliteMemory.open()
+    try:
+        if args.forget:
+            removed = memory.forget(args.forget)
+            print("Oublié." if removed else f"Aucune décision pour {args.forget}.")
+            return EXIT_OK if removed else EXIT_USAGE
+
+        stored = memory.all_verdicts()
+        if args.path:
+            stored = [v for v in stored if args.path in v.path]
+        if not stored:
+            print("Aucune décision mémorisée.")
+            print("Les réfutations de `thot audit --deep` s'enregistrent ici.")
+            return EXIT_OK
+
+        print(f"{len(stored)} décision(s)\n")
+        for verdict in stored:
+            where = f"{verdict.path}:{verdict.symbol}" if verdict.symbol else verdict.path
+            author = f" · {verdict.author}" if verdict.author else ""
+            print(f"{verdict.finding_id}  {verdict.decision.value:<9} {where}{author}")
+            if verdict.reason:
+                print(f"{' ' * 18}{verdict.reason[:90]}")
+        return EXIT_OK
+    finally:
+        memory.close()
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     try:
@@ -221,6 +279,8 @@ def main(argv: list[str] | None = None) -> int:
             return _cmd_logout()
         if args.command == "init":
             return _cmd_init(args)
+        if args.command == "verdicts":
+            return _cmd_verdicts(args)
         if args.command == "audit":
             return _cmd_audit(args)
     except AuthorizationError as exc:

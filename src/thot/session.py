@@ -158,6 +158,61 @@ class Session:
 
         theme.console.print()
 
+    @staticmethod
+    def _whoami() -> str:
+        import getpass
+
+        try:
+            return getpass.getuser()
+        except Exception:
+            return ""
+
+    def _verdict(self, argument: str) -> None:
+        """`/verdict 2 refute l'entrée est une constante`.
+
+        Indexed on the last report rather than on a finding id: nobody types a
+        sixteen-character hash, and a decision nobody makes is a decision the
+        next audit asks for again.
+        """
+        from thot.memory import Decision, Verdict
+        from thot.memory.sqlite import SqliteMemory
+
+        parts = argument.split(maxsplit=2)
+        findings = self.recon.findings
+        if len(parts) < 2 or not parts[0].isdigit():
+            theme.warn("Usage : /verdict <n° du finding> refute|accept|fixed <raison>")
+            theme.hint("Le n° est celui de la dernière liste — `/audit` pour la revoir.")
+            return None
+
+        index = int(parts[0])
+        if not 1 <= index <= len(findings):
+            theme.warn(f"Il n'y a que {len(findings)} finding(s).")
+            return None
+
+        decision = Decision.parse(parts[1])
+        if decision is None:
+            theme.warn(f"« {parts[1]} » n'est pas une décision.")
+            theme.hint("refute (faux positif) · accept (risque assumé) · fixed (corrigé)")
+            return None
+
+        reason = parts[2] if len(parts) > 2 else ""
+        if not reason:
+            theme.warn("Une raison est obligatoire — elle sera relue dans six mois.")
+            return None
+
+        finding = findings[index - 1]
+        memory = SqliteMemory.open()
+        try:
+            memory.remember(Verdict.of(finding, decision, reason, self._whoami()))
+        finally:
+            memory.close()
+
+        theme.ok(f"{finding.rule} à {finding.location} — {decision.value}")
+        theme.hint("Retenu tant que ce code ne change pas. `thot verdicts` pour revoir.")
+        theme.console.print()
+        self._refresh()
+        return None
+
     def _deep_analyse(self, findings: list) -> list:
         """Spend the model on the worst candidates, then try to refute them.
 
@@ -343,6 +398,7 @@ class Session:
             for name, description in (
                 ("/status", "sur quoi tu tournes, et où"),
             ("/skills", "les méthodes disponibles"),
+            ("/verdict", "écarter ou accepter un finding : /verdict 2 refute raison"),
             ("/audit", "relancer l'analyse et afficher les findings"),
             ("/audit deep", "faire analyser puis réfuter les candidats par le modèle"),
                 ("/scan", "recalculer la carte du dépôt"),
@@ -386,6 +442,9 @@ class Session:
             theme.hint("`/model` pour changer, `thot logout` pour tout oublier.")
             theme.console.print()
             return None
+
+        if command == "verdict":
+            return self._verdict(argument)
 
         if command == "skills":
             from thot.skills import discover

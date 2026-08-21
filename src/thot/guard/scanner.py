@@ -12,6 +12,7 @@ usually are:
 
 from __future__ import annotations
 
+import hashlib
 import io
 import re
 import tokenize
@@ -120,6 +121,24 @@ def _first_line(text: str, pattern: dict) -> int:
     return 1
 
 
+def _line_identity(text: str, line: int) -> str:
+    """Hash of the triggering line, whitespace-normalised.
+
+    This is what a stored verdict is keyed on, so the granularity is a safety
+    property, not a detail. Keying on the rule name alone made a dismissal
+    immortal — dismiss one os.system in a file and every later os.system in
+    that file inherits the pardon. Keying on the whole file would be the
+    opposite failure: any unrelated edit would resurrect settled decisions.
+
+    The triggering line is the right unit: change what the dangerous call
+    does and the verdict expires; reformat or edit around it and it holds.
+    """
+    lines = text.splitlines()
+    raw = lines[line - 1] if 0 < line <= len(lines) else ""
+    normalised = " ".join(raw.split())
+    return hashlib.sha256(normalised.encode()).hexdigest()[:16]
+
+
 def _applies(pattern: dict, relative: str, text: str) -> bool:
     path_check = pattern.get("path_check")
     if path_check is not None and not path_check(relative):
@@ -159,9 +178,12 @@ def scan_text(relative: str, text: str) -> list[Finding]:
             continue
 
         impact = _IMPACT.get(name, _DEFAULT_IMPACT)
+        line = _first_line(scannable, pattern)
         location = CodeRef(
-            path=relative, line=_first_line(scannable, pattern), symbol=None,
-            ast_hash=name,  # stable identity: the rule, not the line
+            path=relative,
+            line=line,
+            symbol=None,
+            ast_hash=_line_identity(scannable, line),
         )
         rule = f"pattern.{name}"
         findings.append(
