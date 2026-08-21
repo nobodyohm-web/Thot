@@ -276,8 +276,7 @@ class Session:
         sixteen-character hash, and a decision nobody makes is a decision the
         next audit asks for again.
         """
-        from thot.memory import Decision, Verdict
-        from thot.memory.sqlite import SqliteMemory
+        from thot.memory import Decision, Verdict, build_memory
 
         parts = argument.split(maxsplit=2)
         findings = self.recon.findings
@@ -304,11 +303,11 @@ class Session:
 
         finding = findings[index - 1]
         verdict = Verdict.of(finding, decision, reason, self._whoami())
-        memory = SqliteMemory.open()
+        memory = build_memory(self.root)
         try:
             memory.remember(verdict)
         finally:
-            memory.close()
+            getattr(memory, "close", lambda: None)()
 
         from thot.plugins import notify_verdict
 

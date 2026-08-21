@@ -72,6 +72,21 @@ macOS checkpoint barriers, compression locks. No upstream code copied.
 isolate-every-callback dispatch are adapted from `hermes_cli/plugins.py`.
 Narrowed from dozens of hooks to five. No upstream code copied.
 
+**Gateway** (`src/thot/gateway/`) — the platform-adapter shape from
+`plugins/platforms/*`, narrowed to `send` and `poll`, with Hermes's own
+environment-variable names so a machine configured for Hermes needs nothing
+new. Five channels of its twenty-two. Hermes's `ALLOW_ALL_USERS` escape
+hatch is deliberately not ported: this gateway can start audits and record
+verdicts. No upstream code copied.
+
+**Memory backends** (`src/thot/memory/remote.py`) — the self-hosted mem0
+contract exactly as `plugins/memory/mem0/_backend.py` speaks it
+(`X-API-Key`, `POST /memories`, `POST /search`, `DELETE /memories/{id}`),
+so a mem0 server already running for Hermes serves Thot too. Thot stores
+one memory per verdict with `infer` off, because mem0's inference
+paraphrases and a paraphrased verdict stops matching its finding. No
+upstream code copied.
+
 **Local observability** (`plugins/audit-log/`) — the useful half of Hermes's
 `plugins/observability/*`, without the vendor: a JSONL journal on this
 machine instead of a Langfuse or Datadog client.
@@ -113,6 +128,15 @@ is not.
 
 **skill-creator** (`skills/software-development/skill-creator/`) — Prime's
 skill of the same name, rewritten for Thot's storage layout and trust model.
+
+**Memory provider discovery** (`src/thot/memory/factory.py`,
+`layered.py`) — the several-sources-one-active idea from
+`plugins/memory/__init__.py`. Hermes orders its sources bundled-first so a
+directory dropped into a working tree cannot silently redirect the agent's
+memory; Thot orders its layers repository-first for the mirror-image
+reason — here the working tree is the reviewed artefact and the local
+store is the scratch pad. Writes still land locally, and publishing to the
+committed file is a separate act.
 
 ### Shared
 

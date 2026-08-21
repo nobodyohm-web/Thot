@@ -169,6 +169,14 @@ def build_parser() -> argparse.ArgumentParser:
     verdicts.add_argument(
         "--path", metavar="CHEMIN", help="Filtrer sur un chemin de fichier"
     )
+    verdicts.add_argument(
+        "--share", metavar="ID",
+        help="Publier une décision dans .thot/verdicts.json, versionné avec le code",
+    )
+    verdicts.add_argument(
+        "--where", action="store_true",
+        help="Dire d'où viennent les décisions et où elles sont écrites",
+    )
 
     init = subparsers.add_parser(
         "init", help="Déclarer l'autorisation d'auditer un dépôt"
@@ -299,9 +307,9 @@ def _cmd_audit(args) -> int:
 
     memory = None
     if not args.no_memory:
-        from thot.memory.sqlite import SqliteMemory
+        from thot.memory import build_memory
 
-        memory = SqliteMemory.open()
+        memory = build_memory(root)
 
     try:
         result = run_audit(
@@ -410,7 +418,7 @@ def _cmd_schedule(args) -> int:
 
 def _run_scheduled(name: str | None) -> int:
     """Execute due jobs and print only what is new. Silence is the success case."""
-    from thot.memory.sqlite import SqliteMemory
+    from thot.memory import build_memory
     from thot.paths import run_store
     from thot.schedule import jobs
     from thot.schedule.runner import run_job
@@ -422,11 +430,16 @@ def _run_scheduled(name: str | None) -> int:
         return EXIT_USAGE
 
     store = Store.open(run_store())
-    memory = SqliteMemory.open()
     found_something = False
     try:
         for job in selected:
-            fresh, total = run_job(job, store=store, memory=memory)
+            # Per job, not per run: each repository may carry its own
+            # committed verdicts, and they are not interchangeable.
+            memory = build_memory(job.root)
+            try:
+                fresh, total = run_job(job, store=store, memory=memory)
+            finally:
+                getattr(memory, "close", lambda: None)()
             if not fresh:
                 continue
             found_something = True
@@ -435,16 +448,34 @@ def _run_scheduled(name: str | None) -> int:
                 print(f"  {finding.severity.value.upper():<8} {finding.rule}  {finding.location}")
     finally:
         store.close()
-        memory.close()
 
     return EXIT_FINDINGS if found_something else EXIT_OK
 
 
 def _cmd_verdicts(args) -> int:
-    from thot.memory.sqlite import SqliteMemory
+    from thot.memory import build_memory
 
-    memory = SqliteMemory.open()
+    root = Path.cwd().resolve()
+    memory = build_memory(root)
     try:
+        if args.where:
+            described = getattr(memory, "describe", lambda: memory.name)()
+            print(f"Chaîne : {described}")
+            print(f"Local  : {home_hint()}")
+            print(f"Dépôt  : {repo_verdicts(root)}")
+            for layer in getattr(memory, "layers", []):
+                # A remote layer that is quietly doing nothing is the whole
+                # reason this flag exists.
+                if not hasattr(layer, "last_error"):
+                    continue
+                reachable = layer.is_available()
+                state = "joignable" if reachable else (layer.last_error or "muet")
+                print(f"Distant: {layer.name} — {state}")
+            return EXIT_OK
+
+        if args.share:
+            return _share_verdict(memory, args.share, root)
+
         if args.forget:
             removed = memory.forget(args.forget)
             print("Oublié." if removed else f"Aucune décision pour {args.forget}.")
@@ -467,7 +498,44 @@ def _cmd_verdicts(args) -> int:
                 print(f"{' ' * 18}{verdict.reason[:90]}")
         return EXIT_OK
     finally:
-        memory.close()
+        getattr(memory, "close", lambda: None)()
+
+
+def home_hint() -> str:
+    from thot.paths import memory_db
+
+    return str(memory_db())
+
+
+def repo_verdicts(root) -> str:
+    from thot.memory import repo_path
+
+    path = repo_path(root)
+    return f"{path} ({'présent' if path.is_file() else 'absent'})"
+
+
+def _share_verdict(memory, finding_id: str, root) -> int:
+    """Promote a local decision into the file the team reviews.
+
+    Deliberately a separate act. `/verdict` writes locally, because a tool
+    that edits a committed file on every keystroke produces pull-request
+    diffs nobody asked for. Publishing is a decision of its own.
+    """
+    from thot.memory import JsonMemory
+
+    verdict = memory.recall(finding_id)
+    if verdict is None:
+        print(f"Aucune décision pour {finding_id}.", file=sys.stderr)
+        return EXIT_USAGE
+
+    shared = JsonMemory.for_repo(root)
+    if not shared.is_available():
+        print(f"Impossible d'écrire dans {repo_verdicts(root)}.", file=sys.stderr)
+        return EXIT_USAGE
+    shared.remember(verdict)
+    print(f"{verdict.rule} à {verdict.path} — {verdict.decision.value}")
+    print(f"Publié dans {shared.path}. Commite-le pour le partager.")
+    return EXIT_OK
 
 
 def _cmd_gateway(args) -> int:

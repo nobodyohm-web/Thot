@@ -17,12 +17,22 @@ CORE_PACKAGES = (
     "guard", "memory",
 )
 
+# A verdict store that lives on another machine is a network client by
+# definition, like `llm/`. It is excluded from the *static* scan and held to
+# a stricter promise instead: the transitive test below proves that opening
+# the default memory never reaches it. Naming the file here is deliberate —
+# a second network module inside the core would fail the scan and have to be
+# argued for on its own.
+NETWORK_BY_DESIGN = {"remote.py"}
+
 
 def core_files():
     yield SOURCE_ROOT / "contracts.py"
     yield SOURCE_ROOT / "pipeline.py"
     for package in CORE_PACKAGES:
-        yield from (SOURCE_ROOT / package).rglob("*.py")
+        for path in (SOURCE_ROOT / package).rglob("*.py"):
+            if path.name not in NETWORK_BY_DESIGN:
+                yield path
 
 
 def test_core_imports_nothing_from_the_agents():
@@ -83,6 +93,10 @@ def test_the_core_imports_cleanly_without_any_network_library():
         "import thot.pipeline\n"
         "import thot.analysis.probe\n"
         "import thot.engine.base\n"
+        # The default verdict store must be buildable offline: the remote
+        # backends are imported only when one is actually configured.
+        "from thot.memory import build_memory\n"
+        "build_memory(None, config={})\n"
         "print('ok')\n"
     )
     done = subprocess.run(

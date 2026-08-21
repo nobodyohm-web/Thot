@@ -181,6 +181,82 @@ Rien n'est jamais supprimé en silence. Un finding écarté reste dans le rappor
 en `refuted`, avec sa raison et son auteur — un audit qui cache ce qu'on lui a
 dit d'ignorer n'est pas relisable.
 
+## Partager les décisions
+
+Un verdict est un fait sur *cette révision de ce code*. Il voyage donc avec
+le code : `<dépôt>/.thot/verdicts.json`, relu dans la pull request qui touche
+le code concerné, et présent dans un clone neuf avant même le réseau.
+
+```bash
+thot verdicts --share <id>   # publier une décision locale dans le dépôt
+thot verdicts --where        # d'où viennent les décisions, où elles s'écrivent
+```
+
+La chaîne par défaut, sans aucune configuration : **le dépôt d'abord, ta
+machine ensuite**. Une décision passée en revue prime sur une note que tu
+t'es faite à toi-même.
+
+L'écriture, elle, reste locale. Un outil qui modifierait un fichier versionné
+à chaque `/verdict` produirait des diffs que personne n'a demandés : tu décides
+en local, tu publies exprès.
+
+### Un serveur partagé, ou un mem0 existant
+
+```json
+// ~/.thot/memory.json
+{"remote": {"kind": "http", "base_url": "https://audit.equipe.example", "token": "…"}}
+{"remote": {"kind": "mem0", "host": "http://localhost:8888", "api_key": "…"}}
+```
+
+Le backend `mem0` parle le contrat auto-hébergé exactement comme le client
+d'Hermes Agent : un serveur déjà en place pour Hermes sert Thot sans rien
+changer.
+
+Un magasin distant injoignable coûte la mémoire des décisions passées, jamais
+l'audit — mais il ne le fait pas en silence : `thot verdicts --where` dit
+lequel est muet et pourquoi.
+
+## Recevoir les audits ailleurs
+
+Un audit qui se termine à 03:00 ne vaut rien tant que personne n'est prévenu,
+et la personne à prévenir n'est pas devant le terminal.
+
+```bash
+thot gateway add ntfy topic=thot-topic
+thot gateway add telegram token=… chat_id=…
+thot gateway allow telegram <ton-id>     # obligatoire pour commander
+thot gateway test
+thot serve                                # écouter les commandes
+```
+
+| Canal | Sortant | Entrant |
+|---|---|---|
+| Telegram | ✓ | ✓ (long polling — aucun port à ouvrir) |
+| Discord · Slack | ✓ (webhook) | — |
+| ntfy | ✓ | — (pas d'identité : le sujet suffit à publier) |
+| Courriel | ✓ (SMTP) | — |
+
+Les notifications ne demandent aucun démon : le plugin `gateway-notify` se
+déclenche sur `post_audit`, et **seulement** pour un audit non surveillé.
+Un audit lancé à la main s'affiche déjà à l'écran ; notifier à chaque fois
+apprend au destinataire à couper le canal, ce qui coûte le seul message qui
+comptait. Rien de neuf : silence.
+
+### Ce qu'un jeton volé permet
+
+Le démon n'existe que pour le retour, et sa conception tient surtout à ça :
+
+- **le jeu de commandes est fermé** — `status`, `audit`, `findings`, `verdict`,
+  `help`. Pas de shell, pas d'écriture, pas de chemin arbitraire ;
+- **un audit ne peut viser qu'un dépôt déjà déclaré** par `thot schedule add` ;
+- **l'entrant exige une liste d'autorisation**. Hermes propose un
+  `ALLOW_ALL_USERS` pour le développement ; Thot n'a pas d'équivalent. Sans
+  liste, le canal est sortant seulement, et `thot serve` le dit.
+
+`~/.thot/gateway.json` est écrit en `0600` — il contient des jetons de bot et
+un mot de passe SMTP. Les variables d'environnement le surchargent champ par
+champ, sous les noms d'Hermes.
+
 ## Audits programmés
 
 ```bash

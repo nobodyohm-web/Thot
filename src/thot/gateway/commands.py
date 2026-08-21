@@ -57,7 +57,7 @@ def _jobs():
 
 
 def _status() -> str:
-    from thot.memory.sqlite import SqliteMemory
+    from thot.memory import build_memory
 
     jobs = _jobs()
     if not jobs:
@@ -68,18 +68,18 @@ def _status() -> str:
     for job in jobs:
         lines.append(f"· {job.name} — {job.root} ({job.schedule}, seuil {job.threshold})")
 
-    memory = SqliteMemory.open()
+    memory = build_memory(jobs[0].root if jobs else None)
     try:
         decided = len(memory.all_verdicts())
     finally:
-        memory.close()
+        getattr(memory, "close", lambda: None)()
     lines.append(f"\n{decided} décision(s) mémorisée(s).")
     return "\n".join(lines)
 
 
 def _audit(name: str, board: Board) -> str:
     """Run a registered job now. Unregistered paths are refused by design."""
-    from thot.memory.sqlite import SqliteMemory
+    from thot.memory import build_memory
     from thot.paths import run_store
     from thot.pipeline import run_audit
     from thot.store.db import Store
@@ -94,7 +94,7 @@ def _audit(name: str, board: Board) -> str:
         return f"Aucun audit nommé « {name} ». Connus : {known}."
 
     store = Store.open(run_store())
-    memory = SqliteMemory.open()
+    memory = build_memory(chosen.root)
     try:
         result = run_audit(
             Path(chosen.root), store,
@@ -104,7 +104,7 @@ def _audit(name: str, board: Board) -> str:
         return f"L'audit de {chosen.name} a échoué : {exc}"
     finally:
         store.close()
-        memory.close()
+        getattr(memory, "close", lambda: None)()
 
     board.remember(result.findings, chosen.root)
     return render.report(result.findings, root=chosen.root, title=chosen.name)
@@ -123,8 +123,7 @@ def _findings(argument: str, board: Board) -> str:
 
 
 def _verdict(argument: str, board: Board, author: str) -> str:
-    from thot.memory import Decision, Verdict
-    from thot.memory.sqlite import SqliteMemory
+    from thot.memory import Decision, Verdict, build_memory
     from thot.plugins import notify_verdict
 
     parts = argument.split(maxsplit=2)
@@ -143,11 +142,11 @@ def _verdict(argument: str, board: Board, author: str) -> str:
 
     finding = board.findings[index - 1]
     verdict = Verdict.of(finding, decision, parts[2], author or "gateway")
-    memory = SqliteMemory.open()
+    memory = build_memory(board.root or None)
     try:
         memory.remember(verdict)
     finally:
-        memory.close()
+        getattr(memory, "close", lambda: None)()
     notify_verdict(verdict)
 
     return (f"{finding.rule} à {finding.location.path}:{finding.location.line} "

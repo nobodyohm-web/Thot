@@ -90,30 +90,29 @@ def sweep(root: Path, *, deep: bool = True) -> Recon:
         from thot.guard.scanner import sweep_patterns
 
         recon.findings += sweep_patterns(root, list(manifest.files))
-        recon.findings = _remember(recon.findings)
+        recon.findings = _remember(recon.findings, root)
 
     recon.elapsed = time.monotonic() - started
     return recon
 
 
-def _remember(findings: list) -> list:
+def _remember(findings: list, root=None) -> list:
     """Fold past verdicts in. A memory that cannot be opened is not fatal."""
     if not findings:
         return findings
     try:
-        from thot.memory import apply_memory
-        from thot.memory.sqlite import SqliteMemory
+        from thot.memory import apply_memory, build_memory
     except ImportError:
         return findings
 
     try:
-        memory = SqliteMemory.open()
+        memory = build_memory(root)
     except Exception:
         return findings
     try:
         return apply_memory(findings, memory)
     finally:
-        memory.close()
+        getattr(memory, "close", lambda: None)()
 
 
 def context_brief(recon: Recon, *, max_symbols: int = 60) -> str:
