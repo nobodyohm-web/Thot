@@ -28,31 +28,60 @@ def _log(message: str) -> None:
     print(f"[thot-mcp] {message}", file=sys.stderr, flush=True)
 
 
+# What the agent must be able to say. Neither Hermes nor Prime advertises
+# workspace roots over MCP, and Hermes starts a plugin server with its cwd
+# pinned inside the plugin directory — so a server that inferred the project
+# from its own cwd would map the plugin folder and answer "0 files" forever.
+# The agent knows which project it is working on; the schema asks it.
+ROOT_PROPERTY = {
+    "type": "string",
+    "description": (
+        "Racine du projet à cartographier (chemin absolu). À fournir : le "
+        "serveur est démarré depuis un dossier de configuration, pas depuis "
+        "le projet."
+    ),
+}
+
+
 class Server:
     def __init__(self, root: Path) -> None:
         self.root = root
-        self._context = None  # built lazily: the sweep costs a beat
+        # One map per project. An agent that moves between repositories in a
+        # single session must not be handed the first one's map.
+        self._contexts: dict[Path, object] = {}
 
-    def _tool_context(self):
-        if self._context is None:
-            from thot.agent_tools import ToolContext
-            from thot.recon import sweep
+    def resolve_root(self, argument: str | None) -> Path:
+        if argument:
+            candidate = Path(argument).expanduser()
+            if candidate.is_dir():
+                return candidate.resolve()
+            raise ValueError(f"Dossier introuvable : {argument}")
+        return self.root
 
-            recon = sweep(self.root)
-            self._context = ToolContext(
-                root=self.root,
-                recon=recon,
-                confirm=lambda action, detail: False,  # never mutates
-                refresh=lambda: None,
-            )
-            _log(
-                f"carte prête : {recon.file_count} fichiers, "
-                f"{len(recon.symbols)} symboles, {len(recon.findings)} findings"
-            )
-        return self._context
+    def _tool_context(self, root: Path):
+        cached = self._contexts.get(root)
+        if cached is not None:
+            return cached
+
+        from thot.agent_tools import ToolContext
+        from thot.recon import sweep
+
+        recon = sweep(root)
+        context = ToolContext(
+            root=root,
+            recon=recon,
+            confirm=lambda action, detail: False,  # never mutates
+            refresh=lambda: None,
+        )
+        _log(
+            f"carte prête pour {root} : {recon.file_count} fichiers, "
+            f"{len(recon.symbols)} symboles, {len(recon.findings)} findings"
+        )
+        self._contexts[root] = context
+        return context
 
     def refresh(self) -> None:
-        self._context = None
+        self._contexts.clear()
 
     # -- protocol --------------------------------------------------------
 
@@ -80,7 +109,7 @@ class Server:
                 {
                     "name": spec.name,
                     "description": spec.description,
-                    "inputSchema": spec.parameters,
+                    "inputSchema": _with_root(spec.parameters),
                 }
                 for spec in agent_tools.SPECS
                 if spec.name in EXPOSED
@@ -95,9 +124,14 @@ class Server:
             arguments = params.get("arguments") or {}
             if name not in EXPOSED:
                 return _error(request_id, -32602, f"Outil inconnu : {name}")
+            arguments = dict(arguments)
+            try:
+                root = self.resolve_root(arguments.pop("root", None))
+            except ValueError as exc:
+                return _error(request_id, -32602, str(exc))
             # A fresh sweep per call would be wasteful; the CLI's own edits
             # invalidate it, so refresh when the map is stale for writes only.
-            text = agent_tools.dispatch(self._tool_context(), name, arguments)
+            text = agent_tools.dispatch(self._tool_context(root), name, arguments)
             return _result(
                 request_id, {"content": [{"type": "text", "text": text}]}
             )
@@ -106,6 +140,20 @@ class Server:
             return _result(request_id, {})
 
         return _error(request_id, -32601, f"Méthode inconnue : {method}")
+
+
+def _with_root(parameters: dict) -> dict:
+    """The tool's own schema, plus the project it should answer about.
+
+    Copied, never mutated: `agent_tools.SPECS` is shared with the session,
+    where the root is not a parameter because the session already has one.
+    """
+    schema = dict(parameters or {})
+    properties = dict(schema.get("properties") or {})
+    properties.setdefault("root", ROOT_PROPERTY)
+    schema["properties"] = properties
+    schema.setdefault("type", "object")
+    return schema
 
 
 def _version() -> str:

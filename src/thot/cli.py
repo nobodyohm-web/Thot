@@ -43,6 +43,33 @@ def build_parser() -> argparse.ArgumentParser:
     subparsers.add_parser("login", help="Choisir ou changer le modèle connecté")
     subparsers.add_parser("logout", help="Oublier le modèle connecté")
 
+    # The two other programs in this repository. REMAINDER, because their
+    # command lines are theirs: parsing them here would mean maintaining a
+    # second, worse copy of two CLIs that already work.
+    hermes_cmd = subparsers.add_parser(
+        "hermes", help="Lancer Hermes Agent (arguments transmis tels quels)"
+    )
+    hermes_cmd.add_argument("arguments", nargs=argparse.REMAINDER)
+
+    prime_cmd = subparsers.add_parser(
+        "prime", help="Lancer Prime Agent (arguments transmis tels quels)"
+    )
+    prime_cmd.add_argument("arguments", nargs=argparse.REMAINDER)
+
+    fusion = subparsers.add_parser(
+        "fusion", help="L'état des trois programmes, et leur branchement"
+    )
+    fusion_sub = fusion.add_subparsers(dest="action")
+    fusion_sub.add_parser("status", help="Ce qui est présent, prêt, et branché")
+    fusion_wire = fusion_sub.add_parser(
+        "wire", help="Donner la carte de Thot à Hermes et à Prime, via MCP"
+    )
+    fusion_wire.add_argument(
+        "--dry-run", action="store_true",
+        help="Montrer les fichiers qui seraient écrits, sans rien écrire",
+    )
+    fusion_sub.add_parser("unwire", help="Retirer Thot des deux agents")
+
     schedule = subparsers.add_parser(
         "schedule", help="Auditer un dépôt automatiquement"
     )
@@ -135,6 +162,10 @@ def build_parser() -> argparse.ArgumentParser:
         "mcp", help="Les serveurs MCP disponibles et connectés"
     )
     mcp_sub = mcp_cmd.add_subparsers(dest="action")
+    mcp_sub.add_parser(
+        "serve",
+        help="Servir la carte de Thot en MCP sur stdio (lancé par un agent)",
+    )
     mcp_list = mcp_sub.add_parser("list", help="Le catalogue et ce qui est connecté")
     mcp_list.add_argument("--json", action="store_true", help="Sortie JSON")
     mcp_check = mcp_sub.add_parser(
@@ -872,6 +903,19 @@ def _cmd_gateway(args) -> int:
     return 0
 
 
+def _cmd_mcp_serve() -> int:
+    """Speak MCP on stdio until the agent that started us closes it.
+
+    A subcommand rather than `python -m thot.mcp_server`, because Hermes
+    refuses a plugin whose command is an absolute path — a plugin must not be
+    able to point at an arbitrary binary. A bare `thot` on PATH satisfies
+    that, and survives the virtualenv moving.
+    """
+    from thot.mcp_server import serve
+
+    return serve()
+
+
 def _cmd_serve(args) -> int:
     from thot import logs
     from thot.gateway.server import serve
@@ -1134,7 +1178,18 @@ def _cmd_import(args) -> int:
         store.close()
 
 
+# Handed over before argparse sees them. `thot hermes --version` must reach
+# Hermes, and argparse has no way to express "everything after this word is
+# somebody else's grammar" — REMAINDER still lets the leading `--version` be
+# claimed as Thot's own.
+PASSTHROUGH = ("hermes", "prime")
+
+
 def main(argv: list[str] | None = None) -> int:
+    raw = list(sys.argv[1:] if argv is None else argv)
+    if raw and raw[0] in PASSTHROUGH:
+        return _cmd_run_part(raw[0], raw[1:])
+
     parser = build_parser()
     try:
         args = parser.parse_args(argv)
@@ -1164,6 +1219,8 @@ def main(argv: list[str] | None = None) -> int:
         if args.command == "serve":
             return _cmd_serve(args)
         if args.command == "mcp":
+            if getattr(args, "action", None) == "serve":
+                return _cmd_mcp_serve()
             return _cmd_mcp(args)
         if args.command == "skills":
             return _cmd_skills(args)
@@ -1177,6 +1234,12 @@ def main(argv: list[str] | None = None) -> int:
             return _cmd_import(args)
         if args.command == "audit":
             return _cmd_audit(args)
+        if args.command == "hermes":
+            return _cmd_run_part("hermes", args.arguments)
+        if args.command == "prime":
+            return _cmd_run_part("prime", args.arguments)
+        if args.command == "fusion":
+            return _cmd_fusion(args)
     except AuthorizationError as exc:
         print(f"Refus : {exc}", file=sys.stderr)
         return EXIT_UNAUTHORIZED
@@ -1185,6 +1248,68 @@ def main(argv: list[str] | None = None) -> int:
         return EXIT_USAGE
 
     parser.print_help()
+    return EXIT_USAGE
+
+
+def _cmd_run_part(name: str, arguments: list[str]) -> int:
+    """Hand the terminal to Hermes or Prime."""
+    from thot.fusion import run as fusion_run
+
+    launcher = fusion_run.run_hermes if name == "hermes" else fusion_run.run_prime
+    try:
+        return launcher(list(arguments or []))
+    except fusion_run.NotAvailable as exc:
+        print(str(exc), file=sys.stderr)
+        return EXIT_ERROR
+
+
+def _cmd_fusion(args) -> int:
+    from thot.fusion import locate, wiring
+
+    action = getattr(args, "action", None) or "status"
+
+    if action == "status":
+        for part in locate.parts():
+            print(part.line())
+        print()
+        # Being installed and being reachable from the agents are different
+        # facts, and a status that showed only the first would be the more
+        # flattering half of the truth.
+        steps = wiring.plan()
+        wired = [step for step in steps if not step.changes]
+        print(f"Carte de Thot branchée : {len(wired)}/{len(steps)} fichiers")
+        for step in steps:
+            print(f"   {step.line()}")
+        if len(wired) != len(steps):
+            print()
+            print("`thot fusion wire` pour donner la carte aux deux agents.")
+        return EXIT_OK
+
+    if action == "wire":
+        if getattr(args, "dry_run", False):
+            for step in wiring.plan():
+                print(step.line())
+            return EXIT_OK
+        steps = wiring.wire()
+        changed = [step for step in steps if step.changes]
+        for step in steps:
+            print(step.line())
+        if changed:
+            print()
+            print("Hermes et Prime voient maintenant `code_map`, `find_symbol`,")
+            print("`callers`, `audit`, `skills` et `skill` — sans appel modèle.")
+            print("Redémarre-les pour que le serveur soit chargé.")
+        return EXIT_OK
+
+    if action == "unwire":
+        removed = wiring.unwire()
+        for step in removed:
+            print(step.line())
+        if not removed:
+            print("Thot n'était branché nulle part.")
+        return EXIT_OK
+
+    print(f"Action inconnue : {action}", file=sys.stderr)
     return EXIT_USAGE
 
 

@@ -1,17 +1,56 @@
 # Thot
 
-Un assistant de code en terminal qui **connaît déjà ton dépôt**.
+Un assistant de code en terminal qui **connaît déjà ton dépôt** — et le dépôt
+où vivent **Hermes Agent** et **Prime Agent**, entiers.
 
 Un agent conversationnel découvre un projet en ouvrant des fichiers avec le
 modèle : lent, partiel, à repayer à chaque session. Thot calcule la même image
 par AST et graphe d'appels — complète, instantanée, gratuite — et ne donne au
 modèle que ce qui compte.
 
+## Les trois programmes
+
+Ce dépôt en contient trois, pas un. Aucun n'est une réécriture d'un autre :
+chacun est là dans sa langue, avec son outillage, et Thot les branche
+ensemble.
+
+| | Ce qu'il est | Où |
+|---|---|---|
+| **thot** | audit déterministe, carte du code, mémoire des verdicts | `src/thot/` |
+| **hermes** | l'agent : outils, passerelles, plugins, cron, ACP | `hermes/` — Python, membre du workspace uv |
+| **prime** | l'agent de code : fournisseurs de modèles, TUI, RLM | `prime/` — TypeScript, npm |
+
+```bash
+thot                 # la session d'audit
+thot hermes          # Hermes, arguments transmis tels quels
+thot prime           # Prime, pareil
+thot fusion status   # ce qui est présent, prêt, et branché
+```
+
+Le branchement n'est pas décoratif. `thot fusion wire` déclare le serveur MCP
+de Thot dans les deux agents : ils gagnent `code_map`, `find_symbol`,
+`callers`, `audit`, `skills` et `skill` — la carte complète du dépôt, calculée
+hors modèle, au lieu de la redécouvrir fichier par fichier. C'est le renfort
+mutuel : Thot sait sans demander, Hermes et Prime agissent.
+
+Chaque agent garde sa configuration. `thot fusion unwire` défait tout, et le
+`settings.json` de Prime est sauvegardé avant la première modification.
+
 ## Installation
 
 ```bash
 uv tool install --editable --from /Users/dev/Desktop/Thot thot
 ```
+
+Un seul `uv sync` à la racine installe Thot **et** Hermes : c'est un workspace,
+pas une copie qui dérive. Prime est en TypeScript et se construit à part :
+
+```bash
+cd prime && npm install && npm run build
+```
+
+Sans Node, Thot et Hermes fonctionnent ; `thot fusion status` dit ce qui
+manque et comment le réparer, plutôt que d'échouer au premier appel.
 
 ## Utilisation
 
