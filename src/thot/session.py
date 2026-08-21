@@ -468,17 +468,42 @@ class Session:
             theme.hint("Aucun candidat à analyser.")
             return findings
 
-        label = (
-            f"{len(selected)} candidat(s) — analyse puis réfutation "
-            f"via {engine.capabilities.name}…"
-        )
-        with theme.console.status(f"   [dim]{label}[/dim]", spinner="dots"):
-            analysed = analyse(self.root, findings, engine, limit=DEFAULT_LIMIT)
+        # A panel says who is on it. "via panel" would hide the one thing
+        # worth knowing: that the attacker is not the agent that argued.
+        members = getattr(engine, "names", ())
+        who = " contre ".join(members) if members else engine.capabilities.name
+        label = f"{len(selected)} candidat(s) — argumentation puis attaque · {who}"
+
+        memory = self._open_memory()
+        progress = {"done": 0, "kept": 0}
+
+        def landed(finding) -> None:
+            # Written as it lands, for the same reason the CLI does it: this
+            # pass runs for minutes, and a session closed mid-way used to
+            # take every judgement it had already paid for with it.
+            progress["done"] += 1
+            if memory is not None:
+                progress["kept"] += self._record_one(finding, memory)
+            status.update(
+                f"   [dim]{progress['done']}/{len(selected)} jugé(s) · {who}[/dim]"
+            )
+
+        try:
+            with theme.console.status(
+                f"   [dim]{label}[/dim]", spinner="dots"
+            ) as status:
+                analysed = analyse(
+                    self.root, findings, engine,
+                    limit=DEFAULT_LIMIT, on_decided=landed,
+                )
+        finally:
+            if memory is not None:
+                getattr(memory, "close", lambda: None)()
 
         confirmed = sum(1 for f in analysed if f.confidence is Confidence.CONFIRMED)
         refuted = sum(1 for f in analysed if f.confidence is Confidence.REFUTED)
         theme.ok(f"{confirmed} confirmé(s), {refuted} réfuté(s)")
-        kept = self._remember_refutations(analysed, engine)
+        kept = progress["kept"]
         if kept:
             theme.hint(
                 f"{kept} réfutation(s) mémorisée(s) — le prochain audit ne les "
@@ -487,30 +512,31 @@ class Session:
         theme.console.print()
         return analysed
 
-    def _remember_refutations(self, findings: list, engine) -> int:
-        """Write down what the refutation pass concluded.
-
-        `recon` already reads the memory at every sweep, so without this the
-        session only ever read it: minutes of model time refuting the same
-        findings, thrown away the moment the session ended. `thot audit --deep`
-        has always recorded them; the interactive path has to as well, or the
-        two disagree about what Thot knows.
-        """
+    def _open_memory(self):
+        """The verdict store, or None with the reason said out loud."""
         from thot.memory import build_memory
+
+        try:
+            return build_memory(self.root)
+        except Exception as exc:  # a memory that will not open costs nothing else
+            theme.warn(f"Décisions non mémorisées : {exc}")
+            return None
+
+    @staticmethod
+    def _record_one(finding, memory) -> int:
+        """Persist one decision. A failing store never costs the analysis.
+
+        `recon` reads the memory at every sweep, so without this the session
+        would only ever read it: minutes of model time refuting the same
+        findings, thrown away the moment the session ended.
+        """
         from thot.memory.base import record_verdicts
 
         try:
-            memory = build_memory(self.root)
-        except Exception as exc:  # a memory that will not open costs nothing else
-            theme.warn(f"Décisions non mémorisées : {exc}")
-            return 0
-        try:
-            return record_verdicts(findings, memory, author=engine.capabilities.name)
+            return record_verdicts([finding], memory)
         except Exception as exc:
-            theme.warn(f"Décisions non mémorisées : {exc}")
+            theme.warn(f"Décision non mémorisée : {exc}")
             return 0
-        finally:
-            getattr(memory, "close", lambda: None)()
 
     def _confirm(self, action: str, detail: str) -> bool:
         theme.console.print()
@@ -613,6 +639,7 @@ class Session:
             if not reply.message.tool_calls:
                 theme.console.print()
                 self._record("assistant", reply.message.content or "")
+                self._compact_if_needed()
                 return
 
             if any(call.name == "python" for call in reply.message.tool_calls):
@@ -675,6 +702,7 @@ class Session:
         # which is where all but a rounding error of it actually goes.
         self._charge(self.claude.last_tokens, 0)
         self._refresh()  # the CLI may have edited files
+        self._compact_if_needed()
         theme.console.print()
 
     def _show_tool(self, streamed: "_Streamer", name: str, arguments: dict) -> None:
@@ -1480,7 +1508,7 @@ class Session:
         theme.console.print()
         return None
 
-    def _compact(self, argument: str) -> None:
+    def _compact(self, argument: str, *, budget: int | None = None) -> None:
         """Summarise the middle, keep the beginning and the end verbatim.
 
         Hermes Agent's compression strategy, ported: the opening frames the
@@ -1497,7 +1525,10 @@ class Session:
         from thot.state import compaction
 
         manual = argument.strip()
-        proposal = compaction.plan(self.messages)
+        proposal = compaction.plan(
+            self.messages,
+            **({"budget": budget} if budget is not None else {}),
+        )
 
         if not manual and not proposal.worth_doing:
             theme.console.print()
@@ -1541,6 +1572,30 @@ class Session:
                    else "résumé fourni à la main")
         theme.console.print()
         return None
+
+    def _compact_if_needed(self) -> None:
+        """Compact before the window ends the session for us.
+
+        A long task is the case Thot exists for and the case it handled
+        worst: the context filled, the next turn was refused, and the thread
+        died with everything in it. Compacting is not free — the CLI thread
+        restarts and only a summary crosses — so this fires at a threshold
+        far above the manual one, and says so when it does.
+        """
+        from thot.state import compaction
+
+        if self.store is None or not self.messages:
+            return
+        proposal = compaction.plan(self.messages, budget=compaction.AUTO_BUDGET)
+        if not proposal.worth_doing:
+            return
+
+        theme.console.print()
+        theme.warn(
+            f"Contexte à ~{proposal.before} jetons — compactage automatique "
+            f"pour que la tâche puisse continuer."
+        )
+        self._compact("", budget=compaction.AUTO_BUDGET)
 
     @staticmethod
     def _carry_text(messages) -> str:

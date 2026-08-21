@@ -116,3 +116,44 @@ def test_a_conversation_shorter_than_its_protections_is_left_whole():
 
     assert proposal.worth_doing is False
     assert compaction.apply(messages, proposal, "x", make_message=M) == messages
+
+
+# -- compacting without being asked -------------------------------------------
+
+
+def test_the_automatic_threshold_is_far_above_the_manual_one():
+    """Compacting costs fidelity, so the unasked kind must be rarer.
+
+    At the manual threshold the model's thread would restart every few
+    exchanges — which is worse than the problem it solves.
+    """
+    from thot.state.compaction import AUTO_BUDGET, DEFAULT_BUDGET
+
+    assert AUTO_BUDGET >= DEFAULT_BUDGET * 4
+
+
+def test_a_long_conversation_plans_a_compaction_at_the_automatic_budget():
+    from thot.state.compaction import AUTO_BUDGET, plan
+
+    class _M:
+        def __init__(self, content):
+            self.role = "user"
+            self.content = content
+
+    big = "x" * (AUTO_BUDGET * 4 // 10)  # twenty of these is twice the budget
+    messages = [_M(big) for _ in range(20)]
+
+    proposal = plan(messages, budget=AUTO_BUDGET)
+
+    assert proposal.worth_doing
+    assert proposal.after < proposal.before
+
+
+def test_a_short_conversation_is_left_alone():
+    from thot.state.compaction import AUTO_BUDGET, plan
+
+    class _M:
+        role = "user"
+        content = "court"
+
+    assert not plan([_M(), _M()], budget=AUTO_BUDGET).worth_doing

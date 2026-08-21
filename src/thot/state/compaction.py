@@ -28,6 +28,15 @@ from dataclasses import dataclass
 # What the compressed conversation should fit into, in estimated tokens.
 DEFAULT_BUDGET = 24_000
 
+# When the session compacts itself, unasked. Far above the manual target on
+# purpose: `/compact` is someone deciding they want a clean slate, while this
+# one fires in the middle of somebody's work. Compacting a conversation costs
+# fidelity — the CLI thread is restarted and only a summary crosses over — so
+# doing it at the manual threshold would reset the model's memory every few
+# exchanges. This is the point where not compacting costs more: a long task
+# that hits the window dies mid-sentence and takes the thread with it.
+AUTO_BUDGET = 120_000
+
 # The opening exchange sets the task; the closing ones are the task.
 PROTECT_FIRST = 4
 PROTECT_LAST = 8
