@@ -231,8 +231,8 @@ class Rejected:
     reasons: tuple[str, ...] = ()
 
     def summary(self) -> str:
-        why = "; ".join(self.reasons[:3]) or self.verdict
-        return f"{self.name} — {why}"
+        """Why it was refused. The name is the caller's to print."""
+        return "; ".join(self.reasons[:3]) or self.verdict
 
 
 def screen(skills: list[Skill]) -> tuple[list[Skill], list[Rejected]]:

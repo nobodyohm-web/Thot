@@ -121,11 +121,22 @@ class Session:
             pass
 
     def _close_state(self) -> None:
-        if self.store and self.session_id:
-            try:
+        """Close the session — or drop it, if nothing was ever said.
+
+        Thot opens a session at startup so the first word is already being
+        recorded. Launching it to run `/status` and quitting would otherwise
+        leave an empty row in the history for every glance at the tool.
+        """
+        if not (self.store and self.session_id):
+            return
+        try:
+            info = self.store.info(self.session_id)
+            if info is not None and info.message_count == 0:
+                self.store.forget(self.session_id)
+            else:
                 self.store.end(self.session_id)
-            except (sqlite3.Error, OSError):
-                pass
+        except (sqlite3.Error, OSError):
+            pass
 
     # -- setup -----------------------------------------------------------
 
@@ -649,20 +660,42 @@ class Session:
             from thot.skills.loader import discover_report
 
             available, refused = discover_report(self.root)
+            query = argument.strip()
+            matched = [s for s in available if s.matches(query)] if query else []
+
             theme.console.print()
             if not available:
                 theme.hint("Aucun skill.")
-            grouped: dict[str, list] = {}
-            for item in available:
-                grouped.setdefault(item.category or "général", []).append(item)
-            for category in sorted(grouped):
-                theme.console.print(f"   [dim]{category}[/dim]")
-                for item in grouped[category]:
+            elif not query:
+                # Ninety descriptions is a wall, not a list. Names by
+                # category, and a hint on how to narrow it.
+                grouped: dict[str, list] = {}
+                for item in available:
+                    grouped.setdefault(item.category or "général", []).append(item)
+                for category in sorted(grouped):
+                    names = ", ".join(sorted(s.name for s in grouped[category]))
+                    theme.console.print(theme.entry(category, names, width=24))
+                theme.console.print()
+                theme.hint(f"{len(available)} méthodes · `/skills <mot>` pour "
+                           f"les détails, `thot skills install <nom>` pour en "
+                           f"activer une autre.")
+            elif not matched:
+                theme.hint(f"Rien pour « {query} ».")
+                from thot.skills.loader import optional
+
+                spare = [s.name for s in optional() if s.matches(query)]
+                if spare:
+                    theme.hint(f"Dans la bibliothèque optionnelle : "
+                               f"{', '.join(spare[:6])}")
+                    theme.hint("`thot skills install <nom>` pour l'activer.")
+            else:
+                for item in matched[:20]:
                     detail = " ".join(item.description.split())
                     if len(detail) > 48:
                         detail = detail[:48].rsplit(" ", 1)[0] + "…"
                     theme.console.print(theme.entry(item.name, detail, width=26))
-                theme.console.print()
+                if len(matched) > 20:
+                    theme.hint(f"… {len(matched) - 20} autres.")
             theme.console.print()
             if refused:
                 theme.warn(f"{len(refused)} refusé(s) par le garde :")
@@ -908,10 +941,10 @@ class Session:
             title = info.title or "(sans titre)"
             if len(title) > 46:
                 title = title[:46].rsplit(" ", 1)[0] + "…"
-            detail = f"{title}  [dim]{info.message_count} msg[/dim]"
+            detail = f"{title}   {info.message_count} msg"
             if everywhere:
-                detail += f"  [dim]{Path(info.root).name}[/dim]"
-            theme.console.print(theme.entry(mark + info.id[:8], detail, width=26))
+                detail += f" · {Path(info.root).name}"
+            theme.console.print(theme.entry(mark + info.id[:8], detail, width=14))
         theme.console.print()
         theme.hint("`/resume <id>` pour en reprendre une.")
         theme.console.print()

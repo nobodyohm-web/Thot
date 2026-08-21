@@ -131,7 +131,8 @@ class SessionStore:
         )
         updates = "message_count = ?"
         params: list = [seq + 1]
-        if not title and role == "user" and content.strip():
+        # A session opened only to set a goal is still about something.
+        if not title and role in {"user", "goal"} and content.strip():
             updates += ", title = ?"
             params.append(" ".join(content.split())[:TITLE_CHARS])
         params.append(session_id)

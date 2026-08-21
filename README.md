@@ -44,11 +44,18 @@ l'a déjà cartographié avant ta première phrase.
 
 | Commande | Effet |
 |---|---|
-| `/audit` | relancer l'analyse et afficher les findings |
+| `/audit` · `/audit deep` | relancer l'analyse, ou la faire réfuter par le modèle |
+| `/verdict n refute …` | écarter un finding, avec sa raison |
+| `/goal <objectif> --budget N` | fixer un objectif suivi entre les sessions |
+| `/sessions` · `/resume` | ce qui a été fait ici avant, et y retourner |
+| `/search <mots>` | chercher dans tout ce que Thot a dit ou trouvé |
+| `/compact` | résumer et repartir avec un contexte vide |
+| `/export` · `/import` | emporter une session ailleurs |
+| `/skills` · `/plugins` · `/mcp` | ce qui est chargé, et le catalogue |
 | `/scan` | recalculer la carte du dépôt |
-| `/model` | changer de modèle |
-| `/clear` | oublier la conversation en cours |
-| `/quit` | quitter |
+| `/model` · `/clear` · `/quit` | modèle, oubli, sortie |
+
+Plus les tiennes : tout fichier `.thot/commands/<nom>.md` devient `/<nom>`.
 
 ### Modèles
 
@@ -81,6 +88,52 @@ l'avais tapé toi-même. Thot fournit la carte du dépôt, branche ses outils
 déterministes via un petit serveur MCP, et met en forme le flux d'événements.
 Le fil de conversation est porté par `--resume` sur le même identifiant de
 session.
+
+## Sessions — rien ne se perd
+
+Ferme la fenêtre, l'audit et le raisonnement qui allait avec sont toujours là.
+Chaque tour est écrit au moment où il arrive, dans `~/.thot/sessions.db`.
+
+```
+   › /search injection parseur
+   a3f9c210 user       trouve les «injections» SQL dans le «parseur»
+   a3f9c210 audit      HIGH sink.sqlite.execute  src/parse.py:88
+   7b02e4d1 verdict    sink.os.system src/deploy.py:12 → refuted : commande littérale
+```
+
+La recherche couvre ce qui a été **dit** et ce qui a été **trouvé** : un
+finding à moitié retenu se retrouve avec les mots dont on se souvient.
+
+```bash
+thot sessions              # ce qui a été fait dans ce dépôt
+thot sessions --all        # partout
+thot sessions --show <id>  # la transcription entière
+thot search <mots>         # sans ouvrir de session
+thot export <id> --out s.json ; thot import s.json
+```
+
+`/resume` rend la transcription **et** le contexte : en mode compte, Thot a
+gardé l'identifiant de conversation du CLI officiel et le lui rend, donc le
+modèle se souvient au lieu de relire.
+
+`/compact` clôt la session sur un résumé et continue dans une session enfant
+qui garde le lien. Compacter coûte du contexte, jamais des preuves : la session
+parente reste entière et `/search` la trouve toujours.
+
+## Objectifs — savoir quand s'arrêter
+
+Un objectif survit à la conversation qu'il traverse, et se rappelle au modèle
+à chaque tour, y compris juste après un `/compact`.
+
+```
+   › /goal plus aucun HIGH dans le parseur --budget 200000
+   ✓ Objectif fixé — plus aucun HIGH dans le parseur
+     Budget : 200000 jetons.
+```
+
+Épuiser le budget est un **état**, pas une erreur : Thot ne s'arrête pas au
+milieu d'un tour, il finit, passe en `budget_limited` et dit où en est
+l'objectif. À toi de choisir entre `/goal budget 500000` et `/goal done`.
 
 ## Mémoire — décider une fois
 
@@ -163,9 +216,13 @@ Un plugin est un dossier avec `plugin.yaml` et `__init__.py`, dans
 Agent. Un plugin qui plante coûte sa propre fonctionnalité et rien d'autre :
 son erreur est enregistrée et affichée par `/plugins`.
 
-**`write-guard`** est livré : il relit ce que le modèle écrit et fait remonter
-un avertissement si un motif dangereux apparaît. Non bloquant — un faux
-positif qui bloque une session est pire que l'écriture.
+Trois sont livrés :
+
+| Plugin | Ce qu'il fait |
+|---|---|
+| `write-guard` | relit ce que le modèle écrit et fait remonter un avertissement si un motif dangereux apparaît. Non bloquant — un faux positif qui bloque une session est pire que l'écriture. |
+| `regression-alert` | un défaut marqué `fixed` qui réapparaît passe en CRITICAL : une régression vaut plus qu'un candidat neuf. |
+| `audit-log` | un journal JSONL local de chaque audit, verdict et écriture, dans `~/.thot/journal.jsonl`. Aucun réseau. |
 
 ## Skills — les méthodes que Thot connaît
 
@@ -174,17 +231,30 @@ YAML. C'est **le format de Hermes Agent et de Prime Agent**, donc une skill
 écrite pour l'un des deux se charge ici sans modification, et l'inverse est
 vrai.
 
-Thot en embarque onze, portées depuis Hermes Agent (MIT — voir `NOTICE.md`) et
-adaptées, plus une native :
+Thot embarque **la bibliothèque complète d'Hermes Agent** (MIT — voir
+`NOTICE.md`) : 90 méthodes chargées, 117 de plus disponibles.
 
-| | |
-|---|---|
-| `audit/` | `vulnerability-triage` — nommer l'entrée, puis détruire son propre finding |
-| `software-development/` | `systematic-debugging`, `test-driven-development`, `plan`, `spike`, `simplify-code`, `requesting-code-review`, `python-debugpy` |
-| `review/` | `codebase-inspection`, `github-code-review`, `sdlc-review` |
+```bash
+thot skills list              # les 90 chargées
+thot skills search pentest    # y compris la bibliothèque optionnelle
+thot skills install ast-grep  # activer une optionnelle
+thot skills show plan         # ce que lirait le modèle
+```
 
-Le modèle les découvre avec l'outil `skills` et lit celle qui s'applique avec
-`skill`. En session, `/skills` te montre la même liste.
+Catégories chargées : `audit`, `security`, `software-development`, `github`,
+`devops`, `research`, `mlops`, `productivity`, `creative`, `apple`, `email`,
+`media`, `note-taking`, `smart-home`, `social-media`,
+`autonomous-ai-agents`.
+
+Le modèle les découvre avec l'outil `skills` — qui répond par un **index de
+noms** tant qu'on ne lui donne pas de mot-clé, parce que deux cents
+descriptions ne sont pas un catalogue — et lit celle qui s'applique avec
+`skill`. En session, `/skills` te montre la même chose.
+
+Une méthode importée qui cite un outil absent ici (`delegate_task`,
+`browser_navigate`…) est servie telle quelle, avec une note disant lesquels
+manquent et quoi utiliser à la place. La démarche se transporte même quand
+l'appel d'outil ne se transporte pas.
 
 ### En ajouter
 
@@ -207,6 +277,63 @@ Les étapes, dans l'ordre.
 Les deux dispositions sont acceptées : un dossier plat (Prime Agent) ou groupé
 par catégories (Hermes Agent). Un nom qui existe déjà remplace la version
 embarquée — de quoi adapter une méthode livrée sans la forker.
+
+### Une méthode fournie par le dépôt audité est analysée d'abord
+
+Un `SKILL.md` est du texte remis au modèle **comme instruction**. Les dépôts
+que Thot lit sont, par définition, ceux dont personne ne répond. Un dépôt
+hostile qui dépose `.thot/skills/x/SKILL.md` écrirait une partie du briefing.
+
+Le garde d'Hermes Agent est porté ici et passe sur tout ce qui vient du dépôt :
+injection, exfiltration, persistance, obfuscation.
+
+```
+   ▲ 1 skill(s) fourni(s) par ce dépôt ont été refusés — ils seraient passés
+     au modèle comme instructions.
+     pwn   curl vers l'extérieur ; accès à ~/.thot ; « ignore previous
+           instructions »
+```
+
+`thot skills scan <dossier>` pose la même question à la demande. Ce que Thot
+livre lui-même n'est pas analysé : c'est sur disque parce que le programme est
+installé, pas parce qu'un dépôt l'a demandé.
+
+## Commandes personnalisées
+
+Un fichier markdown est une commande. La grammaire est celle de Prime Agent,
+Claude Code et Codex — rien de nouveau à apprendre.
+
+```markdown
+---
+description: Relire un fichier sans rien modifier.
+argument-hint: <chemin>
+---
+
+Relis $1 et dis-moi ce qui cloche. Ne modifie rien.
+```
+
+Dans `.thot/commands/revue.md`, cela crée `/revue src/app.py`. Substitutions :
+`$1`, `$2`…, `$@`, `$ARGUMENTS`, `${@:2}`, `${@:2:3}`. Un argument n'est jamais
+ré-interprété. Les commandes du dépôt passent par le même garde que ses skills.
+
+Trois sont livrées : `/triage` (nommer l'entrée ou classer sans suite),
+`/harden` (test qui échoue d'abord, correctif ensuite), `/regress` (l'audit
+diffé contre une référence git).
+
+## Serveurs MCP
+
+Le catalogue d'Hermes Agent, vingt serveurs vérifiés :
+
+```bash
+thot mcp list            # le catalogue, et ce qui est déjà connecté
+thot mcp show sentry
+thot mcp add linear
+```
+
+L'installation est déléguée au CLI officiel, qui possède déjà OAuth et le
+renouvellement de jetons — Thot n'a aucune raison de détenir un second coffre
+à faire fuir. Il dit explicitement qu'*enregistré* n'est pas *autorisé*, et
+quelle commande finit le travail.
 
 ## Les outils du modèle
 
@@ -272,6 +399,21 @@ En session, la même chose : `/audit deep`.
 Le moteur est choisi automatiquement — ton compte Claude via le CLI officiel
 s'il est connecté (les analyses tournent en parallèle, sur ton abonnement),
 une clé API sinon.
+
+### Ce que l'audit ne doit pas lire
+
+```
+# .thotignore, à la racine du dépôt
+vendor/
+*.generated.py
+tests/fixtures/
+```
+
+Les exclusions intégrées couvrent ce que tout dépôt a — `node_modules`,
+`build`, `.venv`. `.thotignore` couvre ce que seul ce dépôt sait : de la
+documentation embarquée, un client généré, un dossier de fixtures cassées
+exprès. Les auditer ne produit pas des findings, ça produit du bruit à
+l'endroit exact où seraient les findings.
 
 ### Tes propres règles
 

@@ -287,3 +287,31 @@ def test_a_custom_command_expands_into_a_prompt(session, tmp_path):
 
 def test_an_unknown_slash_command_is_not_sent_to_the_model(session):
     assert session._command("/nexistepas") is None
+
+
+def test_a_session_where_nothing_was_said_is_not_history(session):
+    """Launching Thot to glance at /status must not litter the log."""
+    empty = session.session_id
+    session._close_state()
+
+    assert session.store.info(empty) is None
+
+
+def test_a_session_that_was_used_is_kept_and_closed(session):
+    session._record("user", "une vraie question")
+    used = session.session_id
+    session._close_state()
+
+    info = session.store.info(used)
+    assert info is not None
+    assert info.ended_at
+
+
+def test_skills_answers_with_an_index_before_it_answers_with_a_wall(session, capsys):
+    session._command("/skills")
+    listed = capsys.readouterr().out
+
+    assert "90 méthodes" in listed or "méthodes" in listed
+    assert "vulnerability-triage" in listed
+    # An index, not ninety descriptions.
+    assert "Turn taint candidates" not in listed
