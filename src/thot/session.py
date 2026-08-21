@@ -97,6 +97,8 @@ class Session:
         self.messages: list[Message] = []
         self.carry = ""  # a summary handed forward across a /compact
         self.sandbox = self._open_sandbox()
+        self.kernel = None      # opened on first use: starting one costs a beat
+        self.harness = self._open_harness()
         self.store, self.session_id = self._open_state(store)
         self._interactive = sys.stdin.isatty()
         self._prompt = (
@@ -124,6 +126,11 @@ class Session:
             self.store.append(self.session_id, role, content, tool_name=tool_name)
         except (sqlite3.Error, OSError, KeyError):
             pass
+
+    def _close_kernel(self) -> None:
+        if self.kernel is not None:
+            self.kernel.stop()
+            self.kernel = None
 
     def _close_state(self) -> None:
         """Close the session — or drop it, if nothing was ever said.
@@ -167,6 +174,43 @@ class Session:
             theme.hint("Les commandes tourneront sous ton compte.")
             return None
 
+    def _open_harness(self):
+        """What was learned about this repository, in earlier sessions."""
+        from thot.harness import Harness
+
+        try:
+            return Harness.open(self.root)
+        except OSError:
+            return None
+
+    def _open_kernel(self):
+        """Start the Python namespace, once, on first use.
+
+        It is given the engine so `rlm()` can delegate, the harness so a
+        cell can write down what it learned, and the sandbox so the
+        namespace lands inside the container when there is one.
+        """
+        from thot.engine.factory import NoEngine, build_engine
+        from thot.kernel import Kernel, KernelError
+
+        if self.kernel is not None and self.kernel.running:
+            return self.kernel
+
+        try:
+            engine = build_engine(self.root)
+        except NoEngine:
+            engine = None  # rlm() will say so rather than fail obscurely
+
+        kernel = Kernel(root=self.root, engine=engine, harness=self.harness,
+                        sandbox=self.sandbox)
+        try:
+            kernel.start()
+        except KernelError as exc:
+            theme.error(str(exc))
+            return None
+        self.kernel = kernel
+        return kernel
+
     def _tool_context(self) -> ToolContext:
         return ToolContext(
             root=self.root,
@@ -174,6 +218,7 @@ class Session:
             confirm=self._confirm,
             refresh=self._refresh,
             sandbox=self.sandbox,
+            kernel=self.kernel,
         )
 
     def _refresh(self) -> None:
@@ -190,9 +235,16 @@ class Session:
         something is true needs the "something" somewhere other than the
         conversation it is about to compact away.
         """
-        brief = context_brief(self.recon)
+        blocks = []
         goal = self._goal()
-        return f"{goal.brief()}\n\n{brief}" if goal else brief
+        if goal is not None:
+            blocks.append(goal.brief())
+        if self.harness is not None:
+            learned = self.harness.brief()
+            if learned:
+                blocks.append(learned)
+        blocks.append(context_brief(self.recon))
+        return "\n\n".join(blocks)
 
     def _goal(self):
         if self.store is None:
@@ -426,6 +478,7 @@ class Session:
             except (EOFError, KeyboardInterrupt):
                 theme.console.print()
                 theme.hint("À bientôt.")
+                self._close_kernel()
                 self._close_state()
                 return 0
 
@@ -435,6 +488,7 @@ class Session:
             if line.startswith("/"):
                 outcome = self._command(line)
                 if outcome is False:
+                    self._close_kernel()
                     self._close_state()
                     return 0
                 if not isinstance(outcome, str):
@@ -487,6 +541,8 @@ class Session:
                 self._record("assistant", reply.message.content or "")
                 return
 
+            if any(call.name == "python" for call in reply.message.tool_calls):
+                self._open_kernel()
             context = self._tool_context()
             allowed = set(toolsets.resolve(self.toolset))
             for call in reply.message.tool_calls:
@@ -572,6 +628,8 @@ class Session:
             ("/verdict", "écarter ou accepter un finding : /verdict 2 refute raison"),
             ("/audit", "relancer l'analyse et afficher les findings"),
             ("/audit deep", "faire analyser puis réfuter les candidats par le modèle"),
+                ("/py", "exécuter du Python dans un noyau persistant : /py <code>"),
+                ("/harness", "ce que Thot a retenu de ce dépôt"),
                 ("/cost", "ce que cette session a coûté"),
                 ("/context", "ce qui remplit la fenêtre de contexte"),
                 ("/tools", "ce que le modèle peut faire : /tools lecture|complet|carte"),
@@ -678,6 +736,12 @@ class Session:
 
         if command == "verdict":
             return self._verdict(argument)
+
+        if command in {"py", "python", "noyau"}:
+            return self._python(argument)
+
+        if command in {"harness", "acquis"}:
+            return self._harness_command(argument)
 
         if command in {"cost", "coût", "cout"}:
             return self._cost()
@@ -944,6 +1008,88 @@ class Session:
             theme.hint(f"Budget : {created.token_budget} jetons.")
         theme.hint("Il sera rappelé au modèle à chaque tour, y compris après /compact.")
         self._record("goal", f"objectif fixé : {created.objective}")
+        theme.console.print()
+        return None
+
+    def _python(self, argument: str) -> None:
+        """`/py <code>` — one cell in the session's kernel."""
+        from thot.kernel.api import HELP
+
+        code = argument.strip()
+        if not code:
+            kernel = self.kernel
+            theme.console.print()
+            if kernel is None or not kernel.running:
+                theme.hint("Noyau fermé — il s'ouvre au premier `/py <code>`.")
+            else:
+                theme.console.print(theme.field("noyau", kernel.describe()))
+            theme.console.print()
+            theme.console.print(HELP)
+            theme.console.print()
+            return None
+
+        kernel = self._open_kernel()
+        if kernel is None:
+            theme.console.print()
+            return None
+
+        outcome = kernel.execute(code)
+        theme.console.print()
+        theme.console.print(outcome.render())
+        if outcome.calls:
+            theme.hint(f"{len(outcome.calls)} appel(s) délégué(s) — "
+                       f"{kernel.calls_made}/{kernel.max_calls} au total.")
+        theme.console.print()
+        self._record("python", f"{code}\n---\n{outcome.render()[:1500]}")
+        self._refresh()
+        return None
+
+    def _harness_command(self, argument: str) -> None:
+        """What Thot has learned about this repository, and how to add to it."""
+        if self.harness is None:
+            theme.warn("Aucun magasin d'acquis pour ce dépôt.")
+            theme.console.print()
+            return None
+
+        verb, _, rest = argument.strip().partition(" ")
+        verb = verb.lower()
+
+        if verb in {"oublie", "forget", "rm"} and rest.strip():
+            done = self.harness.forget(rest.strip())
+            theme.ok("Oublié." if done else f"Aucun acquis {rest.strip()}.")
+            theme.console.print()
+            return None
+
+        if verb in {"note", "retiens", "add"} and rest.strip():
+            title, _, content = rest.partition(":")
+            if not content.strip():
+                theme.hint("Usage : /harness note <titre> : <ce qu'il faut retenir>")
+                theme.console.print()
+                return None
+            try:
+                entry = self.harness.remember(title=title, content=content,
+                                              source=self._whoami())
+            except ValueError as exc:
+                theme.warn(str(exc))
+                theme.console.print()
+                return None
+            theme.ok(f"Retenu ({entry.id}) — rappelé à chaque session.")
+            theme.console.print()
+            return None
+
+        entries = self.harness.all()
+        theme.console.print()
+        if not entries:
+            theme.hint("Rien de retenu sur ce dépôt.")
+            theme.hint("`/harness note <titre> : <fait>` pour commencer.")
+        for entry in entries:
+            scope = "" if entry.scope == "local" else " ·global"
+            theme.console.print(
+                theme.entry(entry.id, f"{entry.title}{scope} — {entry.content[:60]}",
+                            width=14)
+            )
+        theme.console.print()
+        theme.hint("`.thot/harness.json` — versionne-le pour le partager.")
         theme.console.print()
         return None
 

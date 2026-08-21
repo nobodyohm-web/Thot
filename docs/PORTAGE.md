@@ -115,6 +115,9 @@ Prime est en TypeScript : **rien n'est copié**, tout est traduit.
 | `core/export-html/` | `report/html_report.py` | porté |
 | `core/compaction/` | `state/compaction.py` (avec Hermes) | porté |
 | `skills/skill-creator/` | `skills/software-development/skill-creator/` | porté |
+| `core/kernel/`, `tools/ipython.ts` | `kernel/worker.py`, `client.py`, `protocol.py`, `api.py` | porté |
+| `prime-agent-runtime/src/rlm/__init__.py` | `kernel/worker.py::rlm`, `client.py::_rlm` | porté |
+| `prime-agent-runtime/src/rlm/harness.py` | `harness.py` | porté |
 | format `SKILL.md` | `skills/loader.py` | repris |
 
 ### Ce qui n'est pas porté de Prime
@@ -126,12 +129,13 @@ Prime est en TypeScript : **rien n'est copié**, tout est traduit.
 - **25 pour le démon** (`modes/daemon/`) — supervision, leases de session,
   journaux de reprise, familles d'agents. Thot n'a pas de démon d'agents ;
   son `thot serve` est une boucle de 120 lignes qui écoute cinq canaux.
-- **le kernel IPython** (`core/kernel/`, `tools/ipython.ts`) — l'idée
-  maîtresse de Prime : l'agent écrit du Python dans un noyau vivant. Thot
-  exécute des commandes dans un conteneur ; c'est un choix opposé, assumé.
-- **`rlm-runtime`, `refinement/`, `agent-messages`, `agent-observe`** —
-  sous-agents récursifs et raffinement continu du harnais. Le premier
-  candidat si Thot devait grandir de ce côté.
+- **`ipykernel` et le protocole Jupyter** — Prime parle à un vrai noyau
+  IPython sur ZeroMQ. Thot a porté l'idée (un espace de noms qui survit)
+  sans la dépendance : trois verbes sur un tuyau, et le noyau tourne dans
+  le conteneur quand un bac à sable est configuré.
+- **`agent-messages`, `agent-observe`, familles d'agents** — la
+  supervision de sous-agents par le démon. `rlm()` couvre la délégation ;
+  l'arbre de familles suppose un démon que Thot n'a pas.
 - **ACP, RPC, modes agents-view** — protocoles d'intégration éditeur.
 
 ---

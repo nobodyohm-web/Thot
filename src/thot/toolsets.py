@@ -16,7 +16,8 @@ from __future__ import annotations
 GRAPH = ("code_map", "find_symbol", "callers", "audit", "skills", "skill")
 READS = ("read_file", "list_dir")
 WRITES = ("write_file", "edit_file")
-RUNS = ("run_command",)
+# `python` executes code just as surely as a shell command does.
+RUNS = ("run_command", "python")
 
 TOOLSETS: dict[str, tuple[str, ...]] = {
     # Everything. What `thot` has always done.

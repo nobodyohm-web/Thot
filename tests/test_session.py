@@ -348,3 +348,12 @@ def test_compacting_a_short_session_does_nothing_and_costs_nothing(session):
 
     assert provider.calls == [], "rien à compacter ne doit rien coûter"
     assert session.session_id == before
+
+
+def test_what_was_learned_rides_into_every_briefing(session):
+    session.harness.remember(title="team.shell.run",
+                             content="échappe ses arguments")
+
+    system = session._system()
+    assert "team.shell.run" in system
+    assert "échappe ses arguments" in system

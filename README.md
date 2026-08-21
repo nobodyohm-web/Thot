@@ -181,6 +181,57 @@ Rien n'est jamais supprimé en silence. Un finding écarté reste dans le rappor
 en `refuted`, avec sa raison et son auteur — un audit qui cache ce qu'on lui a
 dit d'ignorer n'est pas relisable.
 
+## Le noyau Python
+
+L'idée maîtresse de Prime Agent, portée : plutôt qu'un appel d'outil par
+question, le modèle écrit du Python et **ses variables survivent**.
+
+```
+   › /py bas = audit(severity="low"); print(len(bas), "findings"); [f.rule for f in bas]
+   3 findings
+   → ['sink.eval', 'sink.network', 'sink.subprocess.shell']
+
+   › /py len(files())
+   → 148
+```
+
+La carte du dépôt y est disponible comme objets — `files()`, `symbols()`,
+`find()`, `callers()`, `callees()`, `audit()`, `read()`. Une boucle qui croise
+findings et appelants coûte **un** tour de modèle ; la même chose en appels
+d'outils en coûte une douzaine, dont chacun repaie la lecture de ce que la
+carte savait déjà.
+
+**Le noyau ne tourne jamais dans le processus de Thot.** Un `exec()` chez soi
+donnerait au code audité les identifiants, les bases ouvertes et le magasin de
+verdicts — strictement pire que `run_command`, que Thot a pris la peine de
+mettre dans un conteneur. C'est un sous-processus, et c'est *dans le conteneur*
+quand un bac à sable est configuré.
+
+### `rlm()` — déléguer depuis une cellule
+
+```python
+verdicts = {f.id: rlm(f"Ce chemin est-il exploitable ?\n{f.failure_scenario}")
+            for f in audit(severity="high")}
+```
+
+Une cellule peut décomposer son propre problème. La cellule ne détient aucun
+identifiant : elle **demande** à l'hôte, qui décide et paie. Les limites sont
+donc tenues côté hôte — 8 appels par cellule, 40 par noyau — parce qu'une
+limite que l'enfant pourrait modifier n'est pas une limite, et l'enfant exécute
+du code venu du dépôt audité.
+
+### Ce que Thot retient d'un dépôt
+
+```
+   › /harness note team.shell.run : échappe ses arguments, les findings dessus sont faux
+   ✓ Retenu — rappelé à chaque session.
+```
+
+Le raffinement de Prime, appliqué à l'audit : des faits qu'aucune analyse
+statique ne dérivera jamais. Ils vivent dans `<dépôt>/.thot/harness.json`,
+relus en pull request comme les verdicts, et reviennent dans le briefing à
+chaque session.
+
 ## Ce que le modèle a le droit de faire
 
 ```bash

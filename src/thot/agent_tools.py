@@ -36,6 +36,8 @@ class ToolContext:
     # Where `run_command` executes. None means the host, which is what Thot
     # has always done; a session started with --sandbox puts a container here.
     sandbox: Any = None
+    # A live Python namespace, when the session opened one.
+    kernel: Any = None
 
 
 class ToolError(Exception):
@@ -118,6 +120,20 @@ def _write_warnings(context: ToolContext, path: str, content: str) -> str:
     )
     warnings = [str(note).strip() for note in notes if note]
     return ("\n\n" + "\n".join(warnings)) if warnings else ""
+
+
+def python(context: ToolContext, *, code: str) -> str:
+    """One cell in the session's kernel. Never in Thot's own process."""
+    if context.kernel is None:
+        raise ToolError(
+            "Aucun noyau Python dans cette session — `/py` pour l'ouvrir."
+        )
+    if not context.confirm("Exécuter du Python", code):
+        raise ToolError("L'utilisateur a refusé l'exécution.")
+
+    outcome = context.kernel.execute(code)
+    context.refresh()
+    return outcome.render()
 
 
 def _notify_write(context: ToolContext, path: str, content: str) -> None:
@@ -506,6 +522,20 @@ SPECS: list[ToolSpec] = [
         },
     ),
     ToolSpec(
+        name="python",
+        description="Exécuter du Python dans un noyau persistant : les variables "
+                    "survivent d'un appel à l'autre. La carte du dépôt y est "
+                    "disponible comme objets — files(), symbols(), callers(), "
+                    "audit(), read() — et `rlm(question)` délègue une question à "
+                    "un autre modèle. À préférer aux appels d'outils répétés dès "
+                    "qu'il faut boucler ou croiser des résultats.",
+        parameters={
+            "type": "object",
+            "properties": {"code": _STRING},
+            "required": ["code"],
+        },
+    ),
+    ToolSpec(
         name="code_map",
         description="Lister les fichiers du projet. Sans motif : tout. Avec motif : glob (`*.py`, `src/**`) ou fragment de chemin (`auth`). Gratuit : réponse issue de l'index, aucun fichier ouvert.",
         parameters={
@@ -547,6 +577,7 @@ HANDLERS: dict[str, Callable[..., str]] = {
     "edit_file": edit_file,
     "list_dir": list_dir,
     "run_command": run_command,
+    "python": python,
     "skills": skills,
     "skill": skill,
     "code_map": code_map,
@@ -558,7 +589,7 @@ HANDLERS: dict[str, Callable[..., str]] = {
 # Tools that change the world; the session shows them differently.
 NAMES = frozenset(spec.name for spec in SPECS)
 
-MUTATING = frozenset({"write_file", "edit_file", "run_command"})
+MUTATING = frozenset({"write_file", "edit_file", "run_command", "python"})
 
 
 def dispatch(context: ToolContext, name: str, arguments: dict) -> str:

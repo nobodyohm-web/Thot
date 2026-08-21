@@ -101,16 +101,21 @@ class DockerSandbox:
                      else "dépôt inscriptible")
         return " · ".join(parts)
 
-    def command_line(self, command: str) -> list[str]:
+    def command_line(self, command: str, *, interactive: bool = False) -> list[str]:
         """The exact `docker run` this sandbox would execute.
 
         Public because it is the thing worth reviewing: a user should be
         able to read the isolation rather than trust a description of it.
+
+        `interactive` keeps stdin open, which a one-shot command does not
+        need and a kernel cannot live without — `docker run` closes stdin
+        otherwise and the namespace dies at its first read.
         """
         binary = _docker() or "docker"
         mount = f"{self.root}:{WORKDIR}" + ("" if self.writable else ":ro")
 
         argv = [binary, "run", "--rm", "--init",
+                *(("-i",) if interactive else ()),
                 "-v", mount,
                 "-w", WORKDIR if self.writable else OVERLAY,
                 *SECURITY_ARGS,

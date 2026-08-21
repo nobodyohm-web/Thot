@@ -166,6 +166,32 @@ re-expanded.
 summary and continuing in a linked child, so context is lost and evidence
 is not.
 
+**Kernel** (`src/thot/kernel/`) — Prime's thesis: an agent that writes
+Python into a namespace whose variables survive between cells beats one
+that spends a turn per tool call. Prime talks to a real `ipykernel` over
+ZeroMQ; Thot speaks three verbs over a pipe, because paying for ZeroMQ and
+ipykernel to get them would put a heavy dependency between the auditor and
+the audited code. And one constraint is added rather than ported: the
+namespace is always a subprocess, never Thot's own process, because an
+`exec()` in-process would hand audited code the credentials and the
+verdict store.
+
+**RLM** (`rlm()` in `src/thot/kernel/worker.py`, enforced in `client.py`) —
+the recursive half, from `prime-agent-runtime/src/rlm/__init__.py`. Prime
+routes a cell's `rlm.run()` back to the host over an ipykernel Comm; Thot
+routes it over the same pipe, for the same reason — the child holds no
+credential, so a cell cannot spend the subscription except by asking.
+Depth and budget are enforced in the parent: a limit the child could edit
+is not a limit, and the child is executing code from the repository under
+audit.
+
+**Harness** (`src/thot/harness.py`) — from
+`prime-agent-runtime/src/rlm/harness.py`, which is already Python, so this
+is a translation of purpose rather than language. Prime calls it
+refinement; Thot stores facts about a repository that no static analysis
+derives, local entries in `<repo>/.thot/harness.json` so a team reviews
+them the way it reviews verdicts.
+
 **skill-creator** (`skills/software-development/skill-creator/`) — Prime's
 skill of the same name, rewritten for Thot's storage layout and trust model.
 
