@@ -357,3 +357,69 @@ def test_what_was_learned_rides_into_every_briefing(session):
     system = session._system()
     assert "team.shell.run" in system
     assert "échappe ses arguments" in system
+
+
+def test_a_refutation_survives_the_session_that_paid_for_it(session, monkeypatch):
+    """Minutes of model time must not die with the process.
+
+    `recon` folds the memory in at every sweep, so a session that only reads
+    it re-argues the same findings forever.
+    """
+    from thot.contracts import Confidence
+    from thot.engine import AgentResult, EngineCapabilities
+    from thot.memory import build_memory
+
+    class Refuting:
+        capabilities = EngineCapabilities(name="stub-engine", max_parallel=1)
+
+        def run(self, task):
+            if task.id.startswith("probe:"):
+                return AgentResult(task_id=task.id, data={
+                    "verdict": "confirmed", "scenario": "appel shell",
+                    "severity": "high"})
+            return AgentResult(task_id=task.id, data={
+                "refuted": True, "raison": "la commande est une constante"})
+
+        def fan_out(self, tasks):
+            return [self.run(t) for t in tasks]
+
+    monkeypatch.setattr("thot.engine.factory.build_engine", lambda *a, **k: Refuting())
+    analysed = session._deep_analyse(session.recon.findings)
+    assert any(f.confidence is Confidence.REFUTED for f in analysed)
+
+    memory = build_memory(session.root)
+    try:
+        stored = memory.all_verdicts()
+    finally:
+        memory.close()
+
+    assert stored, "la réfutation doit être mémorisée"
+    reasons = " ".join(v.reason for v in stored)
+    assert "constante" in reasons
+    # A machine refutation attributed to the user would outrank the user.
+    assert all(v.author == "stub-engine" for v in stored)
+
+
+def test_the_next_sweep_stops_paying_for_a_refuted_finding(session, monkeypatch):
+    from thot.analysis.probe import select_for_analysis
+    from thot.engine import AgentResult, EngineCapabilities
+    from thot.recon import sweep
+
+    class Refuting:
+        capabilities = EngineCapabilities(name="stub-engine", max_parallel=1)
+
+        def run(self, task):
+            if task.id.startswith("probe:"):
+                return AgentResult(task_id=task.id, data={"verdict": "refuted"})
+            return AgentResult(task_id=task.id, data={"refuted": True, "raison": "non"})
+
+        def fan_out(self, tasks):
+            return [self.run(t) for t in tasks]
+
+    monkeypatch.setattr("thot.engine.factory.build_engine", lambda *a, **k: Refuting())
+    session._deep_analyse(session.recon.findings)
+
+    fresh = sweep(session.root)
+    assert not select_for_analysis(fresh.findings, 10), (
+        "un finding réfuté ne doit plus être soumis au modèle"
+    )

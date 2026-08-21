@@ -439,8 +439,39 @@ class Session:
         confirmed = sum(1 for f in analysed if f.confidence is Confidence.CONFIRMED)
         refuted = sum(1 for f in analysed if f.confidence is Confidence.REFUTED)
         theme.ok(f"{confirmed} confirmé(s), {refuted} réfuté(s)")
+        kept = self._remember_refutations(analysed, engine)
+        if kept:
+            theme.hint(
+                f"{kept} réfutation(s) mémorisée(s) — le prochain audit ne les "
+                "repaiera pas."
+            )
         theme.console.print()
         return analysed
+
+    def _remember_refutations(self, findings: list, engine) -> int:
+        """Write down what the refutation pass concluded.
+
+        `recon` already reads the memory at every sweep, so without this the
+        session only ever read it: minutes of model time refuting the same
+        findings, thrown away the moment the session ended. `thot audit --deep`
+        has always recorded them; the interactive path has to as well, or the
+        two disagree about what Thot knows.
+        """
+        from thot.memory import build_memory
+        from thot.memory.base import record_verdicts
+
+        try:
+            memory = build_memory(self.root)
+        except Exception as exc:  # a memory that will not open costs nothing else
+            theme.warn(f"Décisions non mémorisées : {exc}")
+            return 0
+        try:
+            return record_verdicts(findings, memory, author=engine.capabilities.name)
+        except Exception as exc:
+            theme.warn(f"Décisions non mémorisées : {exc}")
+            return 0
+        finally:
+            getattr(memory, "close", lambda: None)()
 
     def _confirm(self, action: str, detail: str) -> bool:
         theme.console.print()

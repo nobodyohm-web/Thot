@@ -549,16 +549,62 @@ def _cmd_verdicts(args) -> int:
             print("Les réfutations de `thot audit --deep` s'enregistrent ici.")
             return EXIT_OK
 
-        print(f"{len(stored)} décision(s)\n")
+        known = _last_audited_ids(root)
+        dormant = (
+            0 if known is None
+            else sum(1 for v in stored if v.finding_id not in known)
+        )
+        header = f"{len(stored)} décision(s)"
+        if dormant:
+            header += f" · {dormant} sans finding correspondant"
+        print(header + "\n")
+
         for verdict in stored:
             where = f"{verdict.path}:{verdict.symbol}" if verdict.symbol else verdict.path
             author = f" · {verdict.author}" if verdict.author else ""
-            print(f"{verdict.finding_id}  {verdict.decision.value:<9} {where}{author}")
+            # Not "expired": the last stored run is the only thing consulted,
+            # and it may predate the code. What can be said is what is said.
+            stale = (
+                "  [absent du dernier audit]"
+                if known is not None and verdict.finding_id not in known
+                else ""
+            )
+            print(f"{verdict.finding_id}  {verdict.decision.value:<9} {where}{author}{stale}")
             if verdict.reason:
                 print(f"{' ' * 18}{verdict.reason[:90]}")
+        if dormant:
+            print()
+            print("Un verdict expire quand le code qu'il visait change : le finding")
+            print("prend une nouvelle identité et la décision cesse de s'appliquer.")
+            print("`thot verdicts --forget <id>` pour retirer celles qui ont fait leur temps.")
         return EXIT_OK
     finally:
         getattr(memory, "close", lambda: None)()
+
+
+def _last_audited_ids(root: Path) -> set[str] | None:
+    """The finding ids of the last stored audit here — None when there is none.
+
+    A verdict outlives the finding that produced it: change the code and the
+    finding takes a new identity, leaving the old decision pointing at
+    nothing. Listing the two kinds identically made a memory of six decisions
+    look like six live ones. None, not an empty set: never having audited
+    this repository is not the same as having audited it and found nothing.
+    """
+    from thot.paths import run_store
+    from thot.store.db import Store
+
+    try:
+        store = Store.open(run_store())
+    except Exception:
+        return None
+    try:
+        known = store.previous_finding_ids(str(root))
+    except Exception:
+        return None
+    finally:
+        store.close()
+    return known or None
 
 
 def home_hint() -> str:

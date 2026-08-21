@@ -124,6 +124,101 @@ def test_adversarial_refutations_are_remembered_for_next_time(toy_repo, tmp_path
         run_audit(toy_repo, require_authorization=False,
                   engine=VerdictEngine(refute=True), memory=memory)
         assert memory.all_verdicts()
-        assert memory.all_verdicts()[0].author == "thot"
+        # Named after who actually decided, not after the tool that ran.
+        assert memory.all_verdicts()[0].author == "test-engine"
     finally:
         memory.close()
+
+
+def test_an_accepted_risk_is_not_re_argued_by_the_model(toy_repo, tmp_path):
+    """A decision taken is a decision taken.
+
+    Sending an accepted risk back to the model pays twice for an answer
+    someone already gave, and — because the probe replaces confidence,
+    severity, scenario and provenance wholesale — the reply overwrites the
+    human's decision and erases who took it.
+    """
+    from thot.memory import Decision, Verdict
+    from thot.memory.sqlite import SqliteMemory
+
+    memory = SqliteMemory.open(tmp_path / "m.db")
+    try:
+        baseline = run_audit(toy_repo, require_authorization=False)
+        target = baseline.findings[0]
+        memory.remember(
+            Verdict.of(target, Decision.ACCEPTED, "outil interne, réseau fermé", "dev")
+        )
+
+        engine = VerdictEngine()
+        result = run_audit(toy_repo, require_authorization=False,
+                           engine=engine, memory=memory)
+
+        assert not any(task.endswith(target.id) for task in engine.seen), (
+            "un risque accepté ne doit pas repasser devant le modèle"
+        )
+        kept = next(f for f in result.findings if f.id == target.id)
+        assert (kept.provenance or {}).get("décidé par") == "dev"
+        assert "Risque accepté" in kept.failure_scenario
+    finally:
+        memory.close()
+
+
+def test_a_regression_is_reported_not_re_litigated(toy_repo, tmp_path):
+    """`fixed` and here again means the fix went away — that is the alert.
+
+    Letting the model refute it would silence the one finding that has
+    already been judged real once.
+    """
+    from thot.memory import Decision, Verdict
+    from thot.memory.sqlite import SqliteMemory
+
+    memory = SqliteMemory.open(tmp_path / "m.db")
+    try:
+        baseline = run_audit(toy_repo, require_authorization=False)
+        target = baseline.findings[0]
+        memory.remember(Verdict.of(target, Decision.FIXED, "corrigé en mars", "dev"))
+
+        engine = VerdictEngine(refute=True)
+        result = run_audit(toy_repo, require_authorization=False,
+                           engine=engine, memory=memory)
+
+        kept = next(f for f in result.findings if f.id == target.id)
+        assert kept.confidence is Confidence.CONFIRMED
+        assert (kept.provenance or {}).get("régression") is True
+        assert not any(task.endswith(target.id) for task in engine.seen)
+    finally:
+        memory.close()
+
+
+def test_the_probe_does_not_erase_where_the_finding_came_from(toy_repo):
+    """A pattern rule's provenance is not the probe's to discard."""
+    result = run_audit(toy_repo, require_authorization=False, engine=VerdictEngine())
+    pattern = [f for f in result.findings if f.rule.startswith("pattern.")]
+    assert pattern, "le dépôt jouet doit déclencher au moins un motif"
+    for finding in pattern:
+        provenance = finding.provenance or {}
+        assert provenance.get("source") == "hermes/security-guidance"
+        assert provenance.get("moteur") == "test-engine"
+
+
+def test_a_refutation_weighs_the_same_whichever_pass_reached_it(toy_repo):
+    """Probe-refuted and refutation-refuted must not rank differently."""
+    from thot.contracts import Severity
+
+    class ProbeRefutes(VerdictEngine):
+        def run(self, task):
+            self.seen.append(task.id)
+            if task.id.startswith("probe:"):
+                return AgentResult(task_id=task.id, data={
+                    "verdict": "refuted", "severity": "high",
+                    "scenario": "aucune entrée n'atteint ce point"})
+            raise AssertionError("un refus à la sonde ne va pas en réfutation")
+
+    straight = run_audit(toy_repo, require_authorization=False, engine=ProbeRefutes())
+    two_pass = run_audit(toy_repo, require_authorization=False,
+                         engine=VerdictEngine(refute=True))
+
+    for result in (straight, two_pass):
+        refuted = [f for f in result.findings if f.confidence is Confidence.REFUTED]
+        assert refuted
+        assert all(f.severity is Severity.INFO for f in refuted)

@@ -18,6 +18,7 @@ from pathlib import Path
 
 from thot.contracts import CodeRef, Confidence, Finding, Severity
 from thot.engine.base import AgentResult, AgentTask, Engine
+from thot.memory.base import carries_decision
 
 # How many candidates a run will spend a model on unless told otherwise.
 DEFAULT_LIMIT = 20
@@ -57,10 +58,19 @@ REFUTE_SCHEMA = {
 def select_for_analysis(findings: list[Finding], limit: int = DEFAULT_LIMIT) -> list[Finding]:
     """The candidates worth a model, worst first.
 
-    Already-refuted findings are dropped: paying twice to reach the same
-    conclusion is the easiest waste to avoid.
+    Anything already decided is dropped. Refuted, because paying twice to
+    reach the same conclusion is the easiest waste to avoid — and accepted or
+    fixed for a harder reason: the probe replaces confidence, severity,
+    scenario and provenance wholesale, so re-arguing a decided finding does
+    not merely cost money, it overwrites the decision and erases who took it.
+    A regression is the one thing a deep pass must never be allowed to
+    silence: it has already been judged real once.
     """
-    live = [f for f in findings if f.confidence is not Confidence.REFUTED]
+    live = [
+        f
+        for f in findings
+        if f.confidence is not Confidence.REFUTED and not carries_decision(f)
+    ]
     ranked = sorted(live, key=lambda f: SEVERITY_ORDER.get(f.severity, 9))
     return ranked[:limit]
 
@@ -185,19 +195,32 @@ def analyse(
 
 def _apply_probe(finding: Finding, result: AgentResult, engine: Engine) -> Finding:
     engine_name = engine.capabilities.name
+    # Merged, not replaced: what got the finding here — which rule fired,
+    # which catalogue it came from — is not the probe's to throw away.
+    provenance = dict(finding.provenance or {})
+    provenance["moteur"] = engine_name
+
     if not result.ok or not result.data:
-        return replace(
-            finding,
-            provenance={"moteur": engine_name, "erreur": result.error or "réponse vide"},
-        )
+        provenance["erreur"] = result.error or "réponse vide"
+        return replace(finding, provenance=provenance)
 
     data = result.data
+    provenance["phase"] = "sonde"
+    confidence = _verdict(data.get("verdict", ""))
+    # A probe can refute outright, without the second pass. When it does, the
+    # answer is the same answer, so it must carry the same weight: refuted
+    # confidence scores zero, and severity is impact × reach × confidence.
+    severity = (
+        Severity.INFO
+        if confidence is Confidence.REFUTED
+        else _severity(data.get("severity", ""), finding.severity)
+    )
     return replace(
         finding,
-        confidence=_verdict(data.get("verdict", "")),
-        severity=_severity(data.get("severity", ""), finding.severity),
+        confidence=confidence,
+        severity=severity,
         failure_scenario=str(data.get("scenario") or finding.failure_scenario),
-        provenance={"moteur": engine_name, "phase": "sonde"},
+        provenance=provenance,
     )
 
 
@@ -210,9 +233,14 @@ def _apply_refutation(finding: Finding, result: AgentResult) -> Finding:
     provenance["phase"] = "réfutée" if result.data.get("refuted") else "confirmée"
     reason = str(result.data.get("raison") or "")
     if result.data.get("refuted"):
+        # Severity is impact × reach × confidence, and refuted confidence
+        # scores zero. Leaving it where the probe put it made a refutation
+        # reached this run rank above one remembered from last week, for the
+        # same finding and the same reason.
         return replace(
             finding,
             confidence=Confidence.REFUTED,
+            severity=Severity.INFO,
             failure_scenario=f"{finding.failure_scenario}\n\nRéfuté : {reason}",
             provenance=provenance,
         )

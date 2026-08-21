@@ -5,7 +5,7 @@ from __future__ import annotations
 from rich.console import Console
 from rich.table import Table
 
-from thot.contracts import Severity
+from thot.contracts import Confidence, Severity
 
 _STYLE = {
     Severity.CRITICAL: "bold red",
@@ -84,10 +84,42 @@ def print_report(result, hidden: int = 0) -> None:
     console.print(
         f"[bold]{len(result.findings)}[/bold] finding(s) — {breakdown}{suffix}"
     )
-    console.print(
-        "[dim]Chaque finding est PLAUSIBLE : détecté par analyse statique, pas "
-        "encore prouvé par exécution.[/dim]"
+    console.print(_confidence_note(result.findings))
+
+
+def _confidence_note(findings) -> str:
+    """Say what the findings actually are.
+
+    This line is the last thing a reader sees, so it outranks the table above
+    it. Printing "everything here is plausible" unconditionally was true when
+    Thot only ran static analysis; after `--deep`, or after a single
+    remembered verdict, it told the reader the opposite of what had happened —
+    and buried minutes of argued analysis under a disclaimer.
+    """
+    confirmed = sum(1 for f in findings if f.confidence is Confidence.CONFIRMED)
+    refuted = sum(1 for f in findings if f.confidence is Confidence.REFUTED)
+    plausible = len(findings) - confirmed - refuted
+
+    if not confirmed and not refuted:
+        return (
+            "[dim]Chaque finding est PLAUSIBLE : détecté par analyse statique, "
+            "pas encore prouvé par exécution.[/dim]"
+        )
+
+    parts = []
+    if confirmed:
+        parts.append(f"[{_STYLE[Severity.HIGH]}]{confirmed} confirmé(s)[/]")
+    if refuted:
+        parts.append(f"[dim]{refuted} réfuté(s)[/dim]")
+    if plausible:
+        parts.append(f"[dim]{plausible} plausible(s)[/dim]")
+    tail = (
+        " [dim]— un plausible est détecté par analyse statique, pas encore "
+        "prouvé.[/dim]"
+        if plausible
+        else ""
     )
+    return " · ".join(parts) + tail
 
 
 def print_paths(result) -> None:

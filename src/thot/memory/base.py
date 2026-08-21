@@ -120,9 +120,20 @@ def apply_memory(findings: list[Finding], memory: Memory) -> list[Finding]:
     return out
 
 
+# The key `_fold` stamps on a finding it has decided. Named, because
+# `select_for_analysis` reads it to keep the model away from decided
+# findings: a bare string in two files is a coupling nobody can see.
+DECISION_KEY = "mémoire"
+
+
+def carries_decision(finding: Finding) -> bool:
+    """True when a recorded verdict has already been folded into this finding."""
+    return bool((finding.provenance or {}).get(DECISION_KEY))
+
+
 def _fold(finding: Finding, verdict: Verdict) -> Finding:
     provenance = dict(finding.provenance or {})
-    provenance["mémoire"] = verdict.decision.value
+    provenance[DECISION_KEY] = verdict.decision.value
     if verdict.author:
         provenance["décidé par"] = verdict.author
     if verdict.decided_at:

@@ -192,6 +192,11 @@ def _analyse_body(symbol: Symbol, node: ast.AST) -> _Facts:
                 return None  # direct source: caller assigns the ref
         return None
 
+    # How many times each call has already been seen in this body. AST order
+    # is deterministic, so the count is the same on every run — and it only
+    # has to hold within one version of the body, which `ast_hash` pins.
+    call_ordinal: dict[str, int] = {}
+
     for child in _ordered_nodes(node):
         if isinstance(child, ast.Assign):
             ref = CodeRef(path=symbol.path, line=child.lineno, symbol=symbol.name,
@@ -227,8 +232,11 @@ def _analyse_body(symbol: Symbol, node: ast.AST) -> _Facts:
             called = _called_name(child)
             if not called:
                 continue
+            seen_before = call_ordinal.get(called, 0)
+            call_ordinal[called] = seen_before + 1
             ref = CodeRef(path=symbol.path, line=child.lineno, symbol=symbol.name,
-                          ast_hash=symbol.ast_hash)
+                          ast_hash=symbol.ast_hash,
+                          site=f"{called}#{seen_before}")
 
             rule = match_sink(called)
 

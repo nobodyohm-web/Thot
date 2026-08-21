@@ -153,3 +153,69 @@ def test_each_subcommand_reaches_a_handler(argv, isolated_home, monkeypatch,
     assert "positional arguments:" not in printed, (
         f"{argv} est retombé sur l'aide au lieu d'un gestionnaire"
     )
+
+
+def test_a_verdict_pointing_at_nothing_is_listed_as_such(
+    isolated_home, monkeypatch, capsys, toy_repo
+):
+    """A decision outlives the finding that produced it.
+
+    Six decisions of which three are dead should not read as six live ones —
+    that is how a memory quietly stops meaning anything.
+    """
+    from thot.cli import main
+    from thot.memory import Decision, Verdict, build_memory
+    from thot.paths import run_store
+    from thot.pipeline import run_audit
+    from thot.store.db import Store
+
+    store = Store.open(run_store())
+    try:
+        result = run_audit(toy_repo, store, require_authorization=False)
+    finally:
+        store.close()
+
+    live = result.findings[0]
+    ghost = Verdict(
+        finding_id="0" * 16, decision=Decision.REFUTED, reason="code disparu",
+        author="dev", rule="sink.os.system", path="src/parti.py",
+        symbol="src.parti.run", ast_hash="vieux", decided_at="",
+    )
+    memory = build_memory(toy_repo)
+    try:
+        memory.remember(Verdict.of(live, Decision.REFUTED, "littéral", "dev"))
+        memory.remember(ghost)
+    finally:
+        memory.close()
+
+    monkeypatch.chdir(toy_repo)
+    assert main(["verdicts"]) == 0
+    printed = capsys.readouterr().out
+
+    assert "1 sans finding correspondant" in printed
+    ghost_line = next(l for l in printed.splitlines() if l.startswith("0" * 16))
+    live_line = next(l for l in printed.splitlines() if l.startswith(live.id))
+    assert "absent du dernier audit" in ghost_line
+    assert "absent du dernier audit" not in live_line
+
+
+def test_nothing_is_called_stale_before_the_first_audit(
+    isolated_home, monkeypatch, capsys, toy_repo
+):
+    """Never having audited here is not evidence that a decision is dead."""
+    from thot.cli import main
+    from thot.memory import Decision, Verdict, build_memory
+
+    memory = build_memory(toy_repo)
+    try:
+        memory.remember(Verdict(
+            finding_id="a" * 16, decision=Decision.REFUTED, reason="r",
+            author="dev", rule="sink.eval", path="src/app.py",
+            symbol="src.app.run", ast_hash="h", decided_at="",
+        ))
+    finally:
+        memory.close()
+
+    monkeypatch.chdir(toy_repo)
+    assert main(["verdicts"]) == 0
+    assert "absent du dernier audit" not in capsys.readouterr().out

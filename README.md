@@ -165,6 +165,14 @@ fonction, renomme une variable locale : le verdict tient. Change ce que le code
 Un rejet ne peut donc jamais survivre au code qu'il concernait. C'est la seule
 propriété qui rend le fait de mémoriser des rejets acceptable.
 
+L'identifiant nomme aussi **l'appel exact** visé — `httpx.get#3` — et pas
+seulement la fonction qui le contient. Sans cela, cinq appels réseau dans la
+même fonction ne faisaient qu'un seul finding aux yeux de la mémoire, et
+écarter le premier écartait les quatre autres avec leur raison. Ce
+discriminant ne fragilise rien : il n'a besoin d'être unique que dans une
+version du corps, et l'AST de ce corps fait déjà expirer tout ce qui s'y
+rapporte dès qu'il bouge.
+
 ```bash
 thot verdicts                    # tout ce qui a été décidé
 thot verdicts --path src/auth    # sur un chemin
@@ -172,10 +180,24 @@ thot verdicts --forget <id>      # revenir sur une décision
 thot audit . --no-memory         # ignorer la mémoire pour ce run
 ```
 
-La mémoire s'applique **avant** le modèle : un candidat déjà écarté n'est
-jamais renvoyé à l'analyse. Un run où tout est écarté ne fait aucun appel.
-Et les réfutations de `--deep` s'enregistrent d'elles-mêmes : deux appels
-modèle, payés une fois.
+Une décision survit au finding qui l'a produite : le code change, le finding
+prend une nouvelle identité, et l'ancienne décision ne désigne plus rien. La
+liste marque celles-là `[absent du dernier audit]` plutôt que de les afficher
+comme les autres — six décisions dont trois sont mortes ne doivent pas se lire
+comme six décisions vivantes.
+
+La mémoire s'applique **avant** le modèle : un finding qui porte déjà une
+décision — écarté, accepté ou corrigé — n'est jamais renvoyé à l'analyse. Un
+run où tout est décidé ne fait aucun appel. Ce n'est pas qu'une économie : la
+sonde remplace la confiance, la sévérité, le scénario et la provenance d'un
+coup, donc renvoyer une décision au modèle l'écraserait, et effacerait qui
+l'avait prise. Une régression est le cas où cela compte le plus : elle a déjà
+été jugée réelle une fois, aucune passe profonde ne peut la faire taire.
+
+Et les réfutations s'enregistrent d'elles-mêmes, depuis `thot audit --deep`
+comme depuis `/audit deep` : deux appels modèle, payés une fois. Elles portent
+le nom du moteur qui a décidé, jamais le tien — une décision machine ne prend
+pas le pas sur une décision humaine.
 
 Rien n'est jamais supprimé en silence. Un finding écarté reste dans le rapport
 en `refuted`, avec sa raison et son auteur — un audit qui cache ce qu'on lui a

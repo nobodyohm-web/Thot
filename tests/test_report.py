@@ -50,3 +50,49 @@ def test_empty_report_says_so_explicitly():
     _, manifest = sample()
     text = render_markdown([], manifest, elapsed=0.2)
     assert "Aucun" in text
+
+
+# -- what the reader is told the findings are --------------------------------
+
+
+def _finding(confidence, severity=Severity.LOW):
+    location = CodeRef(path="src/app.py", line=3, symbol="run", ast_hash="h")
+    return Finding(
+        id=Finding.compute_id("sink.eval", location),
+        rule="sink.eval",
+        severity=severity,
+        confidence=confidence,
+        location=location,
+    )
+
+
+def test_a_static_only_report_says_everything_is_plausible():
+    from thot.console import _confidence_note
+
+    note = _confidence_note([_finding(Confidence.PLAUSIBLE)])
+    assert "PLAUSIBLE" in note
+
+
+def test_an_argued_report_does_not_call_its_verdicts_plausible():
+    """The last line outranks the table; it must not contradict it."""
+    from thot.console import _confidence_note
+
+    note = _confidence_note([
+        _finding(Confidence.REFUTED, Severity.INFO),
+        _finding(Confidence.CONFIRMED, Severity.HIGH),
+    ])
+    assert "réfuté" in note
+    assert "confirmé" in note
+    assert "Chaque finding est PLAUSIBLE" not in note
+
+
+def test_a_mixed_report_keeps_the_caveat_for_the_unproven_half():
+    from thot.console import _confidence_note
+
+    note = _confidence_note([
+        _finding(Confidence.REFUTED, Severity.INFO),
+        _finding(Confidence.PLAUSIBLE),
+    ])
+    assert "réfuté" in note
+    assert "plausible" in note
+    assert "pas encore prouvé" in note

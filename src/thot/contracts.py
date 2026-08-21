@@ -31,6 +31,13 @@ class CodeRef:
     line: int
     symbol: str | None = None
     ast_hash: str | None = None
+    # Which dangerous call inside the symbol this is. Five `httpx.get` in one
+    # function are five findings, and a verdict on one of them must not speak
+    # for the other four. The line cannot play this role — identity has to
+    # survive a line move — but a discriminator that is only unique within one
+    # version of the body is enough, because `ast_hash` already expires every
+    # verdict in the function the moment that body changes.
+    site: str | None = None
 
     def __str__(self) -> str:
         return f"{self.path}:{self.line}"
@@ -82,7 +89,11 @@ class Finding:
     @staticmethod
     def compute_id(rule: str, location: CodeRef) -> str:
         """Stable identity: rule + file + symbol + body hash. Not the line."""
-        material = "|".join(
-            [rule, location.path, location.symbol or "", location.ast_hash or ""]
-        )
+        parts = [rule, location.path, location.symbol or "", location.ast_hash or ""]
+        if location.site:
+            # Appended, never inserted: a location that cannot name its site
+            # keeps the identity it has always had, so adding this did not
+            # expire a single verdict already on disk.
+            parts.append(location.site)
+        material = "|".join(parts)
         return hashlib.sha256(material.encode()).hexdigest()[:16]

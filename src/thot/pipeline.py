@@ -155,7 +155,7 @@ def run_audit(
         findings = analyse(root, findings, engine, limit=budget)
         engine_name = engine.capabilities.name
         if memory is not None:
-            record_verdicts(findings, memory)
+            record_verdicts(findings, memory, author=engine.capabilities.name)
 
     # Plugins see the finished findings, before anything is written down.
     findings = annotate_findings(findings, root)

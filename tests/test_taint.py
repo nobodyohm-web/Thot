@@ -233,3 +233,91 @@ def test_dict_get_is_not_reported_as_a_network_sink(tmp_path):
         "    return value\n",
     )
     assert candidates == []
+
+
+# -- one verdict, one sink ---------------------------------------------------
+
+
+def _two_sinks(tmp_path):
+    import textwrap
+
+    (tmp_path / "src").mkdir()
+    (tmp_path / "src" / "app.py").write_text(
+        textwrap.dedent(
+            """
+            import os
+            import sys
+
+
+            def main():
+                first = sys.argv[1]
+                second = sys.argv[2]
+                os.system("echo " + first)
+                os.system("rm -rf " + second)
+            """
+        )
+    )
+    return tmp_path
+
+
+def test_two_sinks_in_one_function_are_two_findings(tmp_path):
+    """Same rule, same file, same symbol, same body — different calls.
+
+    They used to share one identity, so a verdict on either one spoke for
+    both. On a real repository that merged 22 groups of findings, one of
+    them five network calls deep.
+    """
+    from thot.contracts import Finding
+
+    candidates = [c for c in analyse(_two_sinks(tmp_path))
+                  if c.rule == "sink.os.system"]
+    assert len(candidates) == 2
+
+    ids = {Finding.compute_id(c.rule, c.sink) for c in candidates}
+    assert len(ids) == 2, "deux appels dangereux, deux identités"
+
+
+def test_refuting_one_sink_does_not_silence_its_neighbour(tmp_path):
+    from thot.contracts import Confidence
+    from thot.memory import Decision, Verdict
+    from thot.memory.sqlite import SqliteMemory
+    from thot.pipeline import run_audit
+
+    root = tmp_path / "repo"
+    root.mkdir()
+    repo = _two_sinks(root)
+    (tmp_path / "m").mkdir(parents=True, exist_ok=True)
+    memory = SqliteMemory.open(tmp_path / "m" / "m.db")
+    try:
+        first = run_audit(repo, require_authorization=False)
+        shell = [f for f in first.findings if f.rule == "sink.os.system"]
+        assert len(shell) == 2
+
+        memory.remember(Verdict.of(shell[0], Decision.REFUTED, "littéral", "dev"))
+        again = run_audit(repo, require_authorization=False, memory=memory)
+
+        refuted = [f for f in again.findings
+                   if f.confidence is Confidence.REFUTED]
+        assert len(refuted) == 1, "une décision ne parle que pour son propre site"
+    finally:
+        memory.close()
+
+
+def test_a_site_that_moves_keeps_its_verdict(tmp_path):
+    """The discriminator must not undo what `compute_id` exists for."""
+    import textwrap
+
+    from thot.contracts import Finding
+
+    repo = _two_sinks(tmp_path)
+    before = {Finding.compute_id(c.rule, c.sink)
+              for c in analyse(repo) if c.rule == "sink.os.system"}
+
+    # A comment above the function: every line moves, nothing behaves
+    # differently.
+    source = (repo / "src" / "app.py").read_text()
+    (repo / "src" / "app.py").write_text("# en-tête ajouté\n\n" + source)
+
+    after = {Finding.compute_id(c.rule, c.sink)
+             for c in analyse(repo) if c.rule == "sink.os.system"}
+    assert before == after
