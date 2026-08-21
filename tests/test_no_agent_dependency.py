@@ -28,11 +28,23 @@ def test_declared_dependencies_stay_minimal():
 
 
 def test_core_makes_no_network_calls():
-    """No HTTP client anywhere in the deterministic core."""
+    """No HTTP client is *imported* anywhere in the deterministic core.
+
+    Matches real import statements only: `catalog.py` legitimately contains
+    strings like "requests.get" as detection patterns, and a naive substring
+    scan would flag them.
+    """
+    network_modules = {"requests", "httpx", "urllib", "socket", "http"}
     offenders = []
     for path in SOURCE_ROOT.rglob("*.py"):
-        text = path.read_text(encoding="utf-8")
-        for needle in ("import requests", "import httpx", "urllib.request", "socket."):
-            if needle in text:
-                offenders.append(f"{path.name}: {needle}")
+        for lineno, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
+            stripped = line.strip()
+            if stripped.startswith("import "):
+                module = stripped[len("import "):].split()[0].split(".")[0]
+            elif stripped.startswith("from "):
+                module = stripped[len("from "):].split()[0].split(".")[0]
+            else:
+                continue
+            if module in network_modules:
+                offenders.append(f"{path.name}:{lineno} imports {module}")
     assert offenders == [], f"Le noyau ne doit faire aucun appel réseau : {offenders}"
