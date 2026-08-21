@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from rich.align import Align
 from rich.console import Console, Group
+from rich.padding import Padding
 from rich.text import Text
 
 console = Console()
@@ -72,26 +73,30 @@ def field(label: str, value: str, *, bullet: str = "▪") -> Text:
     return text
 
 
+def _notice(symbol: str, symbol_style: str, message: str, body_style: str) -> None:
+    """Print an indented notice whose wrapped lines stay aligned.
+
+    Padding is what keeps a long sentence from starting at column zero on its
+    second line — the detail that separates a tidy terminal from a sloppy one.
+    """
+    text = Text()
+    if symbol:
+        text.append(f"{symbol} ", style=symbol_style)
+    text.append(message, style=body_style)
+    console.print(Padding(text, (0, 0, 0, 3)))
+
+
 def hint(message: str) -> None:
-    console.print(Text(f"   {message}", style=INK))
+    _notice("", "", message, INK)
 
 
 def ok(message: str) -> None:
-    text = Text("   ")
-    text.append("✓ ", style="#7BB661")
-    text.append(message, style="white")
-    console.print(text)
+    _notice("✓", "#7BB661", message, "white")
 
 
 def warn(message: str) -> None:
-    text = Text("   ")
-    text.append("▲ ", style=ACCENT)
-    text.append(message, style="white")
-    console.print(text)
+    _notice("▲", ACCENT, message, "white")
 
 
 def error(message: str) -> None:
-    text = Text("   ")
-    text.append("✗ ", style="#D06B5C")
-    text.append(message, style="white")
-    console.print(text)
+    _notice("✗", "#D06B5C", message, "white")

@@ -87,8 +87,6 @@ def _default_choice(found: Detected) -> int:
 
 
 def _claude_detail(found: Detected) -> str:
-    if found.claude:
-        return "clé API — ton abonnement ne vaut pas ici"
     return "clé API (sk-ant-…)"
 
 
@@ -124,12 +122,11 @@ def _ask(label: str, default: str = "") -> str:
 
 def _setup_claude(found: Detected) -> Config | None:
     if found.claude:
-        theme.warn("Ton abonnement Claude est bien là, mais il ne sert qu'aux "
-                   "clients officiels d'Anthropic.")
-        theme.hint("Un programme tiers comme Thot doit utiliser une clé API.")
+        theme.warn("Abonnement Claude détecté, mais Anthropic ne l'accepte que "
+                   "depuis ses propres clients. Thot a besoin d'une clé API.")
         theme.console.print()
 
-    theme.hint("Clé API Anthropic — console.anthropic.com/settings/keys")
+    theme.hint("console.anthropic.com/settings/keys")
     theme.console.print()
     key = _secret("clé API (sk-ant-…)")
     if not key:
