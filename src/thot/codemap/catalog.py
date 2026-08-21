@@ -22,6 +22,7 @@ class SinkRule:
     impact: Severity
     description: str
     dangerous_args: tuple[int, ...] = (0,)
+    match_mode: str = "qualified"
 
 
 @dataclass(frozen=True)
@@ -47,9 +48,10 @@ DEFAULT_SINKS: tuple[SinkRule, ...] = (
     ),
     SinkRule(
         id="sink.eval",
-        patterns=("eval", "exec", "compile"),
+        patterns=("eval", "exec"),
         impact=Severity.CRITICAL,
         description="Évaluation de code arbitraire",
+        match_mode="bare",
     ),
     SinkRule(
         id="sink.deserialization",
@@ -63,6 +65,7 @@ DEFAULT_SINKS: tuple[SinkRule, ...] = (
         patterns=("execute", "executemany", "executescript"),
         impact=Severity.HIGH,
         description="Exécution d'une requête SQL",
+        match_mode="method",
     ),
     SinkRule(
         id="sink.fs.write",
@@ -106,35 +109,39 @@ DEFAULT_SOURCES: tuple[SourceRule, ...] = (
 )
 
 
-def _matches(call_name: str, patterns: tuple[str, ...]) -> bool:
-    """Match a call against a pattern.
+def _matches(call_name: str, patterns: tuple[str, ...], mode: str = "qualified") -> bool:
+    """Match a call name against a rule's patterns.
 
-    A qualified pattern (`os.system`) matches the exact name, any name ending
-    in it (`a.b.os.system`), or the bare last segment (`from os import system`).
-    A bare pattern (`execute`) matches the name itself or any attribute call
-    ending in it (`cursor.execute`, `self.conn.execute`) — that is the only way
-    to catch DB-API and ORM methods, whose receiver is never statically known.
+    Three modes, because one rule fits none of them:
+
+    - ``qualified`` — the module path must be there: ``requests.get`` matches
+      itself and ``a.b.requests.get``, but never a bare ``get``. Matching the
+      last segment alone would turn every ``payload.get(...)`` in a codebase
+      into a network call, which is by far the largest source of noise.
+    - ``method`` — the receiver is never statically known, so any
+      ``<something>.execute`` counts. Required for DB-API and ORM calls.
+    - ``bare`` — builtins only: ``eval`` matches, ``obj.eval`` does not.
     """
     for pattern in patterns:
         if call_name == pattern:
             return True
-        if call_name.endswith("." + pattern):
+        if mode == "qualified" and call_name.endswith("." + pattern):
             return True
-        if "." in pattern and call_name == pattern.rsplit(".", 1)[-1]:
+        if mode == "method" and call_name.rsplit(".", 1)[-1] == pattern:
             return True
     return False
 
 
 def match_sink(call_name: str) -> SinkRule | None:
     for rule in DEFAULT_SINKS:
-        if _matches(call_name, rule.patterns):
+        if _matches(call_name, rule.patterns, rule.match_mode):
             return rule
     return None
 
 
 def match_source(expression: str) -> SourceRule | None:
     for rule in DEFAULT_SOURCES:
-        if _matches(expression, rule.patterns):
+        if _matches(expression, rule.patterns, "qualified"):
             return rule
     return None
 

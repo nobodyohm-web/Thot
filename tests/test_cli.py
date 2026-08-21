@@ -55,3 +55,25 @@ def test_out_file_is_written(toy_repo, tmp_path):
         ["audit", str(toy_repo), "--markdown", "--no-store", "--out", str(target)]
     )
     assert "Rapport d'audit Thot" in target.read_text()
+
+
+def test_low_findings_are_hidden_by_default(toy_repo, capsys):
+    """A report that shows everything shows nothing. Default floor is medium."""
+    write_authorization(toy_repo, owner="tester")
+    cli.main(["audit", str(toy_repo), "--json", "--no-store"])
+    default_payload = json.loads(capsys.readouterr().out)
+
+    cli.main(["audit", str(toy_repo), "--json", "--no-store", "--all"])
+    all_payload = json.loads(capsys.readouterr().out)
+
+    assert all_payload["summary"]["total"] >= default_payload["summary"]["total"]
+    assert "hidden_below_threshold" in default_payload["summary"]
+
+
+def test_min_severity_low_shows_more_than_high(toy_repo, capsys):
+    write_authorization(toy_repo, owner="tester")
+    cli.main(["audit", str(toy_repo), "--json", "--no-store", "--min-severity", "low"])
+    low = json.loads(capsys.readouterr().out)["summary"]["total"]
+    cli.main(["audit", str(toy_repo), "--json", "--no-store", "--min-severity", "critical"])
+    critical = json.loads(capsys.readouterr().out)["summary"]["total"]
+    assert low >= critical

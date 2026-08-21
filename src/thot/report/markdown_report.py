@@ -6,8 +6,10 @@ from thot.contracts import Finding
 from thot.report.json_report import SEVERITY_ORDER, summarise
 
 
-def render_markdown(findings: list[Finding], manifest, elapsed: float) -> str:
-    summary = summarise(findings)
+def render_markdown(
+    findings: list[Finding], manifest, elapsed: float, hidden: int = 0
+) -> str:
+    summary = summarise(findings, hidden)
     languages = ", ".join(f"{k} ({v})" for k, v in manifest.languages.items()) or "—"
     lines = [
         "# Rapport d'audit Thot",
@@ -16,7 +18,8 @@ def render_markdown(findings: list[Finding], manifest, elapsed: float) -> str:
         f"- Langages : {languages}",
         f"- Points d'entrée : **{len(manifest.entrypoints)}**",
         f"- Durée : {elapsed:.2f} s",
-        f"- Findings : **{summary['total']}**",
+        f"- Findings : **{summary['total']}**"
+        + (f" _({hidden} masqués sous le seuil)_" if hidden else ""),
         "",
     ]
 

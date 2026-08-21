@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import sys
+from dataclasses import replace
 from pathlib import Path
 
 from thot import __version__
@@ -51,6 +52,16 @@ def build_parser() -> argparse.ArgumentParser:
         help="Code de sortie 1 si un finding atteint ce seuil",
     )
     audit.add_argument(
+        "--min-severity",
+        choices=[s.value for s in Severity],
+        default="medium",
+        help="Seuil d'affichage (défaut : medium)",
+    )
+    audit.add_argument(
+        "--all", action="store_true",
+        help="Tout afficher, y compris le bruit de faible sévérité",
+    )
+    audit.add_argument(
         "--no-store", action="store_true", help="Ne pas persister le run"
     )
 
@@ -84,10 +95,22 @@ def _cmd_audit(args) -> int:
         if store is not None:
             store.close()
 
+    floor = 0 if args.all else _SEVERITY_RANK.index(Severity(args.min_severity))
+    kept = [
+        f for f in result.findings
+        if _SEVERITY_RANK.index(f.severity) >= floor
+    ]
+    hidden = len(result.findings) - len(kept)
+    shown = replace(result, findings=kept)
+
     if args.json:
-        rendered = render_json(result.findings, result.manifest, result.elapsed)
+        rendered = render_json(
+            shown.findings, shown.manifest, shown.elapsed, hidden=hidden
+        )
     elif args.markdown:
-        rendered = render_markdown(result.findings, result.manifest, result.elapsed)
+        rendered = render_markdown(
+            shown.findings, shown.manifest, shown.elapsed, hidden=hidden
+        )
     else:
         rendered = None
 
@@ -98,13 +121,13 @@ def _cmd_audit(args) -> int:
         else:
             print(rendered)
     else:
-        print_report(result)
+        print_report(shown, hidden=hidden)
         if args.paths:
-            print_paths(result)
+            print_paths(shown)
 
     if args.fail_on:
         threshold = _SEVERITY_RANK.index(Severity(args.fail_on))
-        for finding in result.findings:
+        for finding in result.findings:  # the floor never hides a CI failure
             if _SEVERITY_RANK.index(finding.severity) >= threshold:
                 return EXIT_FINDINGS
     return EXIT_OK

@@ -207,3 +207,29 @@ def test_mutually_recursive_functions_do_not_crash(tmp_path):
         "    ping(arg)\n",
     )
     assert {c.rule for c in candidates} == {"sink.os.system"}
+
+
+def test_subprocess_without_shell_true_is_not_a_command_injection(tmp_path):
+    """Without shell=True Python never spawns a shell, whatever the argv shape.
+
+    `list(args)` and `cmd + ["install"]` are not ast.List literals, so a
+    shape-based guard misses them — the criterion has to be shell=True itself.
+    """
+    candidates = _analyse_source(
+        tmp_path,
+        "import subprocess\nimport sys\n\n\ndef main():\n"
+        "    args = sys.argv[1:]\n"
+        "    subprocess.run(list(args), capture_output=True)\n",
+    )
+    assert candidates == []
+
+
+def test_dict_get_is_not_reported_as_a_network_sink(tmp_path):
+    candidates = _analyse_source(
+        tmp_path,
+        "import sys\n\n\ndef main():\n"
+        "    payload = {'a': sys.argv[1]}\n"
+        "    value = payload.get(sys.argv[1])\n"
+        "    return value\n",
+    )
+    assert candidates == []

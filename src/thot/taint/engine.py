@@ -121,13 +121,14 @@ def _sink_applies(rule_id: str, node: ast.Call) -> bool:
     first = node.args[0] if node.args else None
 
     if rule_id == "sink.subprocess.shell":
-        shell_true = any(
+        # Without shell=True no shell ever parses the command, whatever the
+        # argv shape — `list(args)` and `cmd + ["install"]` are as safe as a
+        # literal list. Argument injection remains possible but is a different,
+        # far lower-severity defect.
+        return any(
             keyword.arg == "shell" and _is_literal_true(keyword.value)
             for keyword in node.keywords
         )
-        if not shell_true and isinstance(first, (ast.List, ast.Tuple)):
-            return False
-        return True
 
     if rule_id == "sink.sql":
         return not isinstance(first, ast.Constant)

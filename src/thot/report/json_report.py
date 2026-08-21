@@ -11,14 +11,20 @@ SEVERITY_ORDER = [
 ]
 
 
-def summarise(findings: list[Finding]) -> dict:
+def summarise(findings: list[Finding], hidden: int = 0) -> dict:
     by_severity = {s.value: 0 for s in SEVERITY_ORDER}
     for finding in findings:
         by_severity[finding.severity.value] += 1
-    return {"total": len(findings), "by_severity": by_severity}
+    return {
+        "total": len(findings),
+        "by_severity": by_severity,
+        "hidden_below_threshold": hidden,
+    }
 
 
-def render_json(findings: list[Finding], manifest, elapsed: float) -> str:
+def render_json(
+    findings: list[Finding], manifest, elapsed: float, hidden: int = 0
+) -> str:
     payload = {
         "schema_version": 1,
         "scope": {
@@ -27,7 +33,7 @@ def render_json(findings: list[Finding], manifest, elapsed: float) -> str:
             "entrypoints": list(manifest.entrypoints),
             "test_command": manifest.test_command,
         },
-        "summary": summarise(findings),
+        "summary": summarise(findings, hidden),
         "elapsed_seconds": round(elapsed, 3),
         "findings": [
             {

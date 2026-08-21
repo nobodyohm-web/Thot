@@ -22,7 +22,7 @@ _ORDER = [
 console = Console()
 
 
-def print_report(result) -> None:
+def print_report(result, hidden: int = 0) -> None:
     """Render an AuditResult as a terminal report."""
     console.print()
     console.rule("[bold]Thot — rapport d'audit")
@@ -39,6 +39,12 @@ def print_report(result) -> None:
     console.print()
 
     if not result.findings:
+        if hidden:
+            console.print(
+                f"[green]Aucun finding au-dessus du seuil.[/green] "
+                f"[dim]({hidden} sous le seuil — `--all` pour les voir)[/dim]"
+            )
+            return
         console.print("[green]Aucun chemin de teinte détecté.[/green]")
         console.print(
             "[dim]Analyse déterministe uniquement — l'absence de finding n'est "
@@ -72,7 +78,12 @@ def print_report(result) -> None:
     breakdown = " · ".join(
         f"[{_STYLE[s]}]{counts[s]} {s.value}[/]" for s in _ORDER if counts[s]
     )
-    console.print(f"[bold]{len(result.findings)}[/bold] finding(s) — {breakdown}")
+    suffix = (
+        f" [dim]· {hidden} masqués sous le seuil (`--all`)[/dim]" if hidden else ""
+    )
+    console.print(
+        f"[bold]{len(result.findings)}[/bold] finding(s) — {breakdown}{suffix}"
+    )
     console.print(
         "[dim]Chaque finding est PLAUSIBLE : détecté par analyse statique, pas "
         "encore prouvé par exécution.[/dim]"
