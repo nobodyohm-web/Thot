@@ -176,3 +176,82 @@ def test_a_dismissed_finding_leaves_the_top_of_the_report(memory):
     out = apply_memory([finding], memory)
     assert out[0].severity is Severity.INFO
     assert out[0].confidence is Confidence.REFUTED
+
+
+# -- expiry, proved through the real pipeline --------------------------------
+#
+# The unit test above builds a Finding by hand and gives it an ast_hash, so it
+# passed for months while the pipeline attached none to taint findings — every
+# refutation of a taint finding was immortal. These go through run_audit.
+
+
+def _vulnerable_repo(root, extra: str = ""):
+    (root / "app").mkdir(parents=True, exist_ok=True)
+    (root / "app" / "handlers.py").write_text(
+        "import os\n"
+        "import sys\n"
+        "\n"
+        "\n"
+        "def handle():\n"
+        f"{extra}"
+        "    target = sys.argv[1]\n"
+        "    os.system('ping -c1 ' + target)\n",
+        encoding="utf-8",
+    )
+    return root
+
+
+def _taint_findings(root):
+    from thot.pipeline import run_audit
+
+    result = run_audit(root, None, require_authorization=False)
+    return [f for f in result.findings if f.rule.startswith("sink.")]
+
+
+def test_a_taint_finding_carries_the_hash_of_the_code_it_accuses(tmp_path):
+    """Without it, `compute_id` hashes an empty string and never changes."""
+    findings = _taint_findings(_vulnerable_repo(tmp_path))
+
+    assert findings, "le dépôt d'essai doit produire un chemin de teinte"
+    assert findings[0].location.ast_hash, (
+        "un finding de teinte sans empreinte AST porte un verdict immortel"
+    )
+
+
+def test_changing_the_accused_function_expires_its_verdict_end_to_end(tmp_path):
+    from thot.contracts import Severity
+    from thot.memory.base import apply_memory
+    from thot.memory.jsonfile import JsonMemory
+
+    before = _taint_findings(_vulnerable_repo(tmp_path))[0]
+    memory = JsonMemory.open(tmp_path / "v.json")
+    memory.remember(Verdict.of(before, Decision.REFUTED, "argv est de confiance"))
+
+    dismissed = apply_memory([before], memory)[0]
+    assert dismissed.severity is Severity.INFO
+
+    # Change what the function does, without touching the dangerous line.
+    after = _taint_findings(_vulnerable_repo(tmp_path, extra="    _ = 1\n"))[0]
+
+    assert after.id != before.id, "l'identité doit suivre le corps de la fonction"
+    assert apply_memory([after], memory)[0].severity is not Severity.INFO
+
+
+def test_moving_the_function_down_the_file_keeps_the_verdict(tmp_path):
+    """Identity is the body, not the line: reformatting must not resurrect."""
+    from thot.contracts import Severity
+    from thot.memory.base import apply_memory
+    from thot.memory.jsonfile import JsonMemory
+
+    before = _taint_findings(_vulnerable_repo(tmp_path))[0]
+    memory = JsonMemory.open(tmp_path / "v.json")
+    memory.remember(Verdict.of(before, Decision.REFUTED, "argv est de confiance"))
+
+    path = tmp_path / "app" / "handlers.py"
+    path.write_text("# une ligne de commentaire ajoutée en tête\n"
+                    + path.read_text(encoding="utf-8"), encoding="utf-8")
+    after = _taint_findings(tmp_path)[0]
+
+    assert after.location.line != before.location.line
+    assert after.id == before.id
+    assert apply_memory([after], memory)[0].severity is Severity.INFO

@@ -194,7 +194,8 @@ def _analyse_body(symbol: Symbol, node: ast.AST) -> _Facts:
 
     for child in _ordered_nodes(node):
         if isinstance(child, ast.Assign):
-            ref = CodeRef(path=symbol.path, line=child.lineno, symbol=symbol.name)
+            ref = CodeRef(path=symbol.path, line=child.lineno, symbol=symbol.name,
+                          ast_hash=symbol.ast_hash)
             targets = [t.id for t in child.targets if isinstance(t, ast.Name)]
             refs = _referenced_names(child.value)
 
@@ -226,7 +227,8 @@ def _analyse_body(symbol: Symbol, node: ast.AST) -> _Facts:
             called = _called_name(child)
             if not called:
                 continue
-            ref = CodeRef(path=symbol.path, line=child.lineno, symbol=symbol.name)
+            ref = CodeRef(path=symbol.path, line=child.lineno, symbol=symbol.name,
+                          ast_hash=symbol.ast_hash)
 
             rule = match_sink(called)
 
