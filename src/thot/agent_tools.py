@@ -232,21 +232,80 @@ def _skills_for(root) -> list:
     return _SKILL_CACHE[key]
 
 
+# A catalogue of two hundred lines is a catalogue nobody reads. Without a
+# query the answer is shaped like a table of contents; with one it is a
+# short list of candidates.
+SKILL_MATCH_LIMIT = 15
+
+
 def skills(context: ToolContext, *, query: str = "") -> str:
-    """The catalogue: one line each, cheap enough to read before choosing."""
+    """The catalogue: an index without a query, candidates with one."""
     available = _skills_for(context.root)
-    if query:
-        needle = query.lower()
-        available = [
-            s for s in available
-            if needle in s.name.lower()
-            or needle in s.description.lower()
-            or needle in s.category.lower()
-        ]
     if not available:
-        return f"Aucun skill ne correspond à « {query} »." if query else "Aucun skill."
-    lines = [s.summary() for s in available]
-    return f"{len(available)} skill(s)\n" + "\n".join(lines)
+        return "Aucun skill."
+
+    if not query:
+        return _skill_index(available)
+
+    matched = [s for s in available if s.matches(query)]
+    if not matched:
+        return _no_skill_matched(query, available)
+
+    lines = [s.summary() for s in matched[:SKILL_MATCH_LIMIT]]
+    extra = len(matched) - len(lines)
+    tail = f"\n… {extra} autre(s) — précise ta recherche." if extra else ""
+    return f"{len(matched)} skill(s) pour « {query} »\n" + "\n".join(lines) + tail
+
+
+def _skill_index(available: list) -> str:
+    """Names grouped by category — enough to choose, cheap enough to send."""
+    grouped: dict[str, list[str]] = {}
+    for item in available:
+        grouped.setdefault(item.category or "général", []).append(item.name)
+
+    lines = [
+        f"{category}: " + ", ".join(sorted(names))
+        for category, names in sorted(grouped.items())
+    ]
+    return (
+        f"{len(available)} méthodes disponibles.\n"
+        "`skills(\"mot\")` pour filtrer, `skill(\"nom\")` pour en lire une.\n\n"
+        + "\n".join(lines)
+    )
+
+
+def _no_skill_matched(query: str, available: list) -> str:
+    """Say where else it could be, rather than only that it is not here."""
+    from thot.skills.loader import optional
+
+    try:
+        elsewhere = [s.name for s in optional() if s.matches(query)]
+    except OSError:
+        elsewhere = []
+    if elsewhere:
+        names = ", ".join(elsewhere[:8])
+        return (
+            f"Aucun skill chargé pour « {query} », mais {len(elsewhere)} dans la "
+            f"bibliothèque optionnelle : {names}.\n"
+            f"L'utilisateur peut les activer avec `thot skills install <nom>`."
+        )
+    return f"Aucun skill ne correspond à « {query} »."
+
+
+# Tools the library's own home agents provide and Thot does not. A method
+# that tells the model to call one of these is still worth reading — the
+# reasoning transfers, the tool call does not — so the mismatch is named
+# instead of the skill being rewritten or dropped.
+FOREIGN_TOOLS = (
+    "delegate_task", "agent_run", "run_agent", "web_search", "browser_navigate",
+    "browser_click", "browser_vision", "browser_snapshot", "browser_type",
+    "browser_console", "browser_scroll", "browser_press", "browser_back",
+    "image_gen", "video_gen", "speak", "memory_search", "ipython",
+)
+
+
+def _foreign_tools(body: str) -> list[str]:
+    return [name for name in FOREIGN_TOOLS if name in body]
 
 
 def skill(context: ToolContext, *, name: str) -> str:
@@ -257,9 +316,21 @@ def skill(context: ToolContext, *, name: str) -> str:
     if not chosen:
         near = ", ".join(s.name for s in available[:8])
         return f"Skill « {name} » inconnu. Disponibles : {near}…"
+
     found = chosen[0]
     header = f"# {found.name}\n\n{found.description}\n"
-    return f"{header}\n---\n\n{found.body}"
+    text = f"{header}\n---\n\n{found.body}"
+
+    missing = _foreign_tools(found.body)
+    if missing:
+        text += (
+            "\n\n---\n\nNote Thot : cette méthode vient de la bibliothèque "
+            "Hermes/Prime et cite des outils absents ici — "
+            f"{', '.join(missing)}. La démarche reste valable ; fais le travail "
+            "avec les outils de Thot (`run_command`, `read_file`, `write_file`, "
+            "`edit_file`, `code_map`, `find_symbol`, `callers`, `audit`)."
+        )
+    return text
 
 
 def find_symbol(context: ToolContext, *, name: str) -> str:

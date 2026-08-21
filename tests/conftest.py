@@ -4,6 +4,19 @@ from pathlib import Path
 import pytest
 
 
+@pytest.fixture(autouse=True)
+def isolated_home(tmp_path_factory, monkeypatch):
+    """No test may read or write the real ~/.thot.
+
+    Autouse on purpose: a suite that touches the user's own sessions,
+    verdicts or schedule is a suite that can destroy their work, and the
+    one test that forgets the fixture is the one that does it.
+    """
+    home = tmp_path_factory.mktemp("thot-home")
+    monkeypatch.setenv("THOT_HOME", str(home))
+    return home
+
+
 @pytest.fixture
 def toy_repo(tmp_path: Path) -> Path:
     """A small Python repo with one real taint path from argv to os.system."""

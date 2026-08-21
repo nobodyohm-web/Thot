@@ -6,7 +6,7 @@ author: Hermes Agent (adapted from obra/superpowers)
 license: MIT
 platforms: [linux, macos, windows]
 metadata:
-  thot:
+  hermes:
     tags: [debugging, troubleshooting, problem-solving, root-cause, investigation]
     related_skills: [test-driven-development, plan, subagent-driven-development]
 ---
@@ -359,11 +359,11 @@ If you catch yourself thinking:
 | **3. Hypothesis** | Form theory, test minimally, one variable at a time | Confirmed or new hypothesis |
 | **4. Implementation** | Create regression test, fix root cause, verify | Bug resolved, all tests pass |
 
-## Intégration Thot
+## Hermes Agent Integration
 
 ### Investigation Tools
 
-Use these les outils Thot during Phase 1:
+Use these Hermes tools during Phase 1:
 
 - **`search_files`** — Find error strings, trace function calls, locate patterns
 - **`read_file`** — Read source code with line numbers for precise analysis

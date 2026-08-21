@@ -21,6 +21,11 @@ import yaml
 SKILL_FILE = "SKILL.md"
 SKILLS_DIRNAME = "skills"
 
+# The rest of the Hermes library: real skills, kept out of the default
+# catalogue so a session's briefing stays short. `thot skills install`
+# moves one across; nothing is downloaded.
+OPTIONAL_DIRNAME = "optional-skills"
+
 # Long enough to say what a skill is for, short enough that a catalogue of
 # fifty still fits in a briefing.
 SUMMARY_CHARS = 180
@@ -34,6 +39,36 @@ class Skill:
     path: Path
     category: str = ""
     metadata: dict = field(default_factory=dict)
+
+    def tags(self) -> tuple[str, ...]:
+        """Keywords declared by the skill, whatever dialect wrote them.
+
+        Hermes nests them under `metadata.hermes.tags`, Prime and the Agent
+        Skills standard put them at the top level. Searching one dialect
+        would silently miss two thirds of the library.
+        """
+        found: list[str] = []
+        pools = [self.metadata]
+        nested = self.metadata.get("metadata")
+        if isinstance(nested, dict):
+            pools.append(nested)
+            for value in nested.values():
+                if isinstance(value, dict):
+                    pools.append(value)
+        for pool in pools:
+            raw = pool.get("tags")
+            if isinstance(raw, (list, tuple)):
+                found.extend(str(tag) for tag in raw)
+        return tuple(dict.fromkeys(found))
+
+    def matches(self, needle: str) -> bool:
+        needle = needle.lower()
+        return (
+            needle in self.name.lower()
+            or needle in self.description.lower()
+            or needle in self.category.lower()
+            or any(needle in tag.lower() for tag in self.tags())
+        )
 
     def summary(self) -> str:
         """One catalogue line: enough to choose, not enough to cost."""
@@ -122,7 +157,59 @@ def library_dir() -> Path | None:
 
 
 def user_dir() -> Path:
-    return Path.home() / ".thot" / SKILLS_DIRNAME
+    from thot.paths import user_dir as thot_user_dir
+
+    return thot_user_dir(SKILLS_DIRNAME)
+
+
+def optional_dir() -> Path | None:
+    """The uninstalled half of the library, shipped but not loaded."""
+    here = Path(__file__).resolve()
+    for candidate in (here.parents[3] / OPTIONAL_DIRNAME,
+                      here.parent / OPTIONAL_DIRNAME):
+        if candidate.is_dir():
+            return candidate
+    return None
+
+
+def optional() -> list[Skill]:
+    directory = optional_dir()
+    return load_from(directory) if directory else []
+
+
+def install(name: str) -> Path:
+    """Copy one optional skill into the personal library, and load it there.
+
+    Into ``~/.thot/skills`` rather than into the shipped tree: an install
+    must survive `pip install --upgrade thot`, and must be removable by
+    deleting a directory the user owns.
+    """
+    import shutil
+
+    matches = [s for s in optional() if s.name == name]
+    if not matches:
+        matches = [s for s in optional() if name.lower() in s.name.lower()]
+    if not matches:
+        raise KeyError(name)
+
+    chosen = matches[0]
+    target = user_dir() / chosen.name
+    if target.exists():
+        shutil.rmtree(target)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copytree(chosen.path.parent, target)
+    return target
+
+
+def uninstall(name: str) -> bool:
+    """Remove a personally installed skill. Shipped ones are never touched."""
+    import shutil
+
+    target = user_dir() / name
+    if not target.is_dir():
+        return False
+    shutil.rmtree(target)
+    return True
 
 
 def repo_dir(root: Path) -> Path:

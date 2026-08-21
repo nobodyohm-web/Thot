@@ -6,7 +6,7 @@ author: Hermes Agent
 license: MIT
 platforms: [linux, macos]
 metadata:
-  thot:
+  hermes:
     tags: [debugging, python, pdb, debugpy, breakpoints, dap, post-mortem]
     related_skills: [systematic-debugging, node-inspect-debugger]
 ---
