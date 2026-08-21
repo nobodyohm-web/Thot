@@ -15,6 +15,8 @@ from __future__ import annotations
 import json
 import shutil
 import subprocess
+
+from thot.engine import process as process_group
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
@@ -77,20 +79,15 @@ class ClaudeCliEngine:
         except FileNotFoundError as exc:
             return AgentResult(task_id=task.id, error=str(exc))
 
+        # In its own process group: `claude` runs tools of its own, and a
+        # task killed for running long must not leave them behind.
         try:
-            completed = subprocess.run(
-                command,
-                cwd=str(self.root),
-                input=task.prompt(),
-                capture_output=True,
-                text=True,
-                timeout=self.timeout,
-                check=False,
+            completed = process_group.run(
+                command, cwd=str(self.root), timeout=self.timeout,
+                stdin_text=task.prompt(),
             )
-        except subprocess.TimeoutExpired:
-            return AgentResult(
-                task_id=task.id, error=f"délai dépassé ({self.timeout}s)"
-            )
+        except process_group.Timeout as exc:
+            return AgentResult(task_id=task.id, error=str(exc))
         except OSError as exc:
             return AgentResult(task_id=task.id, error=f"lancement impossible : {exc}")
 

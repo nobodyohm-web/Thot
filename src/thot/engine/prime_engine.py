@@ -11,6 +11,8 @@ from __future__ import annotations
 
 import json
 import subprocess
+
+from thot.engine import process as process_group
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
@@ -92,21 +94,16 @@ class PrimeEngine:
         except FileNotFoundError as exc:
             return AgentResult(task_id=task.id, error=str(exc))
 
+        # stdin closed, and the child in its own process group: an engine
+        # task is non-interactive by definition, and a task that runs past
+        # its budget must take its children with it rather than leave them
+        # running for hours.
         try:
-            completed = subprocess.run(
-                command,
-                cwd=str(self.root),
-                # Closed, not inherited. An engine task is non-interactive by
-                # definition: a child that reaches for stdin must fail, not
-                # silently wait on a terminal nobody is watching.
-                stdin=subprocess.DEVNULL,
-                capture_output=True,
-                text=True,
-                timeout=self.timeout,
-                check=False,
+            completed = process_group.run(
+                command, cwd=str(self.root), timeout=self.timeout
             )
-        except subprocess.TimeoutExpired:
-            return AgentResult(task_id=task.id, error=f"délai dépassé ({self.timeout}s)")
+        except process_group.Timeout as exc:
+            return AgentResult(task_id=task.id, error=str(exc))
         except OSError as exc:
             return AgentResult(task_id=task.id, error=f"lancement impossible : {exc}")
 
