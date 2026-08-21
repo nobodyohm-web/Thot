@@ -188,13 +188,26 @@ def analyse(
             [_refute_task(root, f, scenario) for f, scenario in to_refute]
         )
         for (finding, _), result in zip(to_refute, refutations):
-            by_id[finding.id] = _apply_refutation(finding, result)
+            by_id[finding.id] = _apply_refutation(finding, result, engine)
 
     return [by_id.get(f.id, f) for f in findings]
 
 
+def _attribute(engine: Engine, task_id: str) -> str:
+    """Which backend actually answered this task.
+
+    A panel routes each task to one of its members, so asking it for its own
+    name would file every finding under "panel" and lose the one fact worth
+    keeping: who argued, and who attacked.
+    """
+    who = getattr(engine, "who", None)
+    if callable(who):
+        return str(who(task_id) or engine.capabilities.name)
+    return engine.capabilities.name
+
+
 def _apply_probe(finding: Finding, result: AgentResult, engine: Engine) -> Finding:
-    engine_name = engine.capabilities.name
+    engine_name = _attribute(engine, result.task_id)
     # Merged, not replaced: what got the finding here — which rule fired,
     # which catalogue it came from — is not the probe's to throw away.
     provenance = dict(finding.provenance or {})
@@ -224,8 +237,14 @@ def _apply_probe(finding: Finding, result: AgentResult, engine: Engine) -> Findi
     )
 
 
-def _apply_refutation(finding: Finding, result: AgentResult) -> Finding:
+def _apply_refutation(
+    finding: Finding, result: AgentResult, engine: Engine
+) -> Finding:
     provenance = dict(finding.provenance or {})
+    # Named separately from `moteur`: on a panel these are two different
+    # agents, and "who tried to destroy this and failed" is the sentence
+    # that makes a confirmation worth trusting.
+    provenance["contradicteur"] = _attribute(engine, result.task_id)
     if not result.ok or not result.data:
         provenance["réfutation"] = result.error or "réponse vide"
         return replace(finding, provenance=provenance)

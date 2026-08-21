@@ -51,8 +51,25 @@ def render_json(
                     for r in f.taint_path
                 ],
                 "failure_scenario": f.failure_scenario,
+                **({"jugement": _judgement(f)} if _judgement(f) else {}),
             }
             for f in findings
         ],
     }
     return json.dumps(payload, indent=2, ensure_ascii=False)
+
+
+def _judgement(finding: Finding) -> dict:
+    """Who argued this, and who tried to destroy it.
+
+    Omitted entirely when no agent ran: a deterministic pass claiming an
+    empty judgement would read as "nobody found anything to say", when the
+    truth is that nobody was asked.
+    """
+    provenance = finding.provenance or {}
+    kept = {
+        key: provenance[key]
+        for key in ("moteur", "contradicteur", "phase")
+        if provenance.get(key)
+    }
+    return kept

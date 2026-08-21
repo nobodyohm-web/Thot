@@ -193,7 +193,14 @@ def record_verdicts(
         if memory.recall(finding.id) is not None:
             continue  # a human decision outranks a machine one
         reason = _reason_from(finding)
-        verdict = Verdict.of(finding, Decision.REFUTED, reason, author)
+        # On a panel the refuter is not the arguer, and the verdict belongs
+        # to the one who refuted. `author` stays the fallback for a single
+        # engine, which records nothing in provenance.
+        provenance = finding.provenance or {}
+        decided_by = str(
+            provenance.get("contradicteur") or provenance.get("moteur") or author
+        )
+        verdict = Verdict.of(finding, Decision.REFUTED, reason, decided_by)
         memory.remember(verdict)
         _announce(verdict)
         kept += 1

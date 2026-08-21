@@ -118,8 +118,8 @@ def build_parser() -> argparse.ArgumentParser:
         help="Faire argumenter puis réfuter les candidats par un agent",
     )
     fusion_audit.add_argument(
-        "--engine", choices=["claude", "hermes", "prime"], default="",
-        help="Quel agent argumente (défaut : celui de `thot login`)",
+        "--engine", choices=["panel", "claude", "hermes", "prime"], default="",
+        help="Quel agent argumente (défaut : tous ceux installés, en panel)",
     )
     fusion_audit.add_argument("--budget", type=int, default=20)
     fusion_audit.add_argument("--parallel", type=int, default=4)
@@ -339,8 +339,10 @@ def build_parser() -> argparse.ArgumentParser:
     audit.add_argument("--deps", action="store_true",
                        help="Vérifier aussi les dépendances contre OSV.dev (réseau)")
     audit.add_argument(
-        "--engine", choices=["claude", "hermes", "prime"], default="",
-        help="Quel agent argumente les findings avec --deep (défaut : celui de `thot login`)",
+        "--engine", choices=["panel", "claude", "hermes", "prime"], default="",
+        help="Qui argumente avec --deep. Défaut : tous les agents installés, "
+             "l'un argumente et un autre attaque. Nomme-en un pour n'en "
+             "utiliser qu'un seul.",
     )
     audit.add_argument("--sandbox", choices=["local", "docker"],
                        help="Où s'exécutent les commandes de la session")
@@ -476,8 +478,16 @@ def _cmd_audit(args) -> int:
         except NoEngine as exc:
             print(f"Analyse assistée impossible : {exc}", file=sys.stderr)
             return EXIT_ERROR
+        # A panel says who is on it: "panel" alone would hide the fact that
+        # the refutation comes from a different agent than the argument, and
+        # that is the only reason to run one.
+        members = getattr(engine, "names", ())
+        who = (
+            f"panel — {' contre '.join(members)}" if members
+            else engine.capabilities.name
+        )
         print(
-            f"Analyse assistée : {engine.capabilities.name}, "
+            f"Analyse assistée : {who}, "
             f"{args.budget} candidats max, {args.parallel} en parallèle…",
             file=sys.stderr,
         )
@@ -1472,7 +1482,13 @@ def _cmd_fusion(args) -> int:
         # The reverse direction: the map goes out to the agents, and the
         # agents come back as engines that argue findings.
         print(f"Moteurs pour `--deep` : {', '.join(usable) if usable else 'aucun'}")
-        if usable:
+        if len(usable) >= 2:
+            print("   Par défaut ils tournent en panel : l'un argumente un "
+                  "finding, un autre l'attaque.")
+            print("   thot audit . --deep            # les "
+                  f"{len(usable)} ensemble")
+            print(f"   thot audit . --deep --engine {usable[-1]}   # un seul")
+        elif usable:
             print(f"   thot audit . --deep --engine {usable[-1]}")
 
         from thot.fusion import config as fusion_config

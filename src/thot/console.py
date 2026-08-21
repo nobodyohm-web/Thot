@@ -88,6 +88,39 @@ def print_report(result, hidden: int = 0) -> None:
         f"[bold]{len(result.findings)}[/bold] finding(s) — {breakdown}{suffix}"
     )
     console.print(_confidence_note(result.findings))
+    panel = _panel_note(result.findings)
+    if panel:
+        console.print(panel)
+
+
+def _panel_note(findings) -> str:
+    """Who argued, and who tried to destroy the argument.
+
+    Without this the report of a panel run is indistinguishable from the
+    report of a single agent, which is the whole difference the panel buys.
+    Silent when nothing was argued: a deterministic run has no judges.
+    """
+    from collections import Counter
+
+    argued: Counter = Counter()
+    attacked: Counter = Counter()
+    for finding in findings:
+        provenance = finding.provenance or {}
+        if provenance.get("moteur"):
+            argued[provenance["moteur"]] += 1
+        if provenance.get("contradicteur"):
+            attacked[provenance["contradicteur"]] += 1
+
+    if not argued:
+        return ""
+
+    def tally(counter) -> str:
+        return " · ".join(f"{name} {count}" for name, count in counter.most_common())
+
+    line = f"[dim]Argumenté par {tally(argued)}"
+    if attacked:
+        line += f" — attaqué par {tally(attacked)}"
+    return line + "[/dim]"
 
 
 def _pattern_only(languages: dict) -> str:

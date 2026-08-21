@@ -18,6 +18,7 @@ from thot.engine.base import Engine
 from thot.engine.claude_cli_engine import ClaudeCliEngine
 from thot.engine.direct import DirectEngine
 from thot.engine.hermes_engine import HermesEngine
+from thot.engine.panel import PanelEngine
 from thot.engine.prime_engine import PrimeEngine
 from thot.llm.credentials import Config, build_provider, load_config
 
@@ -56,6 +57,29 @@ def available_engines() -> list[str]:
     return [name for name, engine in AGENT_ENGINES.items() if engine.available()]
 
 
+def build_panel(
+    root: Path, names: list[str] | None = None, *, max_parallel: int = 4
+) -> PanelEngine:
+    """Every installed agent on the same run, arguing against each other.
+
+    The parallelism budget is shared rather than multiplied: `--parallel 6`
+    across three agents means two apiece, not six each. What the panel buys
+    is not more concurrency, it is a different agent attacking each scenario.
+    """
+    names = names or available_engines()
+    if not names:
+        raise NoEngine(
+            "Aucun agent installé. `thot login`, ou installe Hermes ou Prime."
+        )
+    share = max(1, max_parallel // len(names))
+    return PanelEngine(
+        members=[
+            AGENT_ENGINES[name](root=Path(root), max_parallel=share)
+            for name in names
+        ]
+    )
+
+
 def build_engine(
     root: Path,
     config: Config | None = None,
@@ -65,13 +89,19 @@ def build_engine(
 ) -> Engine:
     """The engine to argue findings with.
 
-    `prefer` names one explicitly — `thot audit --engine hermes`. Naming an
+    With no preference and more than one agent installed, the answer is a
+    panel of all of them — see `build_panel`. `prefer` names one explicitly
+    — `thot audit --engine hermes`, or `--engine panel` to force the panel
+    on a machine where you also gave a preference. Naming an
     engine that is not installed raises rather than quietly falling back: a
     run that silently used a different agent than the one asked for would
     make its verdicts unattributable, and verdicts are stored under the name
     of whoever decided them.
     """
     prefer = (prefer or os.environ.get(ENGINE_ENV, "")).strip().lower()
+
+    if prefer == "panel":
+        return build_panel(root, max_parallel=max_parallel)
 
     if prefer:
         if prefer not in AGENT_ENGINES:
@@ -81,6 +111,14 @@ def build_engine(
         if not engine.available():
             raise NoEngine(_MISSING[prefer])
         return engine(root=Path(root), max_parallel=max_parallel)
+
+    # Nothing was named. When this machine has more than one agent, the run
+    # uses all of them: that is the whole point of the three living in one
+    # program. `--engine claude` (or THOT_ENGINE) opts back out to a single
+    # backend when you want one voice and one bill.
+    installed = available_engines()
+    if len(installed) >= 2:
+        return build_panel(root, installed, max_parallel=max_parallel)
 
     config = config or load_config()
     if config is None:

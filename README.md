@@ -46,11 +46,29 @@ Et le renfort marche dans les deux sens : Hermes et Prime sont aussi des
 **moteurs** pour `thot audit --deep`, l'étape qui fait argumenter puis réfuter
 chaque finding par un modèle.
 
+**Par défaut, les trois travaillent ensemble sur le même audit.** Un finding
+est argumenté par un agent, puis attaqué par un **autre** — jamais par celui
+qui vient de s'engager sur le scénario. Un modèle qui réfute son propre
+argument corrige sa copie ; c'est la seule chose qu'un panel achète, et c'est
+la raison d'être de la fusion.
+
 ```bash
-thot audit . --deep                    # l'agent de `thot login`
-thot audit . --deep --engine hermes    # Hermes argumente et réfute
-thot audit . --deep --engine prime     # Prime, idem
+thot audit . --deep                    # tous les agents installés, en panel
+thot audit . --deep --engine hermes    # un seul : Hermes argumente et réfute
+thot audit . --deep --engine prime     # un seul : Prime
 ```
+
+Le rapport dit qui a fait quoi :
+
+```
+Analyse assistée : panel — claude-cli contre hermes contre prime
+…
+1 confirmé(s) · 2 réfuté(s)
+Argumenté par claude-cli 1 · hermes 1 — attaqué par hermes 1 · prime 1
+```
+
+Si un agent échoue sur une tâche, elle est reprise **une fois** par un autre —
+pas de cascade : une tâche que tous refusent a un problème à elle.
 
 Chaque agent s'authentifie **comme lui-même**, sur ton compte : Thot lance sa
 ligne de commande, ne l'importe jamais et ne détient aucun jeton. Le verdict

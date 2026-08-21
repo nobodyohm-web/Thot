@@ -289,3 +289,123 @@ def test_the_engine_can_be_named_by_environment(dumping, tmp_path, monkeypatch):
 
     monkeypatch.setenv(ENGINE_ENV, "hermes")
     assert build_engine(tmp_path).capabilities.name == "hermes"
+
+
+# -- the panel: the three agents on one run -----------------------------------
+
+
+class _Fake:
+    """An engine that records what it was asked, and can be told to fail."""
+
+    def __init__(self, name, *, fails=False):
+        self._name = name
+        self.fails = fails
+        self.seen = []
+
+    @property
+    def capabilities(self):
+        from thot.engine.base import EngineCapabilities
+
+        return EngineCapabilities(name=self._name, max_parallel=1)
+
+    def run(self, task):
+        from thot.engine.base import AgentResult
+
+        self.seen.append(task.id)
+        if self.fails:
+            return AgentResult(task_id=task.id, error="indisponible")
+        return AgentResult(task_id=task.id, text=self._name)
+
+    def fan_out(self, tasks):
+        return [self.run(task) for task in tasks]
+
+
+def _task(task_id):
+    from thot.engine.base import AgentTask
+
+    return AgentTask(id=task_id, instructions="x")
+
+
+def test_the_refutation_goes_to_a_different_agent_than_the_argument():
+    """A model attacking the scenario it just committed to marks its own work."""
+    from thot.engine.panel import PanelEngine
+
+    a, b = _Fake("hermes"), _Fake("prime")
+    panel = PanelEngine(members=[a, b])
+
+    panel.fan_out([_task("probe:f1")])
+    arguer = panel.who("probe:f1")
+
+    panel.fan_out([_task("refute:f1")])
+    assert panel.who("refute:f1") != arguer
+
+
+def test_a_failing_member_does_not_cost_the_task():
+    from thot.engine.panel import PanelEngine
+
+    broken, working = _Fake("hermes", fails=True), _Fake("prime")
+    panel = PanelEngine(members=[broken, working])
+
+    result = panel.run(_task("probe:f1"))
+
+    assert result.ok
+    assert panel.who("probe:f1") == "prime"
+    assert broken.seen == ["probe:f1"], "l'échec a bien été tenté d'abord"
+
+
+def test_a_panel_of_one_still_attacks_its_own_argument():
+    """Better a self-refutation than a finding nobody ever attacked."""
+    from thot.engine.panel import PanelEngine
+
+    panel = PanelEngine(members=[_Fake("claude")])
+
+    panel.fan_out([_task("probe:f1"), _task("refute:f1")])
+    assert panel.who("refute:f1") == "claude"
+
+
+def test_the_panel_reports_no_usage_when_one_member_cannot_count():
+    from thot.engine.base import EngineCapabilities
+    from thot.engine.panel import PanelEngine
+
+    class _Silent(_Fake):
+        @property
+        def capabilities(self):
+            return EngineCapabilities(
+                name="hermes", max_parallel=1, reports_usage=False
+            )
+
+    panel = PanelEngine(members=[_Silent("hermes"), _Fake("prime")])
+    assert panel.capabilities.reports_usage is False
+
+
+def test_provenance_names_the_arguer_and_the_attacker(tmp_path):
+    """What the panel is for, seen from the report."""
+    from thot.analysis.probe import _apply_probe, _apply_refutation
+    from thot.contracts import CodeRef, Confidence, Finding, Severity
+    from thot.engine.base import AgentResult
+    from thot.engine.panel import PanelEngine
+
+    panel = PanelEngine(members=[_Fake("hermes"), _Fake("prime")])
+    panel.fan_out([_task("probe:f1")])
+    panel.fan_out([_task("refute:f1")])
+
+    finding = Finding(
+        id="f1",
+        rule="sink.os.system",
+        location=CodeRef(path="a.py", line=1),
+        severity=Severity.HIGH,
+        confidence=Confidence.PLAUSIBLE,
+        failure_scenario="scénario",
+    )
+    probed = _apply_probe(
+        finding,
+        AgentResult(task_id="probe:f1", data={"verdict": "confirmed"}),
+        panel,
+    )
+    refuted = _apply_refutation(
+        probed,
+        AgentResult(task_id="refute:f1", data={"refuted": True, "raison": "non"}),
+        panel,
+    )
+
+    assert refuted.provenance["moteur"] != refuted.provenance["contradicteur"]
