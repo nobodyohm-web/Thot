@@ -9,10 +9,19 @@ from thot.contracts import Severity
 
 @dataclass(frozen=True)
 class SinkRule:
+    """A dangerous call.
+
+    `dangerous_args` lists the positional argument indices whose taint actually
+    matters. For `cursor.execute(query, params)` only index 0 is dangerous:
+    values passed through index 1 are bound parameters, which is the safe form.
+    An empty tuple means every argument counts.
+    """
+
     id: str
     patterns: tuple[str, ...]
     impact: Severity
     description: str
+    dangerous_args: tuple[int, ...] = (0,)
 
 
 @dataclass(frozen=True)
@@ -68,6 +77,7 @@ DEFAULT_SINKS: tuple[SinkRule, ...] = (
                   "httpx.get", "httpx.post"),
         impact=Severity.MEDIUM,
         description="Requête réseau sortante",
+        dangerous_args=(),
     ),
 )
 

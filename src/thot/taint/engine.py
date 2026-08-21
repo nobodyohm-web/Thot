@@ -106,6 +106,35 @@ def _referenced_names(node: ast.AST) -> set[str]:
     return names
 
 
+def _is_literal_true(node: ast.AST) -> bool:
+    return isinstance(node, ast.Constant) and node.value is True
+
+
+def _sink_applies(rule_id: str, node: ast.Call) -> bool:
+    """False when the call is in a form that cannot be injected.
+
+    Two forms carry no injection risk and would otherwise flood a report:
+    a subprocess call whose argv is a list without ``shell=True`` (no shell
+    ever parses it), and a SQL call whose query is a plain literal (values
+    travel as bound parameters).
+    """
+    first = node.args[0] if node.args else None
+
+    if rule_id == "sink.subprocess.shell":
+        shell_true = any(
+            keyword.arg == "shell" and _is_literal_true(keyword.value)
+            for keyword in node.keywords
+        )
+        if not shell_true and isinstance(first, (ast.List, ast.Tuple)):
+            return False
+        return True
+
+    if rule_id == "sink.sql":
+        return not isinstance(first, ast.Constant)
+
+    return True
+
+
 @dataclass
 class _Facts:
     """What one function body does with data, before cross-function resolution."""
@@ -190,19 +219,35 @@ def _analyse_body(symbol: Symbol, node: ast.AST) -> _Facts:
                 continue
             ref = CodeRef(path=symbol.path, line=child.lineno, symbol=symbol.name)
 
-            argument_refs: set[str] = set()
-            for argument in child.args:
-                argument_refs |= _referenced_names(argument)
-            for keyword in child.keywords:
-                argument_refs |= _referenced_names(keyword.value)
-
             rule = match_sink(called)
+
+            if rule is not None and rule.dangerous_args:
+                considered = [
+                    child.args[index]
+                    for index in rule.dangerous_args
+                    if index < len(child.args)
+                ]
+            else:
+                considered = list(child.args) + [k.value for k in child.keywords]
+
+            argument_refs: set[str] = set()
+            for argument in considered:
+                argument_refs |= _referenced_names(argument)
+
+            if rule is not None and not _sink_applies(rule.id, child):
+                rule = None
+
             if rule is not None:
                 facts.sink_calls.append((rule.id, ref, tuple(sorted(argument_refs))))
                 for name in argument_refs & params:
                     facts.param_sinks.setdefault(name, []).append((rule.id, ref))
             else:
-                for name in argument_refs:
+                outgoing: set[str] = set()
+                for argument in child.args:
+                    outgoing |= _referenced_names(argument)
+                for keyword in child.keywords:
+                    outgoing |= _referenced_names(keyword.value)
+                for name in outgoing:
                     facts.calls_out.append((called.rsplit(".", 1)[-1], name, ref))
 
     return facts

@@ -132,3 +132,46 @@ def test_tainted_parameter_through_concatenation_crosses_functions(tmp_path):
         "    lookup(None, value)\n",
     )
     assert {c.rule for c in candidates} == {"sink.sql"}
+
+
+def test_subprocess_with_argument_list_is_not_a_finding(tmp_path):
+    """A list argv without shell=True cannot be injected — no shell parses it."""
+    candidates = _analyse_source(
+        tmp_path,
+        "import subprocess\nimport sys\n\n\ndef main():\n"
+        "    branch = sys.argv[1]\n"
+        "    subprocess.run(['git', 'checkout', branch])\n",
+    )
+    assert candidates == []
+
+
+def test_subprocess_list_with_shell_true_is_still_a_finding(tmp_path):
+    candidates = _analyse_source(
+        tmp_path,
+        "import subprocess\nimport sys\n\n\ndef main():\n"
+        "    branch = sys.argv[1]\n"
+        "    subprocess.run(['sh', '-c', branch], shell=True)\n",
+    )
+    assert {c.rule for c in candidates} == {"sink.subprocess.shell"}
+
+
+def test_parameterised_sql_is_not_a_finding(tmp_path):
+    """A literal query with bound parameters is the safe form."""
+    candidates = _analyse_source(
+        tmp_path,
+        "import sys\n\n\ndef main():\n"
+        "    name = sys.argv[1]\n"
+        "    conn.execute('SELECT * FROM t WHERE n = ?', (name,))\n",
+    )
+    assert candidates == []
+
+
+def test_taint_in_a_non_command_argument_is_ignored(tmp_path):
+    """os.system's danger is its first argument; a tainted second one is not it."""
+    candidates = _analyse_source(
+        tmp_path,
+        "import sys\n\n\ndef main():\n"
+        "    name = sys.argv[1]\n"
+        "    conn.execute('SELECT 1', name)\n",
+    )
+    assert candidates == []
