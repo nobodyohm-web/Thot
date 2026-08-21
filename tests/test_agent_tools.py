@@ -70,3 +70,38 @@ def test_audit_tool_reports_the_taint_path(context):
 
 def test_every_spec_has_a_handler():
     assert {spec.name for spec in agent_tools.SPECS} == set(agent_tools.HANDLERS)
+
+
+# -- code_map filtering ------------------------------------------------------
+# A model's first instinct is a glob, not a substring. Both must work, because
+# a silent "0 fichiers" reads as "empty project" and sends it off grepping.
+
+
+def test_code_map_lists_everything_without_a_pattern(context):
+    out = agent_tools.code_map(context)
+    assert "src/app.py" in out
+
+
+def test_code_map_accepts_a_bare_star(context):
+    out = agent_tools.code_map(context, pattern="*")
+    assert "src/app.py" in out
+
+
+def test_code_map_accepts_a_glob(context):
+    out = agent_tools.code_map(context, pattern="src/*.py")
+    assert "src/app.py" in out
+
+
+def test_code_map_matches_a_glob_on_the_basename(context):
+    out = agent_tools.code_map(context, pattern="*.py")
+    assert "src/app.py" in out
+
+
+def test_code_map_still_accepts_a_plain_substring(context):
+    out = agent_tools.code_map(context, pattern="app")
+    assert "src/app.py" in out
+
+
+def test_code_map_reports_an_empty_match_explicitly(context):
+    out = agent_tools.code_map(context, pattern="*.rs")
+    assert "Aucun fichier" in out

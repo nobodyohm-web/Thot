@@ -14,7 +14,8 @@ from __future__ import annotations
 import subprocess
 from collections.abc import Callable
 from dataclasses import dataclass
-from pathlib import Path
+from fnmatch import fnmatch
+from pathlib import Path, PurePosixPath
 from typing import Any
 
 from thot.llm.base import ToolSpec
@@ -150,13 +151,34 @@ def run_command(context: ToolContext, *, command: str) -> str:
 # --------------------------------------------------------------------------
 
 
+def _matches_pattern(path: str, pattern: str) -> bool:
+    """Glob when the pattern looks like one, substring otherwise.
+
+    A model reaching for this tool writes `*.py` as readily as `app`. Treating
+    the glob as a literal substring answers "0 fichiers", which reads as an
+    empty project and sends it grepping — the exact waste the map exists to
+    prevent.
+    """
+    lowered = path.lower()
+    needle = pattern.lower()
+    if any(char in pattern for char in "*?["):
+        return fnmatch(lowered, needle) or fnmatch(PurePosixPath(lowered).name, needle)
+    return needle in lowered
+
+
 def code_map(context: ToolContext, *, pattern: str = "") -> str:
     recon = context.recon
     if recon.is_empty:
         return "Aucun code source dans ce répertoire."
     files = recon.manifest.files
     if pattern:
-        files = [f for f in files if pattern.lower() in f.lower()]
+        files = [f for f in files if _matches_pattern(f, pattern)]
+        if not files:
+            return (
+                f"Aucun fichier ne correspond à « {pattern} » "
+                f"(sur {len(recon.manifest.files)} indexés). "
+                "Rappelle `code_map` sans motif pour tout voir."
+            )
     listing = "\n".join(files[:200])
     suffix = f"\n… {len(files) - 200} de plus" if len(files) > 200 else ""
     return f"{len(files)} fichiers\n{listing}{suffix}"
@@ -290,8 +312,7 @@ SPECS: list[ToolSpec] = [
     ),
     ToolSpec(
         name="code_map",
-        description="Lister les fichiers du projet, filtrés par motif. "
-                    "Gratuit : réponse issue de l'index, aucun fichier ouvert.",
+        description="Lister les fichiers du projet. Sans motif : tout. Avec motif : glob (`*.py`, `src/**`) ou fragment de chemin (`auth`). Gratuit : réponse issue de l'index, aucun fichier ouvert.",
         parameters={
             "type": "object",
             "properties": {"pattern": _STRING},
