@@ -2,16 +2,44 @@
 name = "thot"
 version = "0.1.0"
 description = "Proof-backed code audit engine"
-requires-python = ">=3.11"
+# Upper bound inherited from Hermes: it caps at <3.14 because its
+# Rust-backed transitives have no cp314 wheel. A workspace resolves one
+# interpreter for every member, so the cap has to be stated here too.
+requires-python = ">=3.11,<3.14"
 dependencies = [
+    # Floors, never ceilings. Hermes exact-pins these same packages on
+    # purpose (supply-chain blast radius), and a Thot ceiling would make the
+    # workspace unresolvable. `prompt-toolkit>=3.0.53` against Hermes's
+    # `==3.0.52` was exactly that: the first conflict of the fusion.
     "rich>=13.7",
     "pyyaml>=6.0",
     "httpx>=0.28.1",
-    "prompt-toolkit>=3.0.53",
+    "prompt-toolkit>=3.0.52",
+    # The other half of the program. A workspace member, so a checkout of
+    # Thot is a checkout of Hermes — not a copy of it that drifts.
+    "hermes-agent",
 ]
 
 [project.scripts]
 thot = "thot.cli:run"
+
+[tool.uv.workspace]
+members = ["hermes"]
+
+[tool.uv.sources]
+hermes-agent = { workspace = true }
+
+[tool.uv]
+# Lifted verbatim from hermes/pyproject.toml. In a workspace only the root's
+# `[tool.uv]` is read, so leaving these behind would silently undo Hermes's
+# supply-chain posture — the pynacl and cryptography overrides exist because
+# the published dependency ranges hold known-vulnerable versions.
+override-dependencies = [
+  "pynacl>=1.6,<1.7",
+  "cryptography>=50,<51",
+]
+exclude-newer = "14 days"
+exclude-newer-package = { vercel = false, nemo-relay = false, huggingface_hub = false, h2 = false, aiohttp = false, cryptography = false, defusedxml = false, python-olm = false, unpaddedbase64 = false, setuptools = false, pillow = false, mcp = false }
 
 [build-system]
 requires = ["hatchling"]

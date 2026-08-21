@@ -1,5 +1,10 @@
-"""The core must never depend on Prime Agent or Hermes — that is the whole
-point of the Engine port. This test is the executable form of that promise."""
+"""The audit core must run with neither agent present.
+
+Thot ships Hermes and Prime in the same repository now, and depends on
+Hermes as a workspace member. What that must not cost is the property the
+Engine port exists for: `thot audit` has to work on a locked-down machine
+and in CI, where neither agent is installed and nothing may reach the
+network. This file is the executable form of that promise."""
 
 from pathlib import Path
 
@@ -45,10 +50,34 @@ def test_core_imports_nothing_from_the_agents():
     assert offenders == [], f"Le noyau doit rester autonome : {offenders}"
 
 
-def test_declared_dependencies_stay_minimal():
-    pyproject = (SOURCE_ROOT.parents[1] / "pyproject.toml").read_text()
-    for forbidden in ("hermes", "prime-agent", "anthropic", "openai"):
-        assert forbidden not in pyproject
+def test_the_core_audits_with_neither_agent_importable(tmp_path):
+    """Blocked at import time, not merely absent — a chain of re-exports
+    reaching `hermes` would raise here instead of passing quietly."""
+    import subprocess
+    import sys
+
+    (tmp_path / "app.py").write_text(
+        "import os, sys\n\ndef main():\n    os.system(sys.argv[1])\n"
+    )
+
+    program = (
+        "import sys\n"
+        "class Blocked:\n"
+        "    def find_module(self, name, path=None):\n"
+        "        if name.split('.')[0] in ('hermes', 'hermes_cli', 'agent',\n"
+        "                                  'tools', 'prime'):\n"
+        "            raise ImportError(name + ' is not available here')\n"
+        "sys.meta_path.insert(0, Blocked())\n"
+        "from thot.pipeline import run_audit\n"
+        f"result = run_audit({str(tmp_path)!r}, require_authorization=False)\n"
+        "print('findings', len(result.findings))\n"
+    )
+    done = subprocess.run(
+        [sys.executable, "-c", program], capture_output=True, text=True,
+        cwd=str(SOURCE_ROOT.parents[1]),
+    )
+    assert done.returncode == 0, done.stderr
+    assert "findings 1" in done.stdout or "findings 2" in done.stdout
 
 
 def test_core_makes_no_network_calls():

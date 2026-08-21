@@ -7,3 +7,10 @@ build/
 .pytest_cache/
 .thot/store.db
 .thot/authorization.yaml
+
+# Les arbres importés apportent leurs propres dépendances installées.
+hermes/.venv/
+hermes/node_modules/
+prime/node_modules/
+prime/packages/*/node_modules/
+prime/packages/*/dist/

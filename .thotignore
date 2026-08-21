@@ -11,3 +11,12 @@ mcp-catalog/
 
 # Deliberately broken code, kept broken on purpose.
 tests/fixtures/
+
+# Les deux programmes fusionnés. Ce sont des projets complets avec leur propre
+# audit, pas du code de Thot : les balayer au démarrage ferait passer chaque
+# lancement de 1 s à 100 s, et noierait les findings de Thot sous les 365 de
+# Hermes. Les auditer est un acte explicite :
+#   thot audit hermes
+#   thot audit prime
+hermes/
+prime/
