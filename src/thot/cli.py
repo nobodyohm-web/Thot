@@ -9,6 +9,7 @@ from pathlib import Path
 
 from thot import __version__
 from thot.contracts import Severity
+from thot.schedule.jobs import SCHEDULES
 from thot.analysis.probe import DEFAULT_LIMIT
 from thot.errors import AuthorizationError, ThotError
 
@@ -37,6 +38,37 @@ def build_parser() -> argparse.ArgumentParser:
 
     subparsers.add_parser("login", help="Choisir ou changer le modèle connecté")
     subparsers.add_parser("logout", help="Oublier le modèle connecté")
+
+    schedule = subparsers.add_parser(
+        "schedule", help="Auditer un dépôt automatiquement"
+    )
+    schedule_sub = schedule.add_subparsers(dest="action")
+
+    sched_add = schedule_sub.add_parser("add", help="Programmer un audit")
+    sched_add.add_argument("name")
+    sched_add.add_argument("path", nargs="?", default=".")
+    sched_add.add_argument(
+        "--every", default="daily", choices=list(SCHEDULES),
+        help="Fréquence (défaut : daily, 3h du matin)",
+    )
+    sched_add.add_argument(
+        "--threshold", default=Severity.HIGH.value,
+        choices=[s.value for s in Severity],
+        help="Ne signaler qu'à partir de ce niveau (défaut : high)",
+    )
+    sched_add.add_argument(
+        "--deep", action="store_true", help="Analyse assistée par le modèle"
+    )
+
+    schedule_sub.add_parser("list", help="Les audits programmés")
+
+    sched_remove = schedule_sub.add_parser("remove", help="Déprogrammer")
+    sched_remove.add_argument("name")
+
+    sched_run = schedule_sub.add_parser(
+        "run", help="Exécuter maintenant (ce que le planificateur appelle)"
+    )
+    sched_run.add_argument("name", nargs="?")
 
     verdicts = subparsers.add_parser(
         "verdicts", help="Les décisions d'audit mémorisées"
@@ -237,6 +269,83 @@ def _cmd_audit(args) -> int:
     return EXIT_OK
 
 
+def _cmd_schedule(args) -> int:
+    from thot.schedule import install, jobs
+
+    action = getattr(args, "action", None)
+
+    if action == "add":
+        root = Path(args.path).resolve()
+        job = jobs.Job(
+            name=args.name, root=str(root), schedule=args.every,
+            threshold=args.threshold, deep=args.deep,
+        )
+        try:
+            jobs.add(job)
+        except ValueError as exc:
+            print(f"Impossible : {exc}", file=sys.stderr)
+            return EXIT_USAGE
+
+        written, next_step = install.install(job)
+        print(f"« {job.name} » programmé : {root}, {job.schedule}, seuil {job.threshold}")
+        if written:
+            print(f"Fichier écrit : {written}")
+        print(f"\nPour l'activer :\n  {next_step}")
+        print(f"\nPour l'annuler plus tard :\n  {install.uninstall_hint(job)}")
+        return EXIT_OK
+
+    if action == "remove":
+        removed = jobs.remove(args.name)
+        print("Déprogrammé." if removed else f"Aucun audit nommé « {args.name} ».")
+        if removed:
+            print(install.uninstall_hint(jobs.Job(name=args.name, root="")))
+        return EXIT_OK if removed else EXIT_USAGE
+
+    if action == "run":
+        return _run_scheduled(args.name)
+
+    programmed = jobs.load()
+    if not programmed:
+        print("Aucun audit programmé.")
+        print("  thot schedule add nuit ~/mon-projet --every daily")
+        return EXIT_OK
+    for job in programmed:
+        flag = " --deep" if job.deep else ""
+        print(f"{job.name:<14} {job.schedule:<8} seuil {job.threshold:<8} {job.root}{flag}")
+    return EXIT_OK
+
+
+def _run_scheduled(name: str | None) -> int:
+    """Execute due jobs and print only what is new. Silence is the success case."""
+    from thot.memory.sqlite import SqliteMemory
+    from thot.schedule import jobs
+    from thot.schedule.runner import run_job
+    from thot.store.db import Store
+
+    selected = [j for j in jobs.load() if name is None or j.name == name]
+    if not selected:
+        print(f"Aucun audit nommé « {name} ».", file=sys.stderr)
+        return EXIT_USAGE
+
+    store = Store.open(DEFAULT_STORE)
+    memory = SqliteMemory.open()
+    found_something = False
+    try:
+        for job in selected:
+            fresh, total = run_job(job, store=store, memory=memory)
+            if not fresh:
+                continue
+            found_something = True
+            print(f"[{job.name}] {len(fresh)} nouveau(x) sur {total} — {job.root}")
+            for finding in fresh:
+                print(f"  {finding.severity.value.upper():<8} {finding.rule}  {finding.location}")
+    finally:
+        store.close()
+        memory.close()
+
+    return EXIT_FINDINGS if found_something else EXIT_OK
+
+
 def _cmd_verdicts(args) -> int:
     from thot.memory.sqlite import SqliteMemory
 
@@ -284,6 +393,8 @@ def main(argv: list[str] | None = None) -> int:
             return _cmd_logout()
         if args.command == "init":
             return _cmd_init(args)
+        if args.command == "schedule":
+            return _cmd_schedule(args)
         if args.command == "verdicts":
             return _cmd_verdicts(args)
         if args.command == "audit":

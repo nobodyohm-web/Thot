@@ -114,6 +114,25 @@ class Store:
             )
         return findings
 
+    def previous_finding_ids(self, root: str) -> set[str]:
+        """What the most recent stored run on this repository already knew.
+
+        The basis for a scheduled audit reporting a diff rather than a census.
+        Call it *before* starting the new run — afterwards the newest row is
+        the run you are comparing against itself. An empty set means first
+        run, and everything being new is then the correct answer.
+        """
+        row = self._connection.execute(
+            "SELECT id FROM runs WHERE root = ? ORDER BY id DESC LIMIT 1",
+            (root,),
+        ).fetchone()
+        if row is None:
+            return set()
+        rows = self._connection.execute(
+            "SELECT id FROM findings WHERE run_id = ?", (row[0],)
+        ).fetchall()
+        return {r[0] for r in rows}
+
     def remember_symbols(self, mapping: dict[str, str]) -> None:
         if not mapping:
             return

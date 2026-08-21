@@ -82,6 +82,91 @@ déterministes via un petit serveur MCP, et met en forme le flux d'événements.
 Le fil de conversation est porté par `--resume` sur le même identifiant de
 session.
 
+## Mémoire — décider une fois
+
+Le coûteux dans un audit n'est pas de trouver des candidats : les phases
+déterministes le font en quelques secondes, gratuitement. C'est de **décider
+ce qu'ils valent**. Perdre ces décisions entre deux runs, c'est ce qui rend un
+outil de sécurité insupportable — les mêmes quarante rejets, chaque semaine,
+jusqu'à ce que plus personne ne lise le rapport.
+
+```
+   › /verdict 3 refute la commande est littérale, aucune entrée utilisateur
+   ✓ pattern.os_system_injection à app/shellutil.py:5 — refuted
+   Retenu tant que ce code ne change pas.
+```
+
+| Décision | Effet |
+|---|---|
+| `refute` | faux positif — passe en INFO, sort du rapport, garde sa raison |
+| `accept` | risque réel, assumé — passe en INFO, annoté |
+| `fixed` | corrigé — s'il **revient**, c'est signalé comme régression |
+
+### Pourquoi c'est sûr
+
+Un verdict est indexé sur `Finding.compute_id`, qui hache la règle, le fichier,
+le symbole et **l'AST normalisé** de ce symbole. Reformate, déplace la
+fonction, renomme une variable locale : le verdict tient. Change ce que le code
+*fait* : l'identifiant change avec lui, et **le verdict expire tout seul**.
+
+Un rejet ne peut donc jamais survivre au code qu'il concernait. C'est la seule
+propriété qui rend le fait de mémoriser des rejets acceptable.
+
+```bash
+thot verdicts                    # tout ce qui a été décidé
+thot verdicts --path src/auth    # sur un chemin
+thot verdicts --forget <id>      # revenir sur une décision
+thot audit . --no-memory         # ignorer la mémoire pour ce run
+```
+
+La mémoire s'applique **avant** le modèle : un candidat déjà écarté n'est
+jamais renvoyé à l'analyse. Un run où tout est écarté ne fait aucun appel.
+Et les réfutations de `--deep` s'enregistrent d'elles-mêmes : deux appels
+modèle, payés une fois.
+
+Rien n'est jamais supprimé en silence. Un finding écarté reste dans le rapport
+en `refuted`, avec sa raison et son auteur — un audit qui cache ce qu'on lui a
+dit d'ignorer n'est pas relisable.
+
+## Audits programmés
+
+```bash
+thot schedule add nuit ~/mon-projet --every daily --threshold high
+thot schedule list
+thot schedule run nuit            # ce que le planificateur appelle
+thot schedule remove nuit
+```
+
+Thot écrit l'unité `launchd` (macOS) ou te donne la ligne de crontab, et te
+laisse l'activer toi-même — un outil qui installe des tâches de fond en
+silence est un outil qu'on cesse de croire.
+
+**Un audit programmé ne dit rien tant que rien n'est nouveau.** Un rapport
+nocturne qui répète les mêmes trois cents findings finit dans un dossier que
+personne n'ouvre. Ce qui remonte, c'est le diff : ce qui est apparu depuis la
+dernière fois, au-dessus du seuil, moins ce qui a déjà été jugé sans intérêt.
+
+## Plugins
+
+Cinq hooks, chacun parce que quelque chose de livré s'en sert :
+
+| Hook | Quand |
+|---|---|
+| `on_finding` | avant le rapport, pour annoter |
+| `post_audit` | audit terminé — notifier, exporter, archiver |
+| `pre_write` | avant une écriture de l'agent — renvoie un avertissement |
+| `post_write` | après une écriture réussie |
+| `on_verdict` | une décision vient d'être enregistrée |
+
+Un plugin est un dossier avec `plugin.yaml` et `__init__.py`, dans
+`~/.thot/plugins/` ou `<repo>/.thot/plugins/` — la forme utilisée par Hermes
+Agent. Un plugin qui plante coûte sa propre fonctionnalité et rien d'autre :
+son erreur est enregistrée et affichée par `/plugins`.
+
+**`write-guard`** est livré : il relit ce que le modèle écrit et fait remonter
+un avertissement si un motif dangereux apparaît. Non bloquant — un faux
+positif qui bloque une session est pire que l'écriture.
+
 ## Skills — les méthodes que Thot connaît
 
 Une skill est une méthode écrite une fois : un `SKILL.md` avec un frontmatter
