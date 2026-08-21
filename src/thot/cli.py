@@ -188,6 +188,11 @@ def _cmd_audit(args) -> int:
         if memory is not None:
             memory.close()
 
+    from thot.plugins import discover as _discover_plugins
+    from thot.plugins import invoke_hook as _invoke_hook
+
+    _invoke_hook(_discover_plugins(root), "post_audit", result=result, root=root)
+
     if result.remembered:
         print(
             f"{result.remembered} finding(s) portent une décision mémorisée.",

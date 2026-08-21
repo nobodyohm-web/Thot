@@ -105,3 +105,22 @@ def test_code_map_still_accepts_a_plain_substring(context):
 def test_code_map_reports_an_empty_match_explicitly(context):
     out = agent_tools.code_map(context, pattern="*.rs")
     assert "Aucun fichier" in out
+
+
+# -- plugin warnings ride back on the write ----------------------------------
+
+
+def test_a_dangerous_write_carries_a_warning_back(context):
+    out = agent_tools.write_file(
+        context, path="risky.py", content="import pickle\npickle.loads(blob)\n"
+    )
+    assert "risky.py" in out
+    assert "pickle" in out.lower()
+    assert (context.root / "risky.py").exists()  # advisory, never blocking
+
+
+def test_a_safe_write_says_nothing_extra(context):
+    out = agent_tools.write_file(
+        context, path="safe.py", content="import json\njson.loads(blob)\n"
+    )
+    assert "⚠" not in out

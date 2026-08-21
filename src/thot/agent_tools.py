@@ -81,6 +81,35 @@ def read_file(context: ToolContext, *, path: str, start: int = 1, end: int = 0) 
     return "\n".join(numbered) or "(fichier vide)"
 
 
+_PLUGIN_CACHE: dict[str, list] = {}
+
+
+def _plugins_for(root) -> list:
+    key = str(root)
+    if key not in _PLUGIN_CACHE:
+        from thot.plugins import discover
+
+        _PLUGIN_CACHE[key] = discover(root)
+    return _PLUGIN_CACHE[key]
+
+
+def _write_warnings(context: ToolContext, path: str, content: str) -> str:
+    """What the plugins want the model to know about this write.
+
+    Advisory by design: the file is written and the warning rides back in the
+    tool result, so the model self-corrects on the next turn. Blocking would
+    mean a false positive can deadlock a session, and a model that cannot
+    write cannot fix anything.
+    """
+    from thot.plugins import invoke_hook
+
+    notes = invoke_hook(
+        _plugins_for(context.root), "pre_write", path=path, content=content
+    )
+    warnings = [str(note).strip() for note in notes if note]
+    return ("\n\n" + "\n".join(warnings)) if warnings else ""
+
+
 def write_file(context: ToolContext, *, path: str, content: str) -> str:
     target = _resolve(context, path)
     exists = target.exists()
@@ -88,11 +117,15 @@ def write_file(context: ToolContext, *, path: str, content: str) -> str:
     preview = content if len(content) < 800 else content[:800] + "\n…"
     if not context.confirm(f"{action} {_relative(context, target)}", preview):
         raise ToolError("L'utilisateur a refusé l'écriture.")
+    warnings = _write_warnings(context, path, content)
     target.parent.mkdir(parents=True, exist_ok=True)
     target.write_text(content, encoding="utf-8")
     context.refresh()
     verb = "écrasé" if exists else "créé"
-    return f"{_relative(context, target)} {verb} ({len(content.splitlines())} lignes)"
+    return (
+        f"{_relative(context, target)} {verb} "
+        f"({len(content.splitlines())} lignes){warnings}"
+    )
 
 
 def edit_file(context: ToolContext, *, path: str, old: str, new: str) -> str:
@@ -111,9 +144,11 @@ def edit_file(context: ToolContext, *, path: str, old: str, new: str) -> str:
     diff = f"- {old.strip()[:300]}\n+ {new.strip()[:300]}"
     if not context.confirm(f"Modifier {_relative(context, target)}", diff):
         raise ToolError("L'utilisateur a refusé la modification.")
-    target.write_text(source.replace(old, new, 1), encoding="utf-8")
+    updated = source.replace(old, new, 1)
+    warnings = _write_warnings(context, path, updated)
+    target.write_text(updated, encoding="utf-8")
     context.refresh()
-    return f"{_relative(context, target)} modifié"
+    return f"{_relative(context, target)} modifié{warnings}"
 
 
 def list_dir(context: ToolContext, *, path: str = ".") -> str:

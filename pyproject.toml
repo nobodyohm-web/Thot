@@ -19,6 +19,7 @@ build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel.force-include]
 "skills" = "thot/skills/library"
+"plugins" = "thot/plugins/library"
 
 [tool.hatch.build]
 dev-mode-dirs = ["src"]

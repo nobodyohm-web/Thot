@@ -1,0 +1,9 @@
+name: write-guard
+version: "1.0.0"
+description: >
+  Averti le modèle quand le fichier qu'il s'apprête à écrire contient un motif
+  dangereux connu (pickle.load, yaml.load, eval, innerHTML, verify=False…).
+  Non bloquant : l'avertissement remonte pour qu'il se corrige lui-même.
+author: "Anthropic (motifs, Apache-2.0) / Nous Research (portage Hermes) / Thot"
+hooks:
+  - pre_write

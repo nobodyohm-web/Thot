@@ -398,6 +398,7 @@ class Session:
             for name, description in (
                 ("/status", "sur quoi tu tournes, et où"),
             ("/skills", "les méthodes disponibles"),
+            ("/plugins", "les extensions chargées"),
             ("/verdict", "écarter ou accepter un finding : /verdict 2 refute raison"),
             ("/audit", "relancer l'analyse et afficher les findings"),
             ("/audit deep", "faire analyser puis réfuter les candidats par le modèle"),
@@ -426,10 +427,17 @@ class Session:
                     theme.field("écriture", "sur confirmation")
                 )
             theme.console.print(theme.field("outils", "carte AST + graphe d'appels"))
-            from thot.skills import discover
+            from thot.plugins import discover as discover_plugins
+            from thot.skills import discover as discover_skills
 
+            plugins = discover_plugins(self.root)
+            broken = sum(1 for p in plugins if not p.ok)
+            suffix = f" ({broken} en erreur)" if broken else ""
             theme.console.print(
-                theme.field("skills", f"{len(discover(self.root))} méthodes")
+                theme.field("skills", f"{len(discover_skills(self.root))} méthodes")
+            )
+            theme.console.print(
+                theme.field("plugins", f"{len(plugins)} chargé(s){suffix}")
             )
             if self.claude is not None:
                 from thot.llm.claude_cli import user_mcp_servers
@@ -440,6 +448,24 @@ class Session:
                 )
             theme.console.print()
             theme.hint("`/model` pour changer, `thot logout` pour tout oublier.")
+            theme.console.print()
+            return None
+
+        if command == "plugins":
+            from thot.plugins import discover
+
+            loaded = discover(self.root)
+            theme.console.print()
+            if not loaded:
+                theme.hint("Aucun plugin.")
+            for plugin in loaded:
+                detail = plugin.error or " ".join(plugin.description.split())
+                if len(detail) > 48:
+                    detail = detail[:48].rsplit(" ", 1)[0] + "…"
+                mark = "" if plugin.ok else "▲ "
+                theme.console.print(theme.entry(plugin.name, mark + detail, width=26))
+            theme.console.print()
+            theme.hint("~/.thot/plugins/<nom>/ pour en ajouter un.")
             theme.console.print()
             return None
 
