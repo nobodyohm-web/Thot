@@ -68,3 +68,11 @@ def test_each_round_is_told_what_the_previous_ones_judged(monkeypatch):
     improve(rounds=3)
 
     assert seen_sizes == [0, 1, 2]
+
+
+def test_a_contested_refutation_is_counted_on_its_own():
+    """The one outcome that means the program caught itself burying a defect."""
+    round_ = PartRound(part="hermes", judged=3, refuted=2, confirmed=0,
+                       contested=1, backlog=4)
+
+    assert "1 réfutation(s) contestée(s)" in round_.line()

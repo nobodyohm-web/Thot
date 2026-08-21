@@ -34,15 +34,21 @@ class PartRound:
     judged: int = 0  # decided this round
     refuted: int = 0
     confirmed: int = 0
+    # A refutation a second agent would not stand behind. Worth its own
+    # number: it is the one outcome that means the program caught itself
+    # about to bury something, and burying is the expensive mistake.
+    contested: int = 0
     backlog: int = 0  # still unjudged after this round
     error: str = ""
 
     def line(self) -> str:
         if self.error:
             return f"{self.part:<8} — {self.error}"
+        detail = f"{self.refuted} réfuté · {self.confirmed} confirmé"
+        if self.contested:
+            detail += f" · {self.contested} réfutation(s) contestée(s)"
         return (
-            f"{self.part:<8} {self.judged:>3} jugé(s) "
-            f"({self.refuted} réfuté · {self.confirmed} confirmé) · "
+            f"{self.part:<8} {self.judged:>3} jugé(s) ({detail}) · "
             f"{self.backlog} en attente"
         )
 
@@ -66,10 +72,13 @@ class Session:
     def summary(self) -> str:
         refuted = sum(p.refuted for run in self.rounds for p in run)
         confirmed = sum(p.confirmed for run in self.rounds for p in run)
+        contested = sum(p.contested for run in self.rounds for p in run)
+        detail = f"{refuted} réfuté · {confirmed} confirmé"
+        if contested:
+            detail += f" · {contested} réfutation(s) contestée(s)"
         return (
             f"{len(self.rounds)} tour(s) · {self.judged} jugement(s) "
-            f"({refuted} réfuté · {confirmed} confirmé) · "
-            f"{self.backlog} candidat(s) encore sans décision"
+            f"({detail}) · {self.backlog} candidat(s) encore sans décision"
         )
 
 
@@ -135,6 +144,10 @@ def one_round(
                 ),
                 confirmed=sum(
                     1 for f in mine if f.confidence is Confidence.CONFIRMED
+                ),
+                contested=sum(
+                    1 for f in mine
+                    if (f.provenance or {}).get("réfutation contestée")
                 ),
                 backlog=backlog_of(part.result.findings),
             )
