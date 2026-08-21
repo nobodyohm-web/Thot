@@ -6,7 +6,9 @@ import subprocess
 import time
 from dataclasses import dataclass
 from pathlib import Path
+from typing import TYPE_CHECKING
 
+from thot.analysis.probe import DEFAULT_LIMIT, analyse
 from thot.codemap.graph import CodeGraph
 from thot.codemap.python_indexer import PythonIndexer
 from thot.contracts import Confidence, Finding
@@ -17,6 +19,9 @@ from thot.scoring.severity import compute_severity
 from thot.store.db import Store
 from thot.taint.engine import find_candidates
 
+if TYPE_CHECKING:  # the core knows the port, never an implementation
+    from thot.engine.base import Engine
+
 
 @dataclass(frozen=True)
 class AuditResult:
@@ -24,6 +29,15 @@ class AuditResult:
     manifest: ScopeManifest
     elapsed: float
     run_id: int | None = None
+    engine: str | None = None  # None when the run stayed deterministic
+
+    @property
+    def confirmed(self) -> list[Finding]:
+        return [f for f in self.findings if f.confidence is Confidence.CONFIRMED]
+
+    @property
+    def refuted(self) -> list[Finding]:
+        return [f for f in self.findings if f.confidence is Confidence.REFUTED]
 
 
 def _git_commit(root: Path) -> str | None:
@@ -63,9 +77,19 @@ def findings_from_graph(root: Path, graph: CodeGraph) -> list[Finding]:
 
 
 def run_audit(
-    root: Path, store: Store | None = None, *, require_authorization: bool = True
+    root: Path,
+    store: Store | None = None,
+    *,
+    require_authorization: bool = True,
+    engine: "Engine | None" = None,
+    budget: int = DEFAULT_LIMIT,
 ) -> AuditResult:
-    """Run the full deterministic pipeline. Never calls a model or the network.
+    """Map, taint, score — then, if an engine is given, probe and refute.
+
+    Without an engine the run never touches a model or the network, which is
+    what makes it usable in CI and on a locked-down machine. With one, the
+    worst candidates are argued and then attacked before anything is stored,
+    so the persisted run holds verdicts rather than suspicions.
 
     `require_authorization=False` is for the interactive session: launching
     Thot inside a directory is itself the act of authorising it.
@@ -86,6 +110,11 @@ def run_audit(
     graph = CodeGraph.build(symbols, manifest.entrypoints)
     findings = findings_from_graph(root, graph)
 
+    engine_name = None
+    if engine is not None and findings:
+        findings = analyse(root, findings, engine, limit=budget)
+        engine_name = engine.capabilities.name
+
     elapsed = time.monotonic() - started
     run_id = None
     if store is not None:
@@ -94,5 +123,9 @@ def run_audit(
         store.remember_symbols({s.name: s.ast_hash for s in symbols})
 
     return AuditResult(
-        findings=findings, manifest=manifest, elapsed=elapsed, run_id=run_id
+        findings=findings,
+        manifest=manifest,
+        elapsed=elapsed,
+        run_id=run_id,
+        engine=engine_name,
     )

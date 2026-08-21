@@ -9,12 +9,14 @@ from pathlib import Path
 
 from thot import __version__
 from thot.contracts import Severity
+from thot.analysis.probe import DEFAULT_LIMIT
 from thot.errors import AuthorizationError, ThotError
 
 EXIT_OK = 0
 EXIT_FINDINGS = 1
 EXIT_USAGE = 2
 EXIT_UNAUTHORIZED = 3
+EXIT_ERROR = 4
 
 # Ascending order: `--fail-on medium` also trips on high and critical.
 _SEVERITY_RANK = [
@@ -66,6 +68,18 @@ def build_parser() -> argparse.ArgumentParser:
     )
     audit.add_argument(
         "--no-store", action="store_true", help="Ne pas persister le run"
+    )
+    audit.add_argument(
+        "--deep", action="store_true",
+        help="Analyser les candidats avec le modèle connecté, puis les réfuter",
+    )
+    audit.add_argument(
+        "--budget", type=int, default=DEFAULT_LIMIT, metavar="N",
+        help=f"Nombre de candidats analysés en --deep (défaut : {DEFAULT_LIMIT})",
+    )
+    audit.add_argument(
+        "--parallel", type=int, default=4, metavar="N",
+        help="Analyses simultanées en --deep (défaut : 4)",
     )
 
     return parser
@@ -128,10 +142,26 @@ def _cmd_audit(args) -> int:
     from thot.store.db import Store
 
     root = Path(args.path).resolve()
+
+    engine = None
+    if args.deep:
+        from thot.engine.factory import NoEngine, build_engine
+
+        try:
+            engine = build_engine(root, max_parallel=args.parallel)
+        except NoEngine as exc:
+            print(f"Analyse assistée impossible : {exc}", file=sys.stderr)
+            return EXIT_ERROR
+        print(
+            f"Analyse assistée : {engine.capabilities.name}, "
+            f"{args.budget} candidats max, {args.parallel} en parallèle…",
+            file=sys.stderr,
+        )
+
     store = None if args.no_store else Store.open(DEFAULT_STORE)
 
     try:
-        result = run_audit(root, store=store)
+        result = run_audit(root, store=store, engine=engine, budget=args.budget)
     finally:
         if store is not None:
             store.close()
