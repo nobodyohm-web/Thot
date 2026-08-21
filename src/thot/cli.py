@@ -33,6 +33,9 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--version", action="version", version=f"thot {__version__}")
     subparsers = parser.add_subparsers(dest="command")
 
+    subparsers.add_parser("login", help="Choisir ou changer le modèle connecté")
+    subparsers.add_parser("logout", help="Oublier le modèle connecté")
+
     init = subparsers.add_parser(
         "init", help="Déclarer l'autorisation d'auditer un dépôt"
     )
@@ -66,6 +69,44 @@ def build_parser() -> argparse.ArgumentParser:
     )
 
     return parser
+
+
+def _cmd_session(path: str = ".") -> int:
+    """`thot` with no arguments: connect if needed, then open the session."""
+    from thot.onboarding import ensure_configured
+    from thot.session import start
+    from thot.ui import theme
+
+    config = ensure_configured()
+    if config is None:
+        theme.console.print()
+        theme.hint("Aucun modèle connecté. Relance `thot` quand tu veux.")
+        return EXIT_USAGE
+    return start(Path(path).resolve(), config)
+
+
+def _cmd_login() -> int:
+    from thot.llm.credentials import save_config
+    from thot.onboarding import first_run
+    from thot.ui import theme
+
+    config = first_run()
+    if config is None:
+        return EXIT_USAGE
+    save_config(config)
+    theme.console.print()
+    theme.ok(f"Connecté — {config.label()}")
+    theme.hint("Lance `thot` pour démarrer.")
+    return EXIT_OK
+
+
+def _cmd_logout() -> int:
+    from thot.llm.credentials import forget
+    from thot.ui import theme
+
+    forget()
+    theme.ok("Identifiants oubliés.")
+    return EXIT_OK
 
 
 def _cmd_init(args) -> int:
@@ -141,10 +182,13 @@ def main(argv: list[str] | None = None) -> int:
         return int(exc.code or 0)
 
     if not args.command:
-        parser.print_help()
-        return EXIT_USAGE
+        return _cmd_session()
 
     try:
+        if args.command == "login":
+            return _cmd_login()
+        if args.command == "logout":
+            return _cmd_logout()
         if args.command == "init":
             return _cmd_init(args)
         if args.command == "audit":

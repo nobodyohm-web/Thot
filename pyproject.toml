@@ -3,7 +3,12 @@ name = "thot"
 version = "0.1.0"
 description = "Proof-backed code audit engine"
 requires-python = ">=3.11"
-dependencies = ["rich>=13.7", "pyyaml>=6.0"]
+dependencies = [
+    "rich>=13.7",
+    "pyyaml>=6.0",
+    "httpx>=0.28.1",
+    "prompt-toolkit>=3.0.53",
+]
 
 [project.scripts]
 thot = "thot.cli:run"

@@ -37,25 +37,11 @@ def _git_commit(root: Path) -> str | None:
         return None
 
 
-def run_audit(root: Path, store: Store | None = None) -> AuditResult:
-    """Run the full deterministic pipeline. Never calls a model or the network."""
-    root = Path(root)
-    started = time.monotonic()
-
-    load_authorization(root)  # raises AuthorizationError when not mandated
-    manifest = detect_scope(root)
-
-    indexer = PythonIndexer()
-    symbols = []
-    for relative in manifest.files:
-        if relative.endswith(".py"):
-            symbols.extend(indexer.index_file(root, relative))
-
-    graph = CodeGraph.build(symbols, manifest.entrypoints)
-    candidates = find_candidates(root, graph)
-
+def findings_from_graph(root: Path, graph: CodeGraph) -> list[Finding]:
+    """Turn taint candidates into scored findings. Shared by the CLI and the
+    interactive session, so both see exactly the same analysis."""
     findings: list[Finding] = []
-    for candidate in candidates:
+    for candidate in find_candidates(root, graph):
         distance = graph.distance_from_entrypoints(candidate.sink.symbol or "")
         severity = compute_severity(candidate.impact, distance, Confidence.PLAUSIBLE)
         scenario = (
@@ -73,6 +59,32 @@ def run_audit(root: Path, store: Store | None = None) -> AuditResult:
                 failure_scenario=scenario,
             )
         )
+    return findings
+
+
+def run_audit(
+    root: Path, store: Store | None = None, *, require_authorization: bool = True
+) -> AuditResult:
+    """Run the full deterministic pipeline. Never calls a model or the network.
+
+    `require_authorization=False` is for the interactive session: launching
+    Thot inside a directory is itself the act of authorising it.
+    """
+    root = Path(root)
+    started = time.monotonic()
+
+    if require_authorization:
+        load_authorization(root)  # raises AuthorizationError when not mandated
+    manifest = detect_scope(root)
+
+    indexer = PythonIndexer()
+    symbols = []
+    for relative in manifest.files:
+        if relative.endswith(".py"):
+            symbols.extend(indexer.index_file(root, relative))
+
+    graph = CodeGraph.build(symbols, manifest.entrypoints)
+    findings = findings_from_graph(root, graph)
 
     elapsed = time.monotonic() - started
     run_id = None

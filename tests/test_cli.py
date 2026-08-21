@@ -11,11 +11,27 @@ def test_version_flag_prints_version_and_exits_zero(capsys):
     assert "thot" in captured.out.lower()
 
 
-def test_no_command_shows_help_and_exits_two(capsys):
-    code = cli.main([])
+def test_no_command_opens_the_session(monkeypatch):
+    """`thot` alone is the product: it connects if needed, then opens a session."""
+    calls = {}
+    monkeypatch.setattr(
+        "thot.onboarding.ensure_configured", lambda: "fake-config"
+    )
+    def fake_start(root, config):
+        calls["started"] = (root, config)
+        return 0
+
+    monkeypatch.setattr("thot.session.start", fake_start)
+    assert cli.main([]) == 0
+    assert calls["started"][1] == "fake-config"
+
+
+def test_help_lists_the_commands(capsys):
+    code = cli.main(["--help"])
     captured = capsys.readouterr()
-    assert code == 2
+    assert code == 0
     assert "audit" in captured.out
+    assert "login" in captured.out
 
 
 def test_init_creates_the_authorization_file(tmp_path):

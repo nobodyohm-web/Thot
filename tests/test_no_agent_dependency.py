@@ -10,6 +10,17 @@ FORBIDDEN = (
 
 SOURCE_ROOT = Path(__file__).resolve().parents[1] / "src" / "thot"
 
+# The deterministic core: analysis that must stay pure, offline and free.
+# The llm/, session and ui layers are allowed to reach the network.
+CORE_PACKAGES = ("codemap", "taint", "scope", "scoring", "store", "report")
+
+
+def core_files():
+    yield SOURCE_ROOT / "contracts.py"
+    yield SOURCE_ROOT / "pipeline.py"
+    for package in CORE_PACKAGES:
+        yield from (SOURCE_ROOT / package).rglob("*.py")
+
 
 def test_core_imports_nothing_from_the_agents():
     offenders = []
@@ -28,7 +39,9 @@ def test_declared_dependencies_stay_minimal():
 
 
 def test_core_makes_no_network_calls():
-    """No HTTP client is *imported* anywhere in the deterministic core.
+    """No HTTP client is imported anywhere in the deterministic core.
+
+    Only the core is checked: `llm/` talks to model providers by design.
 
     Matches real import statements only: `catalog.py` legitimately contains
     strings like "requests.get" as detection patterns, and a naive substring
@@ -36,7 +49,7 @@ def test_core_makes_no_network_calls():
     """
     network_modules = {"requests", "httpx", "urllib", "socket", "http"}
     offenders = []
-    for path in SOURCE_ROOT.rglob("*.py"):
+    for path in core_files():
         for lineno, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
             stripped = line.strip()
             if stripped.startswith("import "):
