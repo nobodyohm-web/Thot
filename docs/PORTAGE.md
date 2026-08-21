@@ -151,3 +151,17 @@ thot sandbox show pytest    # tools/environments/docker.py
 thot gateway list           # gateway/ + plugins/platforms/
 thot mcp list               # optional-mcps/
 ```
+
+## Divergences assumées
+
+Les arbres `hermes/` et `prime/` sont importés verbatim. Les bibliothèques
+`skills/` et `optional-skills/` ont été portées depuis Hermes, et une seule
+s'écarte désormais de sa source :
+
+| fichier | pourquoi |
+|---|---|
+| `optional-skills/mcp/fastmcp/templates/database_server.py` | injection SQL confirmée par la passe adverse : `f"SELECT * FROM ({sql}) LIMIT {n}"` — la charge `select id from users) --` ferme la sous-requête et commente le `LIMIT`, mesuré 300 lignes au lieu de 50. Le plafond est appliqué par `fetchmany` et non écrit dans le SQL. La copie de Hermes n'est pas modifiée : elle lui appartient. |
+
+Un fichier de gabarit existe pour être copié, donc un défaut dedans se
+propage vers du code atteignable. C'est le risque que `Role.EXAMPLE` ne
+modélise volontairement pas — il pèse l'accessibilité, pas la propagation.

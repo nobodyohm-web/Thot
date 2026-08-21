@@ -7,6 +7,8 @@ Anything written for Hermes or Prime loads here unmodified.
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 
 from thot.skills import loader
@@ -219,3 +221,57 @@ def test_workspace_paths_were_adapted_but_attribution_was_not():
     assert "Hermes" in str(plan.metadata.get("author", "")), (
         "l'auteur d'origine ne doit jamais être effacé"
     )
+
+
+# -- what the shipped library hands people to copy ---------------------------
+
+
+def _template() -> Path:
+    from thot.skills.loader import optional_dir
+
+    directory = optional_dir()
+    assert directory is not None
+    return directory / "mcp" / "fastmcp" / "templates" / "database_server.py"
+
+
+def test_the_database_template_does_not_clamp_rows_inside_the_sql():
+    """A template exists to be copied, so a defect in one propagates into
+    code that *is* reachable.
+
+    `... LIMIT {n}` appended to attacker-controlled text is not a cap: the
+    deep pass confirmed `sql = "select id from users) --"` closes the
+    wrapping subquery and comments the LIMIT out. Shipped identically by
+    Hermes and by Thot, and excluded from Thot's own audit by `.thotignore`
+    — which is how it went unseen.
+    """
+    lines = _template().read_text(encoding="utf-8").splitlines()
+    # Code only: the fix's own comment quotes the broken form, and a test
+    # that matched prose would fail on the explanation of the fix.
+    code = "\n".join(line for line in lines if not line.lstrip().startswith("#"))
+    assert "LIMIT {safe_limit}" not in code
+    assert "fetchmany(safe_limit)" in code
+
+
+def test_the_reported_payload_no_longer_beats_the_cap(tmp_path):
+    """The bypass itself, reproduced. 300 rows before, 50 after."""
+    import sqlite3
+
+    database = tmp_path / "t.db"
+    setup = sqlite3.connect(database)
+    setup.execute("create table users(id integer)")
+    setup.executemany("insert into users values (?)", [(i,) for i in range(300)])
+    setup.commit()
+    setup.close()
+
+    payload = "select id from users) --"
+    connection = sqlite3.connect(f"file:{database}?mode=ro", uri=True)
+    try:
+        beaten = connection.execute(
+            f"SELECT * FROM ({payload}) LIMIT 50"
+        ).fetchall()
+        held = connection.execute(f"SELECT * FROM ({payload})").fetchmany(50)
+    finally:
+        connection.close()
+
+    assert len(beaten) == 300, "la forme d'origine laissait passer 300 lignes"
+    assert len(held) == 50
