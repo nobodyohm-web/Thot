@@ -15,10 +15,15 @@ uv tool install --from /Users/dev/Desktop/Thot thot
 thot init /chemin/du/repo --owner "Ton Nom"   # autorisation, une fois par dépôt
 thot audit /chemin/du/repo                    # rapport dans le terminal
 thot audit . --paths                          # avec le chemin de teinte complet
+thot audit . --all                            # y compris le bruit de faible sévérité
+thot audit . --min-severity high              # seuil d'affichage (défaut : medium)
 thot audit . --json --out rapport.json        # export machine
 thot audit . --markdown --out rapport.md      # export lisible
 thot audit . --fail-on high                   # code de sortie 1 en CI
 ```
+
+`--fail-on` ignore le seuil d'affichage : un finding sous le seuil fait quand
+même échouer la CI si sa sévérité atteint le seuil d'échec.
 
 ## Ce qu'il fait aujourd'hui
 
@@ -32,6 +37,24 @@ thot audit . --fail-on high                   # code de sortie 1 en CI
 - Persistance SQLite des runs, findings et hashes de symboles.
 
 Python uniquement pour l'instant.
+
+### Calibration
+
+La précision compte autant que la détection. Sont volontairement **non**
+rapportés :
+
+- `subprocess.run(cmd)` sans `shell=True` — aucun shell ne lit la commande,
+  quelle que soit la forme de l'argv.
+- `cursor.execute("SELECT ... ?", params)` — requête littérale, paramètres liés.
+- Une valeur passée par `int()`, `shlex.quote()`, `os.path.basename()`,
+  `html.escape()` et consorts — ces appels cassent la chaîne de contamination.
+- Un défaut qu'aucun point d'entrée n'atteint est dégradé automatiquement.
+- `payload.get(...)` n'est pas `requests.get(...)` : les motifs qualifiés
+  exigent leur chemin de module.
+
+### Ordres de grandeur
+
+Dépôt de 6 924 fichiers (4 457 Python) : ~59 s, 3 findings au-dessus du seuil.
 
 ## Ce qu'il ne fait pas encore
 
