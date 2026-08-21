@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from contextlib import contextmanager
 from dataclasses import dataclass
 
 from thot.contracts import Severity
@@ -114,6 +115,37 @@ DEFAULT_SOURCES: tuple[SourceRule, ...] = (
 )
 
 
+@dataclass(frozen=True)
+class Catalog:
+    """Everything the taint engine knows about dangerous code.
+
+    Held as a value rather than module constants so a repository can extend it
+    without patching Thot. The built-in rules cover the standard library; only
+    the team knows its own shell wrapper and its own validators.
+    """
+
+    sinks: tuple[SinkRule, ...]
+    sources: tuple[SourceRule, ...]
+    sanitizers: frozenset[str]
+
+    def match_sink(self, call_name: str) -> SinkRule | None:
+        for rule in self.sinks:
+            if _matches(call_name, rule.patterns, rule.match_mode):
+                return rule
+        return None
+
+    def match_source(self, expression: str) -> SourceRule | None:
+        for rule in self.sources:
+            if _matches(expression, rule.patterns, rule.match_mode):
+                return rule
+        return None
+
+    def is_sanitizer(self, call_name: str) -> bool:
+        if call_name in self.sanitizers:
+            return True
+        return call_name.rsplit(".", 1)[-1] in self.sanitizers
+
+
 def _matches(call_name: str, patterns: tuple[str, ...], mode: str = "qualified") -> bool:
     """Match a call name against a rule's patterns.
 
@@ -147,17 +179,11 @@ def _matches(call_name: str, patterns: tuple[str, ...], mode: str = "qualified")
 
 
 def match_sink(call_name: str) -> SinkRule | None:
-    for rule in DEFAULT_SINKS:
-        if _matches(call_name, rule.patterns, rule.match_mode):
-            return rule
-    return None
+    return active().match_sink(call_name)
 
 
 def match_source(expression: str) -> SourceRule | None:
-    for rule in DEFAULT_SOURCES:
-        if _matches(expression, rule.patterns, rule.match_mode):
-            return rule
-    return None
+    return active().match_source(expression)
 
 
 # Calls that neutralise untrusted data. A tainted value passing through one of
@@ -177,6 +203,34 @@ SANITIZERS: frozenset[str] = frozenset(
 
 def is_sanitizer(call_name: str) -> bool:
     """True when a call breaks the taint chain."""
-    if call_name in SANITIZERS:
-        return True
-    return call_name.rsplit(".", 1)[-1] in SANITIZERS
+    return active().is_sanitizer(call_name)
+
+
+DEFAULT_CATALOG = Catalog(
+    sinks=DEFAULT_SINKS, sources=DEFAULT_SOURCES, sanitizers=SANITIZERS
+)
+
+# The catalog in force for the current analysis. Global because the taint
+# engine reads it from a dozen places and threading it through every one of
+# them would buy nothing: an audit analyses one repository at a time.
+_ACTIVE: Catalog = DEFAULT_CATALOG
+
+
+def active() -> Catalog:
+    return _ACTIVE
+
+
+@contextmanager
+def using(catalog: Catalog):
+    """Install a catalog for the duration of a block, then restore it.
+
+    Scoped rather than assigned, so a custom catalog can never leak from one
+    analysis into the next — or from one test into another.
+    """
+    global _ACTIVE
+    previous = _ACTIVE
+    _ACTIVE = catalog
+    try:
+        yield catalog
+    finally:
+        _ACTIVE = previous

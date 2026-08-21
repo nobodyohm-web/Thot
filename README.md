@@ -147,6 +147,37 @@ Le moteur est choisi automatiquement — ton compte Claude via le CLI officiel
 s'il est connecté (les analyses tournent en parallèle, sur ton abonnement),
 une clé API sinon.
 
+### Tes propres règles
+
+Le catalogue intégré connaît la bibliothèque standard. Il ne connaît pas le
+wrapper que ton équipe a écrit autour de `subprocess`, la file que ton service
+consomme, ni le validateur qui rend une valeur sûre chez toi. Sans un endroit
+où le dire, chaque audit d'un vrai système se trompe aux trois mêmes endroits.
+
+```yaml
+# <repo>/.thot/rules/team.yaml   — versionné avec le code
+# ~/.thot/rules/*.yaml           — ce que tu sais, partout où tu travailles
+sinks:
+  - id: sink.team.run_shell
+    patterns: [run_shell, shellutil.run_shell]
+    impact: critical
+    description: Wrapper shell interne (shell=True)
+    match_mode: bare          # qualified | method | bare | prefix
+
+sources:
+  - id: source.queue
+    patterns: [msg.payload]
+    description: File de messages
+    match_mode: prefix        # couvre msg.payload.decode(...)
+
+sanitizers: [validate_host, team.escape]
+```
+
+Une règle qui reprend un `id` intégré le **remplace** — de quoi dégrader un
+sink que l'équipe a délibérément accepté, sans patcher Thot. Un fichier mal
+formé arrête l'audit en nommant le fichier et la clé fautive, plutôt que de
+laisser croire à une absence de finding.
+
 ### Calibration
 
 La précision compte autant que la détection. Sont volontairement **non**

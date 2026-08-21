@@ -24,10 +24,11 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from thot.codemap.catalog import (
-    DEFAULT_SINKS,
+    active,
     is_sanitizer,
     match_sink,
     match_source,
+    using,
 )
 from thot.codemap.graph import CodeGraph
 from thot.codemap.python_indexer import _called_name
@@ -262,14 +263,14 @@ def _analyse_body(symbol: Symbol, node: ast.AST) -> _Facts:
 
 
 def _impact_for(rule_id: str) -> Severity:
-    for rule in DEFAULT_SINKS:
+    for rule in active().sinks:
         if rule.id == rule_id:
             return rule.impact
     return Severity.MEDIUM
 
 
 def _description_for(rule_id: str) -> str:
-    for rule in DEFAULT_SINKS:
+    for rule in active().sinks:
         if rule.id == rule_id:
             return rule.description
     return ""
@@ -278,8 +279,22 @@ def _description_for(rule_id: str) -> str:
 def find_candidates(
     root: Path, graph: CodeGraph, max_depth: int = 3
 ) -> list[TaintCandidate]:
-    """Return every source-to-sink path the deterministic analysis can prove."""
+    """Return every source-to-sink path the deterministic analysis can prove.
+
+    The repository's own rules are installed for the duration of the scan, so
+    a team's shell wrapper and its validators count exactly like the built-in
+    ones. Scoped, so they never leak into the next analysis.
+    """
+    from thot.codemap.rules import load_catalog
+
     root = Path(root)
+    with using(load_catalog(root)):
+        return _find_candidates(root, graph, max_depth)
+
+
+def _find_candidates(
+    root: Path, graph: CodeGraph, max_depth: int
+) -> list[TaintCandidate]:
 
     functions = [s for s in graph.symbols.values() if s.kind == "function"]
     node_index = index_function_nodes(root, {s.path for s in functions})
