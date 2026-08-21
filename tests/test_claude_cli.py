@@ -103,3 +103,77 @@ def test_error_result_surfaces(cli):
         {"type": "result", "is_error": True, "result": "boom"}, events, [], set()
     )
     assert errors == ["boom"]
+
+
+# -- the user's own MCP servers ---------------------------------------------
+# Thot passed --strict-mcp-config, which silently disabled every server the
+# user had configured. Inside Thot they lost their whole toolbelt and had no
+# way to know why.
+
+
+def test_configured_servers_are_discovered(tmp_path, monkeypatch):
+    from thot.llm import claude_cli
+
+    config = tmp_path / "claude.json"
+    config.write_text(json.dumps({
+        "mcpServers": {"semantic-scholar": {}, "sympy": {}},
+        "projects": {str(tmp_path): {"mcpServers": {"ruflo": {}}}},
+    }))
+    monkeypatch.setattr(claude_cli, "CLAUDE_CONFIG", config)
+    found = claude_cli.user_mcp_servers(tmp_path)
+    assert set(found) == {"semantic-scholar", "sympy", "ruflo"}
+
+
+def test_a_repo_local_mcp_file_is_read(tmp_path, monkeypatch):
+    from thot.llm import claude_cli
+
+    monkeypatch.setattr(claude_cli, "CLAUDE_CONFIG", tmp_path / "absent.json")
+    (tmp_path / ".mcp.json").write_text(json.dumps({"mcpServers": {"local": {}}}))
+    assert claude_cli.user_mcp_servers(tmp_path) == ("local",)
+
+
+def test_thots_own_server_is_not_double_counted(tmp_path, monkeypatch):
+    from thot.llm import claude_cli
+
+    config = tmp_path / "claude.json"
+    config.write_text(json.dumps({"mcpServers": {"thot": {}, "other": {}}}))
+    monkeypatch.setattr(claude_cli, "CLAUDE_CONFIG", config)
+    assert claude_cli.user_mcp_servers(tmp_path) == ("other",)
+
+
+def test_a_broken_config_is_not_fatal(tmp_path, monkeypatch):
+    from thot.llm import claude_cli
+
+    config = tmp_path / "claude.json"
+    config.write_text("{ pas du json")
+    monkeypatch.setattr(claude_cli, "CLAUDE_CONFIG", config)
+    assert claude_cli.user_mcp_servers(tmp_path) == ()
+
+
+def test_user_servers_are_allowed_alongside_thots(tmp_path, monkeypatch):
+    from thot.llm import claude_cli
+
+    config = tmp_path / "claude.json"
+    config.write_text(json.dumps({"mcpServers": {"sympy": {}}}))
+    monkeypatch.setattr(claude_cli, "CLAUDE_CONFIG", config)
+    monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/claude")
+
+    command = claude_cli.ClaudeCli(root=tmp_path)._command("salut", "brief")
+    allowed = command[command.index("--allowed-tools") + 1]
+    assert "mcp__thot__audit" in allowed
+    assert "mcp__sympy" in allowed
+
+
+def test_the_user_toolbelt_is_not_disabled_by_default(tmp_path, monkeypatch):
+    monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/claude")
+    from thot.llm.claude_cli import ClaudeCli
+
+    assert "--strict-mcp-config" not in ClaudeCli(root=tmp_path)._command("x", "")
+
+
+def test_isolation_is_available_when_asked_for(tmp_path, monkeypatch):
+    monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/claude")
+    from thot.llm.claude_cli import ClaudeCli
+
+    command = ClaudeCli(root=tmp_path, isolated=True)._command("x", "")
+    assert "--strict-mcp-config" in command

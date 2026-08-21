@@ -360,6 +360,13 @@ class Session:
                     theme.field("écriture", "sur confirmation")
                 )
             theme.console.print(theme.field("outils", "carte AST + graphe d'appels"))
+            if self.claude is not None:
+                from thot.llm.claude_cli import user_mcp_servers
+
+                servers = user_mcp_servers(self.root)
+                theme.console.print(
+                    theme.field("mcp", ", ".join(("thot",) + servers))
+                )
             theme.console.print()
             theme.hint("`/model` pour changer, `thot logout` pour tout oublier.")
             theme.console.print()

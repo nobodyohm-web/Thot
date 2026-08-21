@@ -32,6 +32,37 @@ ALLOWED_TOOLS = tuple(f"mcp__thot__{name}" for name in EXPOSED)
 
 
 CLAUDE_SETTINGS = Path.home() / ".claude" / "settings.json"
+CLAUDE_CONFIG = Path.home() / ".claude.json"
+
+
+def user_mcp_servers(root: Path) -> tuple[str, ...]:
+    """The MCP servers this user already has, global and per-project.
+
+    Thot adds one server; it has no business removing the rest. Passing
+    --strict-mcp-config did exactly that — inside Thot the user silently lost
+    their whole toolbelt, with nothing on screen to explain it. Discovering
+    the names lets them be allowed through by name, since the permission mode
+    does not cover MCP tools.
+    """
+    names: set[str] = set()
+
+    try:
+        data = json.loads(CLAUDE_CONFIG.read_text())
+    except (OSError, ValueError):
+        data = {}
+    if isinstance(data, dict):
+        names.update(data.get("mcpServers") or {})
+        project = (data.get("projects") or {}).get(str(root)) or {}
+        names.update(project.get("mcpServers") or {})
+
+    try:
+        local = json.loads((Path(root) / ".mcp.json").read_text())
+        names.update(local.get("mcpServers") or {})
+    except (OSError, ValueError, AttributeError):
+        pass
+
+    names.discard("thot")  # ours is supplied inline, not from their config
+    return tuple(sorted(names))
 
 
 def configured_model() -> str:
@@ -63,6 +94,7 @@ class ClaudeCli:
     model: str = ""
     session_id: str = field(default_factory=lambda: str(uuid.uuid4()))
     active_model: str = ""  # what the CLI actually used, learned from the stream
+    isolated: bool = False  # cut the user's own MCP servers out of the session
     _started: bool = False
 
     @staticmethod
@@ -77,6 +109,9 @@ class ClaudeCli:
                 "   Installe-le avec : npm install -g @anthropic-ai/claude-code"
             )
 
+        allowed = list(ALLOWED_TOOLS)
+        allowed += [f"mcp__{name}" for name in user_mcp_servers(self.root)]
+
         command = [
             binary,
             "-p",
@@ -85,9 +120,10 @@ class ClaudeCli:
             "--verbose",
             "--permission-mode", PERMISSION_MODE,
             "--mcp-config", json.dumps(config_payload(self.root)),
-            "--strict-mcp-config",
-            "--allowed-tools", " ".join(ALLOWED_TOOLS),
+            "--allowed-tools", " ".join(allowed),
         ]
+        if self.isolated:
+            command.append("--strict-mcp-config")
         if self.model:
             command += ["--model", self.model]
         if self._started:
