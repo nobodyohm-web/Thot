@@ -1596,12 +1596,26 @@ def _cmd_fusion(args) -> int:
         print(f"Moteurs pour `--deep` : {', '.join(usable) if usable else 'aucun'}")
         if len(usable) >= 2:
             print("   Par défaut ils tournent en panel : l'un argumente un "
-                  "finding, un autre l'attaque.")
+                  "finding, un autre l'attaque, un troisième attaque ce qui "
+                  "a survécu.")
             print("   thot audit . --deep            # les "
                   f"{len(usable)} ensemble")
             print(f"   thot audit . --deep --engine {usable[-1]}   # un seul")
         elif usable:
             print(f"   thot audit . --deep --engine {usable[-1]}")
+
+        # Whether the program keeps judging itself when nobody is watching.
+        from thot.schedule.jobs import load as load_jobs
+
+        loop = next((j for j in load_jobs() if j.whole_program and j.deep), None)
+        print()
+        if loop is None:
+            print("Amélioration permanente : non programmée "
+                  "— `thot improve --every daily`")
+        else:
+            print(f"Amélioration permanente : {loop.schedule}, "
+                  f"{loop.budget} candidats par arbre et par tour "
+                  f"(`{loop.name}`)")
 
         from thot.fusion import config as fusion_config
         from thot.fusion import memory as fusion_memory
