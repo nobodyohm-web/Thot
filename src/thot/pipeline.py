@@ -11,6 +11,7 @@ from typing import TYPE_CHECKING
 from thot.analysis.probe import DEFAULT_LIMIT, analyse
 from thot.codemap.graph import CodeGraph
 from thot.codemap.python_indexer import PythonIndexer
+from thot.guard.scanner import sweep_patterns
 from thot.contracts import Confidence, Finding
 from thot.scope.authorization import load_authorization
 from thot.scope.detect import detect_scope
@@ -115,6 +116,10 @@ def run_audit(
 
     graph = CodeGraph.build(symbols, manifest.entrypoints)
     findings = findings_from_graph(root, graph)
+
+    # Pattern rules cover what the AST indexer never reads — JavaScript, YAML,
+    # CI workflows — and shapes that are dangerous without a provable path.
+    findings += sweep_patterns(root, list(manifest.files))
 
     engine_name = None
     if engine is not None and findings:
