@@ -20,6 +20,17 @@ of Anthropic's `claude-plugins-official` under Apache-2.0 (see below). Thot
 adds two uses Hermes does not have: a repository-wide audit sweep, and
 masking of Python string literals and comments before matching.
 
+**Plugin system** (`src/thot/plugins/`) — the manifest layout and the
+isolate-every-callback dispatch are adapted from `hermes_cli/plugins.py`.
+Narrowed from dozens of hooks to five; no upstream code copied.
+
+**Scheduled audits** (`src/thot/schedule/`) — the job shape is adapted from
+`cron/jobs.py`. The diff-only reporting is Thot's own; no upstream code copied.
+
+**Memory** (`src/thot/memory/`) — the provider contract is adapted from
+`agent/memory_provider.py`, narrowed from conversational recall to durable
+audit verdicts. No upstream code copied.
+
 ## security-guidance patterns — Apache-2.0
 
 Copyright (c) Anthropic, PBC. and the security-guidance contributors
