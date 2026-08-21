@@ -209,6 +209,10 @@ class Session:
             theme.error(str(exc))
             return None
         self.kernel = kernel
+        warning = kernel.warning()
+        if warning:
+            theme.console.print()
+            theme.warn(warning)
         return kernel
 
     def _tool_context(self) -> ToolContext:

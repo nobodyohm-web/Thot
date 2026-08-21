@@ -75,13 +75,30 @@ class Kernel:
             )
         return [sys.executable, "-m", "thot.kernel.worker"]
 
+    # Names a cell has no business inheriting. Removing them does not make
+    # `local` mode a credential boundary — the worker runs as the user and
+    # can read the same files Thot reads. It removes the one path that costs
+    # nothing to remove.
+    SECRET_ENV = (
+        "ANTHROPIC_API_KEY", "OPENAI_API_KEY", "THOT_MEMORY_TOKEN",
+        "MEM0_API_KEY", "TELEGRAM_BOT_TOKEN", "DISCORD_WEBHOOK_URL",
+        "SLACK_WEBHOOK_URL", "NTFY_TOKEN", "THOT_SMTP_PASSWORD",
+        "GITHUB_TOKEN", "AWS_SECRET_ACCESS_KEY",
+    )
+
+    def _environment(self) -> dict:
+        import os
+
+        environment = {k: v for k, v in os.environ.items()
+                       if k not in self.SECRET_ENV}
+        environment["THOT_ROOT"] = str(self.root)
+        return environment
+
     def start(self) -> "Kernel":
         if self.running:
             return self
 
-        import os
-
-        environment = dict(os.environ, THOT_ROOT=str(self.root))
+        environment = self._environment()
         try:
             self._process = subprocess.Popen(
                 self._command(), stdin=subprocess.PIPE, stdout=subprocess.PIPE,
@@ -110,12 +127,28 @@ class Kernel:
         except (OSError, ValueError, subprocess.TimeoutExpired):
             process.kill()
 
+    @property
+    def contained(self) -> bool:
+        return (self.sandbox is not None
+                and getattr(self.sandbox, "name", "") == "docker")
+
     def describe(self) -> str:
-        where = "conteneur" if (self.sandbox is not None
-                                and getattr(self.sandbox, "name", "") == "docker") \
-            else "processus séparé"
+        where = ("conteneur, sans réseau" if self.contained
+                 else "processus séparé, sous ton compte")
         api = "carte de Thot disponible" if self.thot_available else "Python seul"
         return f"{where} · {api} · {self.calls_made}/{self.max_calls} appels rlm"
+
+    def warning(self) -> str:
+        """What the user should know before the first cell runs, once.
+
+        Said out loud because the honest description of `local` mode is not
+        what a reader assumes from "runs in a separate process".
+        """
+        if self.contained:
+            return ""
+        return ("Le noyau tourne sous ton compte : une cellule peut lire tes "
+                "identifiants et écrire où tu peux écrire. "
+                "`/sandbox docker` pour l'isoler.")
 
     # -- talking to it ---------------------------------------------------
 

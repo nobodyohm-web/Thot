@@ -56,3 +56,36 @@ def test_known_distances_are_unaffected_by_the_flag():
         assert accessibility_weight(distance, entrypoints_known=False) == (
             accessibility_weight(distance, entrypoints_known=True)
         )
+
+
+# -- unknown reach is not absence of reach ------------------------------------
+
+
+def test_an_escaping_symbol_is_not_discounted_like_a_dead_one():
+    from thot.contracts import Confidence, Severity
+    from thot.scoring.severity import accessibility_weight, compute_severity
+
+    assert accessibility_weight(None, entrypoints_known=True) == 0.2
+    assert accessibility_weight(None, entrypoints_known=True, escapes=True) == 0.8
+
+    buried = compute_severity(Severity.HIGH, None, Confidence.PLAUSIBLE,
+                              entrypoints_known=True)
+    kept = compute_severity(Severity.HIGH, None, Confidence.PLAUSIBLE,
+                            entrypoints_known=True, escapes=True)
+
+    # 0.75 x 0.8 x 0.6 = 0.36 — a rung up, and out of the noise floor a
+    # default report hides. Not HIGH: reach is unknown, not established.
+    assert buried is Severity.LOW
+    assert kept is Severity.MEDIUM
+
+    critical = compute_severity(Severity.CRITICAL, None, Confidence.CONFIRMED,
+                                entrypoints_known=True, escapes=True)
+    assert critical is Severity.CRITICAL
+
+
+def test_a_reachable_symbol_is_unaffected_by_the_escape_signal():
+    from thot.scoring.severity import accessibility_weight
+
+    for distance in (0, 1, 5):
+        assert accessibility_weight(distance) == \
+            accessibility_weight(distance, escapes=True)

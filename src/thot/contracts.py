@@ -48,6 +48,11 @@ class Symbol:
     kind: str
     calls: tuple[str, ...] = ()
     params: tuple[str, ...] = ()
+    # Names this symbol *mentions* without calling: a handler put in a
+    # dispatch table, a callback passed to a framework, a decorated view.
+    # Not a call edge — but proof the target escaped, which is the
+    # difference between "nobody reaches it" and "we cannot see who does".
+    references: tuple[str, ...] = ()
 
     def to_ref(self) -> CodeRef:
         return CodeRef(

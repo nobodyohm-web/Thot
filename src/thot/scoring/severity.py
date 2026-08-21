@@ -3,6 +3,12 @@
 Accessibility comes from the call graph, not from a judgement call: a defect
 that no entry point can reach is discounted automatically. This is the single
 most effective false-positive filter in real audits.
+
+It is also the most dangerous, because "the graph found no path" and "there
+is no path" are not the same sentence. Two cases are therefore separated
+from genuine unreachability: a repository where no entry point was found at
+all, and a symbol that is handed around by name rather than called. Both get
+a mild penalty instead of a burial.
 """
 
 from __future__ import annotations
@@ -25,7 +31,8 @@ _CONFIDENCE_SCORE = {
 
 
 def accessibility_weight(
-    distance: int | None, *, entrypoints_known: bool = True
+    distance: int | None, *, entrypoints_known: bool = True,
+    escapes: bool = False,
 ) -> float:
     """Closeness to a public entry point, as a multiplier.
 
@@ -38,6 +45,12 @@ def accessibility_weight(
     mild penalty, not a burial.
     """
     if distance is None:
+        # A symbol handed around by name — put in a dispatch table, passed
+        # to a framework, decorated — is reached by a route the graph
+        # cannot follow. That is unknown reach, not absence of reach, and
+        # it is the ordinary case in any web application.
+        if escapes:
+            return 0.8
         return 0.2 if entrypoints_known else 0.8
     if distance == 0:
         return 1.0
@@ -52,10 +65,12 @@ def compute_severity(
     confidence: Confidence,
     *,
     entrypoints_known: bool = True,
+    escapes: bool = False,
 ) -> Severity:
     score = (
         _IMPACT_SCORE[impact]
-        * accessibility_weight(distance, entrypoints_known=entrypoints_known)
+        * accessibility_weight(distance, entrypoints_known=entrypoints_known,
+                               escapes=escapes)
         * _CONFIDENCE_SCORE[confidence]
     )
     if score >= 0.7:

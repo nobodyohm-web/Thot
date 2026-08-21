@@ -291,3 +291,54 @@ def test_the_worker_needs_nothing_but_the_standard_library():
     assert "thot" not in modules, "un import de thot au niveau module casserait le conteneur"
     assert modules <= {"__future__", "io", "json", "sys", "traceback",
                        "contextlib"}
+
+
+# -- the boundary, described accurately ---------------------------------------
+#
+# Thot's own adversarial pass refuted the eval finding and, in doing so,
+# pointed at a real defect: the docstring claimed "the child holds no
+# credential", which is false in local mode. These pin the true shape.
+
+
+def test_secrets_in_the_environment_are_not_handed_to_a_cell(tmp_path,
+                                                             monkeypatch):
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-secret")
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-secret")
+    monkeypatch.setenv("PATH", "/usr/bin")
+
+    environment = Kernel(root=tmp_path)._environment()
+
+    assert "ANTHROPIC_API_KEY" not in environment
+    assert "OPENAI_API_KEY" not in environment
+    assert environment["PATH"] == "/usr/bin", "le reste doit passer"
+    assert environment["THOT_ROOT"] == str(tmp_path)
+
+
+def test_a_cell_really_cannot_read_the_scrubbed_variables(tmp_path,
+                                                          monkeypatch):
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-secret")
+    kernel = Kernel(root=tmp_path).start()
+
+    outcome = kernel.execute("import os; os.environ.get('ANTHROPIC_API_KEY')")
+    assert outcome.value in ("", "None")
+    kernel.stop()
+
+
+def test_local_mode_says_what_it_is_rather_than_implying_safety(tmp_path):
+    """"Separate process" reads as a boundary. It is not one."""
+    kernel = Kernel(root=tmp_path)
+
+    assert kernel.contained is False
+    assert "sous ton compte" in kernel.describe()
+    assert "identifiants" in kernel.warning()
+    assert "/sandbox docker" in kernel.warning()
+
+
+def test_a_contained_kernel_has_nothing_to_warn_about(tmp_path):
+    from thot.sandbox import DockerSandbox
+
+    kernel = Kernel(root=tmp_path, sandbox=DockerSandbox(root=tmp_path))
+
+    assert kernel.contained is True
+    assert kernel.warning() == ""
+    assert "sans réseau" in kernel.describe()

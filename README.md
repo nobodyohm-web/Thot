@@ -202,10 +202,21 @@ d'outils en coûte une douzaine, dont chacun repaie la lecture de ce que la
 carte savait déjà.
 
 **Le noyau ne tourne jamais dans le processus de Thot.** Un `exec()` chez soi
-donnerait au code audité les identifiants, les bases ouvertes et le magasin de
-verdicts — strictement pire que `run_command`, que Thot a pris la peine de
-mettre dans un conteneur. C'est un sous-processus, et c'est *dans le conteneur*
+donnerait au code audité la mémoire de Thot, ses bases ouvertes et ses
+descripteurs de fichiers. C'est donc un sous-processus — et *dans le conteneur*
 quand un bac à sable est configuré.
+
+Ce que ça protège, exactement — et Thot l'a corrigé sur lui-même après que sa
+propre passe adverse a pointé une docstring trop absolue :
+
+| | |
+|---|---|
+| Sous-processus (`local`) | protège la mémoire, les bases et les descripteurs de Thot. **Pas** tes identifiants : le worker tourne sous ton compte et peut lire `~/.claude/.credentials.json`. |
+| Conteneur (`docker`) | frontière réelle : pas de réseau, pas ton `$HOME`, dépôt en lecture seule. |
+
+Les variables d'environnement sensibles sont retirées avant le lancement, et
+`/py` le dit une fois en mode local plutôt que de laisser « processus séparé »
+se lire comme une garantie qu'il n'offre pas.
 
 ### `rlm()` — déléguer depuis une cellule
 
@@ -661,8 +672,27 @@ rapportés :
   ignorance.
 - `payload.get(...)` n'est pas `requests.get(...)`.
 
-Ordre de grandeur : 6 924 fichiers (4 457 Python) en ~59 s, 3 findings
-au-dessus du seuil.
+Ordre de grandeur, mesuré sur Hermes Agent (4 457 fichiers Python) : **98 s**,
+365 findings dont 25 high — 3 au-dessus du seuil par défaut une fois la mémoire
+appliquée.
+
+### Ce que le graphe ne peut pas suivre
+
+Un défaut atteint par un chemin que l'analyse ne résout pas — un handler rangé
+dans une table de dispatch, une vue décorée, un appel sur une variable dont le
+type est inconnu — n'est **pas** un défaut injoignable. Thot distingue les deux :
+
+```python
+HANDLERS = {"run": run_command}     # aucun appel : le graphe ne voit rien
+@app.route("/ping")                 # enregistré à l'import par le décorateur
+sandbox.run("pytest")               # plusieurs `run` répondent à ce nom
+```
+
+Dans les trois cas la portée est **inconnue**, pas nulle, et le finding garde
+une pénalité légère au lieu d'être enterré. Sur Hermes : mêmes 365 findings,
+mais **60 remontent d'un cran**. Une fonction que personne n'appelle *et* que
+personne ne mentionne reste, elle, correctement décotée — sinon le filtre
+cesserait d'être un filtre.
 
 ## Limites
 

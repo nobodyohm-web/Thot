@@ -51,9 +51,18 @@ class Host:
     """The way a cell asks Thot to do something it cannot do itself.
 
     Prime routes this over an ipykernel Comm; here it is the same pipe the
-    cell's results travel on. The important half is identical: the child
-    holds no credential, so a cell cannot spend the user's subscription
-    except by asking, and the host decides.
+    cell's results travel on. What the channel guarantees, precisely: the
+    **model backend and its budget live in the parent**, so a cell cannot
+    spend the subscription except by asking, and every ceiling is enforced
+    where the cell cannot reach it.
+
+    What it does *not* guarantee — and an earlier version of this docstring
+    wrongly implied it did, which Thot's own adversarial pass caught: in
+    `local` mode the worker is an ordinary subprocess of the same user. It
+    can read `~/.claude/.credentials.json` and `~/.thot/config.json` for
+    itself. The separate process protects Thot's memory, its open databases
+    and its file handles; it is **not** a credential boundary. The
+    container is, and `/sandbox docker` is how you get one.
     """
 
     def __init__(self) -> None:

@@ -68,6 +68,7 @@ def findings_from_graph(root: Path, graph: CodeGraph) -> list[Finding]:
             distance,
             Confidence.PLAUSIBLE,
             entrypoints_known=entrypoints_known,
+            escapes=graph.reach_unknown(candidate.sink.symbol or ""),
         )
         scenario = (
             f"{candidate.description} : une valeur issue de `{candidate.source}` "
