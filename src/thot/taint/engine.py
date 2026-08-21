@@ -23,7 +23,12 @@ import ast
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from thot.codemap.catalog import DEFAULT_SINKS, match_sink, match_source
+from thot.codemap.catalog import (
+    DEFAULT_SINKS,
+    is_sanitizer,
+    match_sink,
+    match_source,
+)
 from thot.codemap.graph import CodeGraph
 from thot.codemap.python_indexer import _called_name
 from thot.contracts import CodeRef, Severity, Symbol
@@ -60,6 +65,45 @@ def _expression_name(node: ast.AST) -> str | None:
     if isinstance(node, ast.Call):
         return _called_name(node)
     return None
+
+
+def _referenced_names(node: ast.AST) -> set[str]:
+    """Every identifier an expression reads, following composite expressions.
+
+    Concatenations, f-strings, `%` formatting and `.format()` calls all carry
+    taint — an injection almost always travels through one of them, so a
+    `Name`-only view of arguments misses most real defects.
+
+    Recursion stops at a sanitizing call: `shlex.quote(x)` reads `x` but does
+    not propagate its taint.
+    """
+    names: set[str] = set()
+
+    def visit(current: ast.AST) -> None:
+        if isinstance(current, ast.Call):
+            called = _called_name(current)
+            if called and is_sanitizer(called):
+                return
+            if called:
+                names.add(called)
+            for argument in current.args:
+                visit(argument)
+            for keyword in current.keywords:
+                visit(keyword.value)
+            return
+        if isinstance(current, ast.Name):
+            names.add(current.id)
+            return
+        if isinstance(current, ast.Attribute):
+            full = _expression_name(current)
+            if full:
+                names.add(full)
+            return
+        for child in ast.iter_child_nodes(current):
+            visit(child)
+
+    visit(node)
+    return names
 
 
 @dataclass
@@ -100,32 +144,44 @@ def _analyse_body(symbol: Symbol, node: ast.AST) -> _Facts:
     facts = _Facts(symbol=symbol)
     params = set(symbol.params)
 
+    def is_tainted(names: set[str]) -> CodeRef | None:
+        """Return where the taint came from, or None."""
+        for name in names:
+            if name in facts.tainted:
+                return facts.tainted[name]
+        for name in names:
+            if match_source(name):
+                return None  # direct source: caller assigns the ref
+        return None
+
     for child in _ordered_nodes(node):
         if isinstance(child, ast.Assign):
             ref = CodeRef(path=symbol.path, line=child.lineno, symbol=symbol.name)
             targets = [t.id for t in child.targets if isinstance(t, ast.Name)]
-            value_name = _expression_name(child.value)
+            refs = _referenced_names(child.value)
 
-            if value_name and match_source(value_name):
+            origin = None
+            if any(match_source(name) for name in refs):
+                origin = ref
+            else:
+                origin = is_tainted(refs)
+                if origin is None and refs & params:
+                    origin = ref
+
+            if origin is not None:
                 for target in targets:
-                    facts.tainted[target] = ref
-            elif value_name and value_name in facts.tainted:
-                for target in targets:
-                    facts.tainted[target] = facts.tainted[value_name]
-            elif value_name and value_name in params:
-                for target in targets:
-                    facts.tainted[target] = ref
+                    facts.tainted[target] = origin
             elif isinstance(child.value, ast.Call):
                 called = _called_name(child.value)
-                if called:
+                if called and not is_sanitizer(called):
                     for target in targets:
                         facts.assigns_from_call.append(
                             (target, called.rsplit(".", 1)[-1], ref)
                         )
 
         elif isinstance(child, ast.Return) and child.value is not None:
-            name = _expression_name(child.value)
-            if name and (match_source(name) or name in facts.tainted):
+            refs = _referenced_names(child.value)
+            if any(match_source(name) for name in refs) or is_tainted(refs):
                 facts.returns_taint = True
 
         elif isinstance(child, ast.Call):
@@ -133,18 +189,21 @@ def _analyse_body(symbol: Symbol, node: ast.AST) -> _Facts:
             if not called:
                 continue
             ref = CodeRef(path=symbol.path, line=child.lineno, symbol=symbol.name)
-            arg_names = tuple(
-                name for name in (_expression_name(a) for a in child.args) if name
-            )
+
+            argument_refs: set[str] = set()
+            for argument in child.args:
+                argument_refs |= _referenced_names(argument)
+            for keyword in child.keywords:
+                argument_refs |= _referenced_names(keyword.value)
+
             rule = match_sink(called)
             if rule is not None:
-                facts.sink_calls.append((rule.id, ref, arg_names))
-                for arg in arg_names:
-                    if arg in params:
-                        facts.param_sinks.setdefault(arg, []).append((rule.id, ref))
+                facts.sink_calls.append((rule.id, ref, tuple(sorted(argument_refs))))
+                for name in argument_refs & params:
+                    facts.param_sinks.setdefault(name, []).append((rule.id, ref))
             else:
-                for arg in arg_names:
-                    facts.calls_out.append((called.rsplit(".", 1)[-1], arg, ref))
+                for name in argument_refs:
+                    facts.calls_out.append((called.rsplit(".", 1)[-1], name, ref))
 
     return facts
 
@@ -232,11 +291,16 @@ def find_candidates(
     # Case 1 — the source and the sink live in the same body.
     for facts in facts_by_name.values():
         for rule_id, ref, arg_names in facts.sink_calls:
+            origin = None
             for arg in arg_names:
-                origin = facts.tainted.get(arg)
-                if origin is not None:
-                    emit(rule_id, origin, ref, (origin, ref))
+                if arg in facts.tainted:
+                    origin = facts.tainted[arg]
                     break
+                if match_source(arg):
+                    origin = ref  # source read straight into the sink
+                    break
+            if origin is not None:
+                emit(rule_id, origin, ref, (origin, ref))
 
     # Case 2 — a caller feeds tainted data into a propagating parameter.
     for facts in facts_by_name.values():

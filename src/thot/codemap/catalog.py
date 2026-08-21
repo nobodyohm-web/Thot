@@ -97,11 +97,20 @@ DEFAULT_SOURCES: tuple[SourceRule, ...] = (
 
 
 def _matches(call_name: str, patterns: tuple[str, ...]) -> bool:
-    short = call_name.rsplit(".", 1)[-1]
+    """Match a call against a pattern.
+
+    A qualified pattern (`os.system`) matches the exact name, any name ending
+    in it (`a.b.os.system`), or the bare last segment (`from os import system`).
+    A bare pattern (`execute`) matches the name itself or any attribute call
+    ending in it (`cursor.execute`, `self.conn.execute`) — that is the only way
+    to catch DB-API and ORM methods, whose receiver is never statically known.
+    """
     for pattern in patterns:
         if call_name == pattern:
             return True
-        if pattern.rsplit(".", 1)[-1] == short and "." not in call_name:
+        if call_name.endswith("." + pattern):
+            return True
+        if "." in pattern and call_name == pattern.rsplit(".", 1)[-1]:
             return True
     return False
 
@@ -118,3 +127,25 @@ def match_source(expression: str) -> SourceRule | None:
         if _matches(expression, rule.patterns):
             return rule
     return None
+
+
+# Calls that neutralise untrusted data. A tainted value passing through one of
+# these stops being tainted — this is what separates a usable tool from a
+# scanner that flags every escaped string.
+SANITIZERS: frozenset[str] = frozenset(
+    {
+        "int", "float", "bool", "len", "abs", "round",
+        "shlex.quote", "quote", "quote_plus",
+        "os.path.basename", "basename",
+        "html.escape", "escape", "re.escape",
+        "urllib.parse.quote", "secure_filename",
+        "uuid.UUID", "json.dumps",
+    }
+)
+
+
+def is_sanitizer(call_name: str) -> bool:
+    """True when a call breaks the taint chain."""
+    if call_name in SANITIZERS:
+        return True
+    return call_name.rsplit(".", 1)[-1] in SANITIZERS

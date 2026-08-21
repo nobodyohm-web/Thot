@@ -62,3 +62,73 @@ def test_direct_source_to_sink_in_one_body(tmp_path):
     candidates = find_candidates(tmp_path, graph)
     assert len(candidates) == 1
     assert candidates[0].rule == "sink.os.system"
+
+
+def _analyse_source(tmp_path, code, filename="v.py"):
+    (tmp_path / filename).write_text(code)
+    manifest = detect_scope(tmp_path)
+    symbols = PythonIndexer().index_file(tmp_path, filename)
+    graph = CodeGraph.build(symbols, manifest.entrypoints)
+    return find_candidates(tmp_path, graph)
+
+
+def test_sql_injection_through_concatenation_is_found(tmp_path):
+    candidates = _analyse_source(
+        tmp_path,
+        "import sys\n\n\ndef main():\n"
+        "    name = sys.argv[1]\n"
+        "    cursor.execute(\"SELECT * FROM t WHERE n = '\" + name + \"'\")\n",
+    )
+    assert {c.rule for c in candidates} == {"sink.sql"}
+
+
+def test_command_injection_through_fstring_is_found(tmp_path):
+    candidates = _analyse_source(
+        tmp_path,
+        "import os\nimport sys\n\n\ndef main():\n"
+        "    branch = sys.argv[1]\n"
+        "    os.system(f'git checkout {branch}')\n",
+    )
+    assert {c.rule for c in candidates} == {"sink.os.system"}
+
+
+def test_subprocess_with_concatenated_argument_is_found(tmp_path):
+    candidates = _analyse_source(
+        tmp_path,
+        "import subprocess\nimport sys\n\n\ndef main():\n"
+        "    branch = sys.argv[1]\n"
+        "    subprocess.run('git checkout ' + branch, shell=True)\n",
+    )
+    assert {c.rule for c in candidates} == {"sink.subprocess.shell"}
+
+
+def test_int_conversion_breaks_the_taint(tmp_path):
+    candidates = _analyse_source(
+        tmp_path,
+        "import os\nimport sys\n\n\ndef main():\n"
+        "    count = int(sys.argv[1])\n"
+        "    os.system('sleep ' + str(count))\n",
+    )
+    assert candidates == []
+
+
+def test_shlex_quote_breaks_the_taint(tmp_path):
+    candidates = _analyse_source(
+        tmp_path,
+        "import os\nimport shlex\nimport sys\n\n\ndef main():\n"
+        "    branch = sys.argv[1]\n"
+        "    os.system('git checkout ' + shlex.quote(branch))\n",
+    )
+    assert candidates == []
+
+
+def test_tainted_parameter_through_concatenation_crosses_functions(tmp_path):
+    candidates = _analyse_source(
+        tmp_path,
+        "import sys\n\n\ndef lookup(conn, name):\n"
+        "    conn.execute('SELECT * FROM t WHERE n = ' + name)\n\n\n"
+        "def main():\n"
+        "    value = sys.argv[1]\n"
+        "    lookup(None, value)\n",
+    )
+    assert {c.rule for c in candidates} == {"sink.sql"}
