@@ -409,3 +409,43 @@ def test_provenance_names_the_arguer_and_the_attacker(tmp_path):
     )
 
     assert refuted.provenance["moteur"] != refuted.provenance["contradicteur"]
+
+
+def test_a_slow_member_does_not_hold_the_batch_open():
+    """The fast agents must absorb the work a straggler cannot take.
+
+    A fixed share of the batch looked fair and was not: agents differ by a
+    factor of four in speed, so a static split left everyone waiting on one.
+    """
+    import threading
+    import time
+
+    from thot.engine.base import AgentResult, AgentTask, EngineCapabilities
+    from thot.engine.panel import PanelEngine
+
+    class _Slow:
+        def __init__(self, name, delay):
+            self._name, self.delay = name, delay
+            self.seen = []
+
+        @property
+        def capabilities(self):
+            return EngineCapabilities(name=self._name, max_parallel=1)
+
+        def run(self, task):
+            self.seen.append(task.id)
+            time.sleep(self.delay)
+            return AgentResult(task_id=task.id, text=self._name)
+
+        def fan_out(self, tasks):
+            return [self.run(t) for t in tasks]
+
+    slow, fast = _Slow("hermes", 0.20), _Slow("claude", 0.001)
+    panel = PanelEngine(members=[slow, fast])
+    tasks = [AgentTask(id=f"probe:f{i}", instructions="x") for i in range(8)]
+
+    results = panel.fan_out(tasks)
+
+    assert all(r.ok for r in results)
+    assert [r.task_id for r in results] == [t.id for t in tasks], "ordre préservé"
+    assert len(fast.seen) > len(slow.seen), "le rapide doit avoir absorbé le gros"

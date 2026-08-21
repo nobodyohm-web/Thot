@@ -85,28 +85,41 @@ class PanelEngine:
 
     # -- routing ---------------------------------------------------------
 
-    def _assign(self, task: AgentTask) -> Engine:
-        """Round-robin, minus everyone who already spoke about this finding.
+    def _spoken_about(self, task: AgentTask) -> set[str]:
+        """Who has already had their say on this finding.
 
         A refutation avoids the agent that argued. A second refutation avoids
         both — it exists precisely to bring an angle neither has taken, and a
         member reviewing its own work would return the answer it already gave.
         """
         subject = _subject(task.id)
-        spoken: set[str] = set()
         if task.id.startswith(SECOND_PREFIX):
-            spoken = {
+            return {
                 name for name in
                 (self._argued.get(subject), self._attacked.get(subject))
                 if name
             }
-        elif task.id.startswith(REFUTE_PREFIX):
-            spoken = {self._argued.get(subject, "")}
+        if task.id.startswith(REFUTE_PREFIX):
+            return {name for name in (self._argued.get(subject),) if name}
+        return set()
 
+    def _pool_for(self, task: AgentTask) -> list[Engine]:
+        spoken = self._spoken_about(task)
         pool = [m for m in self.members if m.capabilities.name not in spoken]
-        if not pool:  # a panel of one: better a self-attack than no attack
-            pool = list(self.members)
+        # A panel of one: better a self-attack than no attack at all. The
+        # fallback has to live here rather than in the eligibility test, or a
+        # worker pulling from the queue would decide the only member present
+        # may not take the only task left, and the task would never run.
+        return pool or list(self.members)
 
+    def _eligible(self, member: Engine, task: AgentTask) -> bool:
+        return any(
+            candidate is member for candidate in self._pool_for(task)
+        )
+
+    def _assign(self, task: AgentTask) -> Engine:
+        """Round-robin among the members still allowed to speak."""
+        pool = self._pool_for(task)
         member = pool[self._turn % len(pool)]
         self._turn += 1
         return member
@@ -134,7 +147,12 @@ class PanelEngine:
             self._record(task, name)
             return result
 
-        index = self.members.index(member)
+        # By identity, not equality: engines are dataclasses, so two members
+        # configured alike would compare equal and `.index` would hand back
+        # the wrong one — quietly retrying on the member that just failed.
+        index = next(
+            i for i, candidate in enumerate(self.members) if candidate is member
+        )
         stand_in = (self.members[index + 1:] + self.members[:index])[0]
         second = stand_in.run(task)
         if second.ok:
@@ -150,20 +168,57 @@ class PanelEngine:
         return self._execute(self._assign(task), task)
 
     def fan_out(self, tasks: list[AgentTask]) -> list[AgentResult]:
+        """Every member pulls the next task it is allowed to take.
+
+        Splitting the batch up front looked fair and was not: the agents run
+        at wildly different speeds — a Hermes turn can be four times a Claude
+        one — so a fixed share left the fast members idle while one straggler
+        held the batch open. Pulling means the slow member answers one task
+        and the rest of the work flows around it.
+
+        No task is ever stranded. Eligibility never changes during a batch,
+        and every task has at least one eligible member, so a member that
+        finds nothing it may take has nothing it will ever be able to take.
+        """
         if not tasks:
             return []
 
-        # Assigned up front, on this thread: routing reads a counter and the
-        # record of who argued what, and neither wants a race.
-        assignments = [(task, self._assign(task)) for task in tasks]
+        import threading
 
-        workers = min(len(tasks), max(1, self.capabilities.max_parallel))
-        if workers <= 1:
-            return [self._execute(member, task) for task, member in assignments]
+        results: list[AgentResult | None] = [None] * len(tasks)
+        pending = list(range(len(tasks)))
+        gate = threading.Lock()
 
-        from concurrent.futures import ThreadPoolExecutor
+        def pull(member: Engine) -> None:
+            while True:
+                with gate:
+                    index = next(
+                        (i for i in pending if self._eligible(member, tasks[i])),
+                        None,
+                    )
+                    if index is None:
+                        return
+                    pending.remove(index)
+                results[index] = self._execute(member, tasks[index])
 
-        with ThreadPoolExecutor(max_workers=workers) as pool:
-            return list(
-                pool.map(lambda pair: self._execute(pair[1], pair[0]), assignments)
-            )
+        threads = [
+            threading.Thread(target=pull, args=(member,), daemon=True)
+            for member in self.members
+            for _ in range(max(1, member.capabilities.max_parallel))
+        ]
+        if len(threads) <= 1:
+            for member in self.members:
+                pull(member)
+        else:
+            for thread in threads:
+                thread.start()
+            for thread in threads:
+                thread.join()
+
+        # A member that died mid-batch would leave a hole; the port promises
+        # a result per task, so say what happened rather than return None.
+        return [
+            result if result is not None
+            else AgentResult(task_id=tasks[i].id, error="aucun moteur disponible")
+            for i, result in enumerate(results)
+        ]
