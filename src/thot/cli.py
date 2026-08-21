@@ -90,6 +90,26 @@ def build_parser() -> argparse.ArgumentParser:
         help="Écrire les faits de Thot dans la mémoire de Hermes et de Prime",
     )
 
+    fusion_skills = fusion_sub.add_parser(
+        "skills", help="Les méthodes des trois, et qui peut atteindre quoi"
+    )
+    fusion_skills.add_argument(
+        "--share", action="store_true",
+        help="Donner à Prime les bibliothèques de Thot et de Hermes",
+    )
+    fusion_skills.add_argument(
+        "--unique", action="store_true",
+        help="N'afficher que ce qu'un seul des trois possède",
+    )
+
+    fusion_sessions = fusion_sub.add_parser(
+        "sessions", help="L'historique des trois, du plus récent au plus ancien"
+    )
+    fusion_sessions.add_argument(
+        "path", nargs="?", help="Limiter à un dépôt (défaut : tous)"
+    )
+    fusion_sessions.add_argument("--limit", type=int, default=30)
+
     schedule = subparsers.add_parser(
         "schedule", help="Auditer un dépôt automatiquement"
     )
@@ -1395,6 +1415,60 @@ def _cmd_fusion(args) -> int:
             # Said, not swallowed: Thot cannot tell an unfilled form from a
             # terse note with certainty, so the number is on screen.
             print(f"{ignored} entrée(s) écartée(s) : gabarit non rempli.")
+        return EXIT_OK
+
+    if action == "skills":
+        from thot.fusion import skills as fusion_skills
+
+        if getattr(args, "share", False):
+            for step in fusion_skills.share():
+                print(step.line())
+            print()
+
+        for library in fusion_skills.libraries():
+            print(library.line())
+        print()
+
+        entries = fusion_skills.catalogue()
+        shared = sum(1 for entry in entries if entry.shared)
+        print(f"{len(entries)} méthodes distinctes · {shared} vues par plusieurs")
+
+        if getattr(args, "unique", False):
+            for entry in entries:
+                if not entry.shared:
+                    print(f"   {entry.line()}")
+        else:
+            for program in ("thot", "hermes", "prime"):
+                only = fusion_skills.only_in(program)
+                if only:
+                    print(f"   seulement {program:<7} {len(only):>3} — "
+                          f"{', '.join(only[:4])}"
+                          + (" …" if len(only) > 4 else ""))
+
+        blocked = fusion_skills.not_portable()
+        if blocked:
+            # Catalogued, never loaded: they call Prime's own kernel API,
+            # which Thot does not provide. Saying so beats a silent gap.
+            print()
+            print(f"{len(blocked)} méthode(s) de Prime restent chez Prime : "
+                  "elles appellent son noyau, pas celui de Thot.")
+        return EXIT_OK
+
+    if action == "sessions":
+        from thot.fusion import sessions as fusion_sessions
+
+        root = Path(args.path).resolve() if getattr(args, "path", None) else None
+        found = fusion_sessions.merged(root, limit=args.limit)
+        if not found:
+            print("Aucune session, dans aucun des trois.")
+            return EXIT_OK
+        for session in found:
+            print(f"  {session.line()}")
+        counts: dict[str, int] = {}
+        for session in found:
+            counts[session.source] = counts.get(session.source, 0) + 1
+        print()
+        print(" · ".join(f"{n} {name}" for name, n in sorted(counts.items())))
         return EXIT_OK
 
     if action == "unwire":

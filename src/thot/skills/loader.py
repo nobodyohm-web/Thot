@@ -235,19 +235,40 @@ class Rejected:
         return "; ".join(self.reasons[:3]) or self.verdict
 
 
-def screen(skills: list[Skill]) -> tuple[list[Skill], list[Rejected]]:
+def digest(skill: Skill) -> str:
+    """The bytes of a skill's SKILL.md. Identity, not similarity."""
+    import hashlib
+
+    try:
+        return hashlib.sha256(skill.path.read_bytes()).hexdigest()
+    except OSError:
+        return ""
+
+
+def screen(
+    skills: list[Skill], *, known: set[str] | None = None
+) -> tuple[list[Skill], list[Rejected]]:
     """Refuse skills a repository supplied that the guard calls dangerous.
 
     The threat is specific to what Thot does. A skill is text handed to a
     model as instructions, and the repositories Thot reads are exactly the
     ones nobody has vouched for. A hostile repo dropping a SKILL.md into
     `.thot/skills/` would otherwise be writing part of the briefing.
+
+    `known` holds the digests of skills Thot already ships. A file whose
+    bytes match one of them *is* that file — Hermes's library holds 73 exact
+    copies of Thot's — and flagging your own shipped skill as a community
+    threat is a false positive that teaches people to ignore the real ones.
     """
     from thot.guard.skill_guard import scan_skill, should_allow_install
 
+    known = known or set()
     kept: list[Skill] = []
     refused: list[Rejected] = []
     for skill in skills:
+        if known and digest(skill) in known:
+            kept.append(skill)
+            continue
         try:
             result = scan_skill(skill.path.parent, source="community")
             allowed, reason = should_allow_install(result)
@@ -279,20 +300,38 @@ def discover_report(
         directory = library_dir()
         sources = [p for p in (directory, user_dir()) if p is not None]
         trusted = len(sources)
+        # What the other two programs have installed for this user. Screened,
+        # not trusted: they come from public registries, which is the exact
+        # case the guard exists for. Thot vouches for its own shipped
+        # library and for nothing else.
+        sources.extend(_agent_dirs())
         if root is not None:
             sources.append(repo_dir(root))
     else:
         trusted = len(sources)  # explicit sources are the caller's own choice
 
     by_name: dict[str, Skill] = {}
+    vouched: set[str] = set()
     for index, source in enumerate(sources):
         found = load_from(source)
-        if index >= trusted:  # supplied by the repository under audit
-            found, rejected = screen(found)
+        if index >= trusted:  # supplied by another program, or by the repo
+            found, rejected = screen(found, known=vouched)
             refused.extend(rejected)
+        else:
+            vouched.update(digest(skill) for skill in found)
         for skill in found:
             by_name[skill.name] = skill
     return sorted(by_name.values(), key=lambda s: (s.category, s.name)), refused
+
+
+def _agent_dirs() -> list[Path]:
+    """Hermes's and Prime's libraries. Empty when neither is installed."""
+    try:
+        from thot.fusion.skills import screened_dirs
+
+        return screened_dirs()
+    except Exception:
+        return []
 
 
 def discover(root: Path | None = None, *, sources: list[Path] | None = None) -> list[Skill]:

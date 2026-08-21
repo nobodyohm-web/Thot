@@ -108,8 +108,47 @@ instructions en italique, un trait horizontal. Les injecter dirait à Thot que
 parce que distinguer un formulaire d'une note laconique n'est pas une chose
 qu'un programme sait faire avec certitude.
 
-Ce qui n'est **pas** fusionné, et le reste sciemment : les bibliothèques de
-méthodes et les historiques de session de chacun.
+## Une bibliothèque, un historique
+
+Les trois lisent le même format — `SKILL.md` avec frontmatter YAML, un
+dossier par méthode. C'est la seule raison pour laquelle ceci est possible.
+
+```bash
+thot fusion skills            # qui possède quoi, et ce qui n'est qu'à un seul
+thot fusion skills --share    # donner la bibliothèque de Thot à Prime
+thot fusion sessions          # l'historique des trois, du plus récent au plus ancien
+```
+
+Aucune copie : les fichiers restent chez leur propriétaire et chaque
+programme est pointé vers les dossiers des autres. Une méthode copiée deux
+fois est une méthode corrigée une seule fois.
+
+Thot lit la bibliothèque installée de Hermes **sous garde** — elle vient de
+registres publics, ce qui est exactement le cas pour lequel le garde existe.
+Il ne se porte garant que de ce qu'il livre lui-même. Mais 73 des 83 méthodes
+de Hermes sont des copies **au bit près** de celles de Thot : signaler son
+propre fichier comme une menace communautaire est un faux positif qui apprend
+à ignorer les vrais. Une méthode dont les octets correspondent à une méthode
+livrée *est* cette méthode. Le garde est passé de 42 refus à 8 — les 8 qui
+diffèrent réellement, et qui accèdent au dossier privé de l'agent.
+
+Les 13 méthodes livrées avec Prime restent chez Prime : elles documentent son
+noyau IPython (`edit(old_str, new_str)`, `refine()`). Thot a porté ce noyau,
+pas ces fonctions — les charger ferait appeler au modèle quelque chose qui
+n'existe pas. Elles sont au catalogue, où les connaître sert ; hors de la
+découverte, où y croire ne sert pas.
+
+Prime reçoit le sur-ensemble, pas les deux copies. **Mesuré, pas supposé** :
+pointé sur la bibliothèque de Thot seule il répond, sur celle de Hermes seule
+il répond, sur les deux **le modèle refuse de répondre**. Prime prend des
+dossiers et non des noms, donc il n'y a pas de réponse partielle.
+
+Les historiques ne fusionnent pas leur stockage — la migration d'un programme
+casserait l'historique d'un autre — mais la question « qu'est-ce que je
+faisais sur ce dépôt mardi dernier » ne porte pas sur lequel des trois
+binaires était devant toi. Les trois sont lus en lecture seule, chacun dans
+son format, et une base verrouillée par une session en cours coûte ses lignes
+et jamais la liste.
 
 ## Installation
 
