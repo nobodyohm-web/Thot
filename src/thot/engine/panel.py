@@ -33,6 +33,7 @@ from thot.engine.base import AgentResult, AgentTask, Engine, EngineCapabilities
 PROBE_PREFIX = "probe:"
 REFUTE_PREFIX = "refute:"
 SECOND_PREFIX = "refute2:"
+REVIEW_PREFIX = "review:"
 
 
 def _subject(task_id: str) -> str:
@@ -48,6 +49,10 @@ class PanelEngine:
     _who: dict[str, str] = field(default_factory=dict)
     _argued: dict[str, str] = field(default_factory=dict)
     _attacked: dict[str, str] = field(default_factory=dict)
+    # Everyone who has answered anything about a finding. A refutation is
+    # read by an agent with no stake in it at all, which is a stronger
+    # condition than "not the one who argued".
+    _voices: dict[str, set[str]] = field(default_factory=dict)
     _turn: int = 0
     _lock: threading.Lock = field(default_factory=threading.Lock)
 
@@ -93,6 +98,8 @@ class PanelEngine:
         member reviewing its own work would return the answer it already gave.
         """
         subject = _subject(task.id)
+        if task.id.startswith(REVIEW_PREFIX):
+            return set(self._voices.get(subject, ()))
         if task.id.startswith(SECOND_PREFIX):
             return {
                 name for name in
@@ -127,10 +134,12 @@ class PanelEngine:
     def _record(self, task: AgentTask, name: str) -> None:
         with self._lock:
             self._who[task.id] = name
+            subject = _subject(task.id)
+            self._voices.setdefault(subject, set()).add(name)
             if task.id.startswith(PROBE_PREFIX):
-                self._argued[_subject(task.id)] = name
+                self._argued[subject] = name
             elif task.id.startswith(REFUTE_PREFIX):
-                self._attacked[_subject(task.id)] = name
+                self._attacked[subject] = name
 
     def _execute(self, member: Engine, task: AgentTask) -> AgentResult:
         result = member.run(task)

@@ -55,6 +55,23 @@ REFUTE_SCHEMA = {
     "required": ["refuted", "raison"],
 }
 
+REVIEW_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "sound": {"type": "boolean"},
+        "raison": {"type": "string"},
+    },
+    "required": ["sound", "raison"],
+}
+
+# A refutation of something this serious gets a second reader before it is
+# written down. The two errors are not symmetrical: a wrong confirmation
+# costs a human ten minutes of reading, a wrong refutation costs a live
+# defect — for ever, because a remembered refutation is skipped by every
+# audit that follows. Below this level the finding would not have woken
+# anyone anyway, and the review is not worth its price.
+REVIEWED_FROM = Severity.MEDIUM
+
 
 def select_for_analysis(
     findings: list[Finding],
@@ -205,6 +222,68 @@ def _refute_task(
     )
 
 
+def _review_task(root: Path, finding: Finding, scenario: str, reason: str) -> AgentTask:
+    """Ask a third agent whether a refutation actually holds."""
+    context = (
+        f"{_scope_note(root)}\n"
+        f"Emplacement : {finding.location}\n"
+        f"Défaut soupçonné :\n{scenario}\n\n"
+        f"Réfutation à vérifier :\n{reason}\n\n"
+        f"Code :\n{excerpt(root, finding.location)}"
+    )
+    instructions = (
+        "Un agent a écarté ce défaut pour la raison ci-dessus. Dis si cette "
+        "raison tient, en la confrontant au code montré — pas au défaut.\n\n"
+        "`sound: false` si la réfutation s'appuie sur quelque chose qui n'est "
+        "pas dans ce code : une ligne qui n'y figure pas, une validation "
+        "absente, un autre fichier, un état du dépôt différent de celui-ci. "
+        "`sound: true` si elle est vérifiable ici, telle qu'écrite.\n\n"
+        "Tu ne juges pas si le défaut est réel. Tu juges si l'argument qui "
+        "l'écarte est exact.\n\n"
+        'Réponds uniquement par un objet JSON : {"sound": true|false, '
+        '"raison": "..."}'
+    )
+    return AgentTask(
+        id=f"review:{finding.id}",
+        instructions=instructions,
+        context=context,
+        schema=REVIEW_SCHEMA,
+        tier="deep",
+    )
+
+
+def _apply_review(
+    finding: Finding, original: Finding, result: AgentResult, engine: Engine
+) -> Finding:
+    """Keep the refutation, or put the finding back where it was.
+
+    A contested refutation does not become a confirmation — nobody argued
+    that. It goes back to `plausible`, with its original severity, which is
+    exactly what "we do not know" looks like. And since only refutations are
+    remembered, it stops being written down: the finding keeps coming back
+    until someone settles it.
+    """
+    provenance = dict(finding.provenance or {})
+    provenance["relecture"] = _attribute(engine, result.task_id)
+
+    if not result.ok or not result.data:
+        provenance["relecture impossible"] = result.error or "réponse vide"
+        return replace(finding, provenance=provenance)
+
+    if result.data.get("sound"):
+        provenance["réfutation vérifiée"] = "oui"
+        return replace(finding, provenance=provenance)
+
+    provenance["réfutation contestée"] = str(result.data.get("raison") or "")
+    return replace(
+        finding,
+        confidence=Confidence.PLAUSIBLE,
+        severity=original.severity,
+        failure_scenario=original.failure_scenario,
+        provenance=provenance,
+    )
+
+
 def _severity(value: str, fallback: Severity) -> Severity:
     try:
         return Severity(str(value).lower())
@@ -284,8 +363,20 @@ def _analyse_batch(
         if on_decided is not None:
             on_decided(finding)
 
+    original = {f.id: f for f in batch}
     probes = engine.fan_out([_probe_task(root, f) for f in batch])
     to_refute: list[tuple[Finding, str]] = []
+    to_review: list[Finding] = []
+
+    def dispose(judged: Finding) -> None:
+        """Settle, unless a refutation of something serious needs a reader."""
+        by_id[judged.id] = judged
+        if judged.confidence is Confidence.REFUTED and _worth_reviewing(
+            original[judged.id], engine
+        ):
+            to_review.append(judged)
+        else:
+            settle(judged)
 
     for finding, result in zip(batch, probes):
         updated = _apply_probe(finding, result, engine)
@@ -293,7 +384,7 @@ def _analyse_batch(
         if updated.confidence is Confidence.CONFIRMED:
             to_refute.append((updated, updated.failure_scenario))
         else:
-            settle(updated)
+            dispose(updated)
 
     survivors: list[tuple[Finding, str]] = []
     if to_refute:
@@ -306,7 +397,7 @@ def _analyse_batch(
             if attacked.confidence is Confidence.CONFIRMED:
                 survivors.append((attacked, scenario))
             else:
-                settle(attacked)
+                dispose(attacked)
 
     # The cascade. Skipped when the panel has no third voice: an agent that
     # already argued or already attacked this finding would be reviewing its
@@ -317,15 +408,47 @@ def _analyse_batch(
              for f, scenario in survivors]
         )
         for (finding, _), result in zip(survivors, second):
-            settle(_apply_refutation(finding, result, engine, again=True))
+            dispose(_apply_refutation(finding, result, engine, again=True))
     else:
         for finding, _ in survivors:
             settle(finding)
+
+    # The other direction of the cascade: a refutation that would bury
+    # something serious is read by an agent that has not spoken about it.
+    if to_review:
+        reviews = engine.fan_out([
+            _review_task(root, f, original[f.id].failure_scenario,
+                         _refutation_reason(f))
+            for f in to_review
+        ])
+        for finding, result in zip(to_review, reviews):
+            settle(_apply_review(finding, original[finding.id], result, engine))
 
 
 def _can_escalate(engine: Engine) -> bool:
     """Whether a third, untainted agent exists to attack the survivors."""
     return len(getattr(engine, "names", ())) >= 3
+
+
+def _worth_reviewing(original: Finding, engine: Engine) -> bool:
+    """Whether this refutation is expensive enough to be worth checking.
+
+    Needs a second agent — a single backend re-reading its own refutation
+    would agree with itself — and a finding that mattered before it was
+    dismissed.
+    """
+    if len(getattr(engine, "names", ())) < 2:
+        return False
+    return SEVERITY_ORDER.get(original.severity, 9) <= SEVERITY_ORDER[REVIEWED_FROM]
+
+
+def _refutation_reason(finding: Finding) -> str:
+    """The argument that killed it, wherever the pass happened to write it."""
+    marker = "Réfuté :"
+    scenario = finding.failure_scenario or ""
+    if marker in scenario:
+        return scenario.split(marker, 1)[1].strip()
+    return scenario.strip()
 
 
 def _attribute(engine: Engine, task_id: str) -> str:

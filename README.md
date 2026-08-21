@@ -73,10 +73,22 @@ l'attaque est ce qui sera montré à un humain — donc ça repart à un
 attaque s'écrire. Un finding confirmé l'a été contre deux adversaires
 indépendants.
 
-L'escalade est volontairement à sens unique : une réfutation n'est jamais
-rejugée. L'attaquant a pour consigne de réfuter au moindre doute, donc une
-réfutation est déjà la réponse prudente ; la remettre en cause fabriquerait
-des faux positifs.
+Une réfutation n'est jamais rejugée sur le fond : l'attaquant a pour consigne
+de réfuter au moindre doute, donc la remettre en cause fabriquerait des faux
+positifs. Mais **son argument est relu** quand elle enterre quelque chose de
+sérieux (MEDIUM et au-dessus), par un agent qui n'a rien dit sur ce finding.
+Le relecteur ne juge pas le défaut, il juge si la raison invoquée est
+vérifiable dans le code montré.
+
+Les deux erreurs ne se valent pas. Une confirmation fausse coûte dix minutes
+de lecture à un humain. Une réfutation fausse coûte un défaut réel, **pour
+toujours** — parce qu'une réfutation mémorisée est sautée par tous les audits
+suivants. C'est arrivé une fois pour de bon : une injection SQL bien réelle
+dans la copie de Hermes a été écartée par une description parfaitement exacte
+de la copie de *Thot*, corrigée la veille. Une réfutation contestée ne devient
+pas une confirmation — personne n'a plaidé ça — elle repasse en `plausible`
+avec sa sévérité d'origine, et n'est pas mémorisée : le finding revient
+jusqu'à ce que quelqu'un tranche.
 
 Si un agent échoue sur une tâche, elle est reprise **une fois** par un autre.
 Pas plus : une tâche que tout le monde refuse a un problème à elle.

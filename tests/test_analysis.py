@@ -291,3 +291,108 @@ def test_every_task_pins_the_agent_to_the_tree_that_was_audited(tmp_path):
     for task in (probe, refute):
         assert str(tmp_path.resolve()) in task.context
         assert "L'historique git n'est pas l'état audité" in task.context
+
+
+# -- the other direction: a refutation that would bury something serious ------
+
+
+def test_a_serious_refutation_is_read_by_an_agent_with_no_stake_in_it(tmp_path):
+    """The two errors are not symmetrical.
+
+    A wrong confirmation costs a human ten minutes. A wrong refutation costs
+    a live defect for ever, because a remembered refutation is skipped by
+    every audit that follows. It happened once for real, which is why this
+    exists.
+    """
+    members = [
+        _Member(name, {
+            "probe:": {"verdict": "refuted", "scenario": "rien à voir"},
+            "review:": {"sound": True, "raison": "vérifiable ici"},
+        })
+        for name in ("claude", "hermes", "prime")
+    ]
+    from thot.engine.panel import PanelEngine
+
+    panel = PanelEngine(members=members)
+    result = analyse(tmp_path, [make_finding(severity=Severity.HIGH)], panel,
+                     limit=1)[0]
+
+    issued = {m.capabilities.name: [t.id for t in m.tasks] for m in members}
+    reviewers = [n for n, ids in issued.items()
+                 if any(i.startswith("review:") for i in ids)]
+    arguers = [n for n, ids in issued.items()
+               if any(i.startswith("probe:") for i in ids)]
+
+    assert reviewers and arguers
+    assert set(reviewers).isdisjoint(arguers), "le relecteur avait déjà parlé"
+    assert result.confidence is Confidence.REFUTED
+    assert result.provenance["réfutation vérifiée"] == "oui"
+
+
+def test_a_contested_refutation_puts_the_finding_back_where_it_was(tmp_path):
+    """Not confirmed — nobody argued that. Unknown, which is the truth."""
+    from thot.engine.panel import PanelEngine
+
+    members = [
+        _Member(name, {
+            "probe:": {"verdict": "refuted", "scenario": "corrigé depuis"},
+            "review:": {"sound": False,
+                        "raison": "cette ligne est bien dans le fichier"},
+        })
+        for name in ("claude", "hermes")
+    ]
+    finding = make_finding(severity=Severity.HIGH)
+    result = analyse(tmp_path, [finding], PanelEngine(members=members), limit=1)[0]
+
+    assert result.confidence is Confidence.PLAUSIBLE
+    assert result.severity is Severity.HIGH, "la sévérité d'origine revient"
+    assert result.failure_scenario == finding.failure_scenario
+    assert "cette ligne est bien" in result.provenance["réfutation contestée"]
+
+
+def test_a_contested_refutation_is_never_written_down(tmp_path):
+    """Only refutations are remembered, so a contested one keeps coming back."""
+    from thot.engine.panel import PanelEngine
+    from thot.memory import build_memory
+    from thot.memory.base import record_verdicts
+
+    members = [
+        _Member(name, {
+            "probe:": {"verdict": "refuted", "scenario": "corrigé depuis"},
+            "review:": {"sound": False, "raison": "non, c'est bien là"},
+        })
+        for name in ("claude", "hermes")
+    ]
+    judged = analyse(tmp_path, [make_finding(severity=Severity.HIGH)],
+                     PanelEngine(members=members), limit=1)
+
+    memory = build_memory(tmp_path)
+    try:
+        assert record_verdicts(judged, memory) == 0
+    finally:
+        memory.close()
+
+
+def test_a_minor_refutation_is_not_worth_a_second_reader(tmp_path):
+    """Below MEDIUM the finding would not have woken anyone anyway."""
+    from thot.engine.panel import PanelEngine
+
+    members = [
+        _Member(name, {"probe:": {"verdict": "refuted", "scenario": "bruit"}})
+        for name in ("claude", "hermes")
+    ]
+    analyse(tmp_path, [make_finding(severity=Severity.LOW)],
+            PanelEngine(members=members), limit=1)
+
+    issued = [t.id for m in members for t in m.tasks]
+    assert not any(i.startswith("review:") for i in issued)
+
+
+def test_a_single_engine_does_not_review_its_own_refutation(tmp_path):
+    """It would agree with itself, at full price."""
+    engine = ScriptedEngine({
+        "probe:": {"verdict": "refuted", "scenario": "faux positif"},
+    })
+    analyse(tmp_path, [make_finding(severity=Severity.CRITICAL)], engine, limit=1)
+
+    assert not any(t.id.startswith("review:") for t in engine.tasks)
