@@ -305,6 +305,10 @@ def build_parser() -> argparse.ArgumentParser:
         "--where", action="store_true",
         help="Dire d'où viennent les décisions et où elles sont écrites",
     )
+    verdicts.add_argument(
+        "--show", metavar="ID",
+        help="Afficher une décision et son raisonnement en entier",
+    )
 
     init = subparsers.add_parser(
         "init", help="Déclarer l'autorisation d'auditer un dépôt"
@@ -644,6 +648,21 @@ def _cmd_verdicts(args) -> int:
         if args.share:
             return _share_verdict(memory, args.share, root)
 
+        if args.show:
+            verdict = memory.recall(args.show)
+            if verdict is None:
+                print(f"Aucune décision pour {args.show}.", file=sys.stderr)
+                return EXIT_USAGE
+            where = (f"{verdict.path}:{verdict.symbol}" if verdict.symbol
+                     else verdict.path)
+            print(f"{verdict.finding_id}  {verdict.decision.value}")
+            print(f"règle    {verdict.rule}")
+            print(f"lieu     {where}")
+            print(f"décidé   {verdict.author or '—'}  {verdict.decided_at or ''}")
+            print()
+            print(verdict.reason or "sans raison consignée")
+            return EXIT_OK
+
         if args.forget:
             removed = memory.forget(args.forget)
             print("Oublié." if removed else f"Aucune décision pour {args.forget}.")
@@ -679,7 +698,11 @@ def _cmd_verdicts(args) -> int:
             )
             print(f"{verdict.finding_id}  {verdict.decision.value:<9} {where}{author}{stale}")
             if verdict.reason:
-                print(f"{' ' * 18}{verdict.reason[:90]}")
+                # Say that it is cut. A reason silently ending mid-sentence
+                # reads as a reason that *was* that short.
+                preview = verdict.reason[:90]
+                more = " […] `--show`" if len(verdict.reason) > 90 else ""
+                print(f"{' ' * 18}{preview}{more}")
         if dormant:
             print()
             print("Un verdict expire quand le code qu'il visait change : le finding")

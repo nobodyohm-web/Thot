@@ -255,3 +255,42 @@ def test_moving_the_function_down_the_file_keeps_the_verdict(tmp_path):
     assert after.location.line != before.location.line
     assert after.id == before.id
     assert apply_memory([after], memory)[0].severity is Severity.INFO
+
+
+# -- the reason is the value ------------------------------------------------
+
+
+def test_a_long_refutation_is_kept_whole():
+    """27 of 28 machine refutations were stored cut at 300 characters, one
+    of them ending on "Mais la s". A verdict nobody can read back is not a
+    verdict."""
+    from dataclasses import replace
+
+    from thot.contracts import CodeRef, Confidence, Finding, Severity
+    from thot.memory.base import _reason_from
+
+    argument = (
+        "La branche shell=True est bien atteignable — avec EDITOR=\"gedit; id\", "
+        "shlex.split donne argv[0]=\"gedit;\" qui n'existe pas, subprocess.call "
+        "lève FileNotFoundError, et le repli exécute la chaîne via le shell. "
+        "Mais la seule source de EDITOR est l'environnement de l'utilisateur, "
+        "qui possède déjà un shell : aucune frontière n'est franchie."
+    )
+    location = CodeRef(path="a.py", line=1, symbol="s", ast_hash="h")
+    finding = Finding(
+        id=Finding.compute_id("r", location), rule="r", severity=Severity.HIGH,
+        confidence=Confidence.REFUTED, location=location,
+        failure_scenario=argument,
+    )
+    assert _reason_from(finding) == argument
+    assert "aucune frontière" in _reason_from(finding)
+
+
+def test_an_enormous_reason_is_cut_on_a_sentence_not_a_word():
+    from thot.memory.base import MAX_REASON, _trim
+
+    text = ("Une phrase complète. " * 400)
+    cut = _trim(text)
+    assert len(cut) <= MAX_REASON + 8
+    assert cut.endswith(". […]")
+    assert not cut.rstrip(" […]").endswith("phras")

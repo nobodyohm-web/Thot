@@ -210,9 +210,37 @@ def _announce(verdict: Verdict) -> None:
     notify_verdict(verdict)
 
 
+# The reason is the whole value of a stored verdict — `/verdict` refuses to
+# record a decision without one, on the grounds that it will be read back in
+# six months. A cap of 300 characters cut 27 of 28 machine refutations
+# mid-word, ending them on "Mais la s". Generous, and never mid-sentence.
+MAX_REASON = 4000
+
+
 def _reason_from(finding: Finding) -> str:
+    """The argument that settled this finding.
+
+    Two shapes reach here. A two-stage refutation carries the marker and its
+    reason after it; a probe that refuted on its own carries the argument as
+    the scenario itself, with no marker — and that second path is the common
+    one, which is why the cap mattered so much.
+    """
     marker = "Réfuté :"
     scenario = finding.failure_scenario
     if marker in scenario:
-        return scenario.split(marker, 1)[1].strip()
-    return scenario.strip()[:300]
+        return _trim(scenario.split(marker, 1)[1].strip())
+    return _trim(scenario.strip())
+
+
+def _trim(text: str, limit: int = MAX_REASON) -> str:
+    """Cut on a sentence, or failing that on a word. Never inside one."""
+    if len(text) <= limit:
+        return text
+
+    window = text[:limit]
+    for stop in (". ", "; ", ".\n"):
+        cut = window.rfind(stop)
+        if cut > limit // 2:
+            return window[: cut + 1] + " […]"
+    cut = window.rfind(" ")
+    return (window[:cut] if cut > limit // 2 else window) + " […]"
