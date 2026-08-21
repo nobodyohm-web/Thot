@@ -17,7 +17,7 @@ from dataclasses import replace
 from pathlib import Path
 
 from thot.contracts import CodeRef, Confidence, Finding, Severity
-from thot.engine import AgentResult, AgentTask, Engine
+from thot.engine.base import AgentResult, AgentTask, Engine
 
 # How many candidates a run will spend a model on unless told otherwise.
 DEFAULT_LIMIT = 20

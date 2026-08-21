@@ -12,7 +12,9 @@ SOURCE_ROOT = Path(__file__).resolve().parents[1] / "src" / "thot"
 
 # The deterministic core: analysis that must stay pure, offline and free.
 # The llm/, session and ui layers are allowed to reach the network.
-CORE_PACKAGES = ("codemap", "taint", "scope", "scoring", "store", "report")
+CORE_PACKAGES = (
+    "codemap", "taint", "scope", "scoring", "store", "report", "analysis",
+)
 
 
 def core_files():
@@ -61,3 +63,30 @@ def test_core_makes_no_network_calls():
             if module in network_modules:
                 offenders.append(f"{path.name}:{lineno} imports {module}")
     assert offenders == [], f"Le noyau ne doit faire aucun appel réseau : {offenders}"
+
+
+def test_the_core_imports_cleanly_without_any_network_library():
+    """Transitive proof, not a substring scan.
+
+    The scan above only sees direct imports. This blocks every HTTP client at
+    import time and loads the core anyway: if any core module reached one
+    through a chain of re-exports, this would raise instead of pass.
+    """
+    import subprocess
+    import sys
+
+    program = (
+        "import sys\n"
+        "for name in ('httpx', 'requests', 'urllib.request', 'socket'):\n"
+        "    sys.modules[name] = None\n"
+        "import thot.pipeline\n"
+        "import thot.analysis.probe\n"
+        "import thot.engine.base\n"
+        "print('ok')\n"
+    )
+    done = subprocess.run(
+        [sys.executable, "-c", program], capture_output=True, text=True,
+        cwd=str(SOURCE_ROOT.parents[1]),
+    )
+    assert done.returncode == 0, done.stderr
+    assert "ok" in done.stdout
