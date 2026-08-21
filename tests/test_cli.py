@@ -219,3 +219,28 @@ def test_nothing_is_called_stale_before_the_first_audit(
     monkeypatch.chdir(toy_repo)
     assert main(["verdicts"]) == 0
     assert "absent du dernier audit" not in capsys.readouterr().out
+
+
+def test_a_path_that_is_not_a_directory_is_refused_not_created(
+    isolated_home, tmp_path, capsys
+):
+    """Authorising a directory into existence is how a typo becomes a
+    mandate — and the audit would then report it as clean."""
+    from thot.cli import main
+
+    missing = tmp_path / "faute-de-frappe"
+    assert main(["init", str(missing)]) != 0
+    assert not missing.exists()
+    assert "pas un dossier" in capsys.readouterr().err
+
+
+def test_auditing_a_missing_path_says_so_rather_than_reporting_nothing(
+    isolated_home, tmp_path
+):
+    from thot.errors import ScopeError
+    from thot.pipeline import run_audit
+
+    import pytest as _pytest
+
+    with _pytest.raises(ScopeError):
+        run_audit(tmp_path / "absent", require_authorization=False)

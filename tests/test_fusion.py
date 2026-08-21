@@ -633,3 +633,57 @@ def test_syncing_takes_the_lock_hermes_takes(homes, tmp_path, monkeypatch):
 
     assert taken == [str(memory.hermes_memory_path())]
     assert (hermes_home / "memories" / "MEMORY.md.lock").exists()
+
+
+# -- the whole program, in one pass ------------------------------------------
+
+
+def test_every_part_is_audited_and_summed(homes, monkeypatch, tmp_path, toy_repo):
+    from thot.fusion import audit
+
+    other = tmp_path / "autre"
+    other.mkdir()
+    (other / "clean.py").write_text("def add(a, b):\n    return a + b\n")
+
+    monkeypatch.setattr(audit, "parts",
+                        lambda: [("un", toy_repo), ("deux", other)])
+    done = audit.audit_all(require_authorization=False)
+
+    assert [part.name for part in done] == ["un", "deux"]
+    assert all(part.ok for part in done)
+    assert "finding(s) sur l'ensemble" in audit.summary(done)
+
+
+def test_a_part_that_cannot_be_audited_costs_only_its_own_row(
+    homes, monkeypatch, tmp_path, toy_repo
+):
+    """A missing Prime must not hide what Hermes said."""
+    from thot.fusion import audit
+
+    missing = tmp_path / "nexistepas"
+    monkeypatch.setattr(audit, "parts",
+                        lambda: [("bon", toy_repo), ("cassé", missing)])
+    done = audit.audit_all(require_authorization=False)
+
+    good = next(part for part in done if part.name == "bon")
+    broken = next(part for part in done if part.name == "cassé")
+    assert good.ok and good.result.findings
+    assert not broken.ok and broken.error
+    assert "1 partie(s) non auditée(s)" in audit.summary(done)
+
+
+def test_an_unauthorised_tree_says_how_to_authorise_it(
+    homes, monkeypatch, tmp_path, toy_repo
+):
+    from thot.fusion import audit
+    from thot.errors import AuthorizationError
+
+    def refuse(root):
+        raise AuthorizationError("pas de mandat")
+
+    monkeypatch.setattr("thot.pipeline.load_authorization", refuse)
+    monkeypatch.setattr(audit, "parts", lambda: [("thot", toy_repo)])
+
+    done = audit.audit_all()
+    assert not done[0].ok
+    assert "thot init" in done[0].error

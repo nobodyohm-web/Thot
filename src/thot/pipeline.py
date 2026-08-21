@@ -13,6 +13,7 @@ from thot.codemap.graph import CodeGraph
 from thot.codemap.python_indexer import PythonIndexer
 from thot.guard.scanner import sweep_patterns
 from thot.memory.base import Memory, apply_memory, record_verdicts
+from thot.errors import ScopeError
 from thot.contracts import Confidence, Finding
 from thot.plugins import annotate_findings
 from thot.scope.authorization import load_authorization
@@ -116,6 +117,12 @@ def run_audit(
     Thot inside a directory is itself the act of authorising it.
     """
     root = Path(root)
+    if not root.is_dir():
+        # Before anything else, and before the authorization message that
+        # would otherwise tell someone to run `thot init` on a typo. A path
+        # that is not there is not a repository with nothing wrong in it.
+        raise ScopeError(f"Ce n'est pas un dossier : {root}")
+
     started = time.monotonic()
 
     if require_authorization:

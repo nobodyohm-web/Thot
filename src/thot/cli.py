@@ -110,6 +110,20 @@ def build_parser() -> argparse.ArgumentParser:
     )
     fusion_sessions.add_argument("--limit", type=int, default=30)
 
+    fusion_audit = fusion_sub.add_parser(
+        "audit", help="Auditer les trois arbres en une passe"
+    )
+    fusion_audit.add_argument(
+        "--deep", action="store_true",
+        help="Faire argumenter puis réfuter les candidats par un agent",
+    )
+    fusion_audit.add_argument(
+        "--engine", choices=["claude", "hermes", "prime"], default="",
+        help="Quel agent argumente (défaut : celui de `thot login`)",
+    )
+    fusion_audit.add_argument("--budget", type=int, default=20)
+    fusion_audit.add_argument("--parallel", type=int, default=4)
+
     schedule = subparsers.add_parser(
         "schedule", help="Auditer un dépôt automatiquement"
     )
@@ -394,8 +408,16 @@ def _cmd_logout() -> int:
 def _cmd_init(args) -> int:
     from thot.scope.authorization import write_authorization
 
+    target = Path(args.path)
+    if not target.is_dir():
+        # Authorising a directory into existence is how a typo becomes a
+        # mandate. The audit refuses the same path a moment later; refusing
+        # it here says why, once, at the point the mistake was made.
+        print(f"Ce n'est pas un dossier : {target}", file=sys.stderr)
+        return EXIT_USAGE
+
     owner = args.owner or Path.home().name
-    path = write_authorization(Path(args.path), owner=owner)
+    path = write_authorization(target, owner=owner)
     print(f"Autorisation écrite : {path}")
     print(f"Propriétaire déclaré : {owner}")
     print(f"Tu peux maintenant lancer : thot audit {args.path}")
@@ -1415,6 +1437,30 @@ def _cmd_fusion(args) -> int:
             # Said, not swallowed: Thot cannot tell an unfilled form from a
             # terse note with certainty, so the number is on screen.
             print(f"{ignored} entrée(s) écartée(s) : gabarit non rempli.")
+        return EXIT_OK
+
+    if action == "audit":
+        from thot.fusion import audit as fusion_audit
+
+        if getattr(args, "deep", False):
+            print("Analyse assistée sur les trois arbres…", file=sys.stderr)
+        done = fusion_audit.audit_all(
+            deep=getattr(args, "deep", False),
+            engine_name=getattr(args, "engine", ""),
+            budget=args.budget, parallel=args.parallel,
+        )
+        for part in done:
+            print(part.line())
+        print()
+        print(fusion_audit.summary(done))
+        highest = max(
+            (f.severity for part in done if part.ok for f in part.result.findings),
+            default=None,
+        )
+        from thot.contracts import Severity
+
+        if highest in (Severity.CRITICAL, Severity.HIGH):
+            return EXIT_FINDINGS
         return EXIT_OK
 
     if action == "skills":
