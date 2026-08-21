@@ -12,10 +12,12 @@ from thot.state.portability import (
     read_import,
     write_export,
 )
+from thot.state.goals import Goal
 from thot.state.search import Hit
 from thot.state.store import SessionInfo, SessionStore, Turn
 
 __all__ = [
+    "Goal",
     "Hit",
     "SessionInfo",
     "SessionStore",

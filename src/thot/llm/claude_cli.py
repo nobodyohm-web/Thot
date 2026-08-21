@@ -94,6 +94,7 @@ class ClaudeCli:
     model: str = ""
     session_id: str = field(default_factory=lambda: str(uuid.uuid4()))
     active_model: str = ""  # what the CLI actually used, learned from the stream
+    last_tokens: int = 0  # what the last turn cost, learned from the result event
     isolated: bool = False  # cut the user's own MCP servers out of the session
     _started: bool = False
 
@@ -223,8 +224,16 @@ class ClaudeCli:
             self.active_model = event.get("model", "") or self.active_model
             return
 
-        if kind == "result" and event.get("is_error"):
-            events.on_error(str(event.get("result", "erreur inconnue")))
+        if kind == "result":
+            usage = event.get("usage") or {}
+            self.last_tokens = sum(
+                int(usage.get(key) or 0)
+                for key in ("input_tokens", "output_tokens",
+                            "cache_read_input_tokens",
+                            "cache_creation_input_tokens")
+            )
+            if event.get("is_error"):
+                events.on_error(str(event.get("result", "erreur inconnue")))
 
 
 def _explain(code: int, stderr: str) -> str:

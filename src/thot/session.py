@@ -148,7 +148,42 @@ class Session:
         self.recon = sweep(self.root)
 
     def _system(self) -> str:
-        return SYSTEM_PROMPT.format(brief=context_brief(self.recon))
+        return SYSTEM_PROMPT.format(brief=self._brief())
+
+    def _brief(self) -> str:
+        """The repository map, and the objective if one is being pursued.
+
+        Prime Agent's point about goals: an agent asked to keep going until
+        something is true needs the "something" somewhere other than the
+        conversation it is about to compact away.
+        """
+        brief = context_brief(self.recon)
+        goal = self._goal()
+        return f"{goal.brief()}\n\n{brief}" if goal else brief
+
+    def _goal(self):
+        if self.store is None:
+            return None
+        try:
+            return self.store.goal(self.root)
+        except (sqlite3.Error, OSError):
+            return None
+
+    def _charge_goal(self, tokens: int) -> None:
+        """Bill the turn, and say so the moment the budget runs out."""
+        goal = self._goal()
+        if goal is None or self.store is None or not goal.live:
+            return
+        try:
+            updated = self.store.charge_goal(goal.id, tokens)
+        except (sqlite3.Error, OSError):
+            return
+        if updated is not None and updated.status == "budget_limited" \
+                and goal.status != "budget_limited":
+            theme.console.print()
+            theme.warn(f"Budget de l'objectif épuisé — {updated.progress()}")
+            theme.hint("`/goal budget <n>` pour continuer, `/goal done` pour clore.")
+            theme.console.print()
 
     # -- display ---------------------------------------------------------
 
@@ -355,14 +390,20 @@ class Session:
 
             if not line:
                 continue
+            spoken = line
             if line.startswith("/"):
-                if self._command(line) is False:
+                outcome = self._command(line)
+                if outcome is False:
                     self._close_state()
                     return 0
-                continue
+                if not isinstance(outcome, str):
+                    continue
+                # A custom command expands into a prompt; what gets logged is
+                # what the user typed, so the history stays readable.
+                line = outcome
 
             self.messages.append(Message(role="user", content=line))
-            self._record("user", line)
+            self._record("user", spoken)
             try:
                 self._turn()
             except ProviderError as exc:
@@ -398,6 +439,7 @@ class Session:
             )
             streamed.close()
             self.messages.append(reply.message)
+            self._charge_goal(reply.usage.input_tokens + reply.usage.output_tokens)
 
             if not reply.message.tool_calls:
                 theme.console.print()
@@ -440,7 +482,7 @@ class Session:
         try:
             answer = self.claude.send(
                 prompt,
-                brief=CLI_BRIEF.format(brief=context_brief(self.recon)),
+                brief=CLI_BRIEF.format(brief=self._brief()),
                 events=events,
             )
         finally:
@@ -448,6 +490,7 @@ class Session:
 
         self.messages.append(Message(role="assistant", content=answer))
         self._record("assistant", answer)
+        self._charge_goal(self.claude.last_tokens)
         self._refresh()  # the CLI may have edited files
         theme.console.print()
 
@@ -458,7 +501,8 @@ class Session:
 
     # -- slash commands --------------------------------------------------
 
-    def _command(self, line: str) -> bool | None:
+    def _command(self, line: str) -> bool | str | None:
+        """Run a built-in. A string back is a custom command's expanded prompt."""
         command, _, argument = line[1:].partition(" ")
         command = command.lower()
 
@@ -475,6 +519,7 @@ class Session:
             ("/verdict", "écarter ou accepter un finding : /verdict 2 refute raison"),
             ("/audit", "relancer l'analyse et afficher les findings"),
             ("/audit deep", "faire analyser puis réfuter les candidats par le modèle"),
+                ("/goal", "fixer un objectif suivi : /goal <texte> [--budget N]"),
                 ("/mcp", "les serveurs MCP connectés, et le catalogue"),
                 ("/sessions", "les sessions précédentes sur ce dépôt"),
                 ("/resume", "reprendre une session : /resume <id> (défaut : la dernière)"),
@@ -487,6 +532,15 @@ class Session:
                 ("/quit", "quitter"),
             ):
                 theme.console.print(theme.field(name, description))
+
+            from thot.commands import discover as discover_commands
+
+            custom = discover_commands(self.root)
+            if custom:
+                theme.console.print()
+                theme.hint("Commandes de ce dépôt et des tiennes :")
+                for item in custom:
+                    theme.console.print(theme.field(item.usage(), item.description))
             theme.console.print()
             return None
 
@@ -506,6 +560,11 @@ class Session:
                     theme.field("écriture", "sur confirmation")
                 )
             theme.console.print(theme.field("outils", "carte AST + graphe d'appels"))
+            goal = self._goal()
+            if goal is not None:
+                theme.console.print(
+                    theme.field("objectif", f"{goal.objective[:44]} · {goal.progress()}")
+                )
             if self.store is not None:
                 stats = self.store.stats()
                 theme.console.print(
@@ -558,6 +617,9 @@ class Session:
 
         if command == "verdict":
             return self._verdict(argument)
+
+        if command in {"goal", "objectif"}:
+            return self._goal_command(argument)
 
         if command == "mcp":
             return self._mcp(argument)
@@ -672,8 +734,20 @@ class Session:
             theme.ok("Identifiants oubliés. Relance Thot pour reconfigurer.")
             return False
 
+        custom = self._custom_command(command)
+        if custom is not None:
+            return custom.render(argument)
+
         theme.warn(f"Commande inconnue : /{command} — /help pour la liste.")
         theme.console.print()
+        return None
+
+    def _custom_command(self, name: str):
+        from thot.commands import discover
+
+        for command in discover(self.root):
+            if command.name == name:
+                return command
         return None
 
 
@@ -698,6 +772,81 @@ class Session:
             )
         except (sqlite3.Error, OSError, KeyError):
             pass
+
+    def _goal_command(self, argument: str) -> None:
+        """`/goal <objectif> [--budget N]`, `/goal done`, `/goal pause`, `/goal budget N`."""
+        if not self._need_store():
+            return None
+
+        words = argument.split()
+        verb = words[0].lower() if words else ""
+        goal = self._goal()
+
+        if not words or verb in {"status", "état"}:
+            theme.console.print()
+            if goal is None:
+                theme.hint("Aucun objectif en cours.")
+                theme.hint("`/goal auditer le parseur jusqu'à zéro HIGH --budget 200000`")
+            else:
+                theme.console.print(theme.field("objectif", goal.objective))
+                theme.console.print(theme.field("état", goal.status))
+                theme.console.print(theme.field("coût", goal.progress()))
+            theme.console.print()
+            return None
+
+        if verb in {"done", "fini", "complete"}:
+            if goal is None:
+                theme.hint("Aucun objectif en cours.")
+            else:
+                self.store.finish_goal(goal.id, "complete")
+                theme.ok(f"Objectif atteint — {goal.progress()}")
+                self._record("goal", f"objectif atteint : {goal.objective}")
+            theme.console.print()
+            return None
+
+        if verb in {"stop", "abandon", "abandonne"}:
+            if goal is not None:
+                self.store.finish_goal(goal.id, "abandoned", note=" ".join(words[1:]))
+                theme.ok("Objectif abandonné.")
+            theme.console.print()
+            return None
+
+        if verb == "pause":
+            if goal is not None:
+                self.store.pause_goal(goal.id, paused=goal.status != "paused")
+                theme.ok("Objectif " + ("repris." if goal.status == "paused"
+                                        else "mis en pause."))
+            theme.console.print()
+            return None
+
+        if verb == "budget":
+            if goal is None:
+                theme.warn("Aucun objectif à financer.")
+            elif len(words) < 2 or not words[1].isdigit():
+                theme.hint("Usage : /goal budget <jetons>")
+            else:
+                updated = self.store.raise_goal_budget(goal.id, int(words[1]))
+                theme.ok(f"Budget porté à {updated.token_budget} jetons "
+                         f"({updated.remaining} restants).")
+            theme.console.print()
+            return None
+
+        objective, budget = _split_budget(argument)
+        try:
+            created = self.store.set_goal(self.root, objective, token_budget=budget)
+        except ValueError as exc:
+            theme.warn(str(exc))
+            theme.console.print()
+            return None
+
+        theme.console.print()
+        theme.ok(f"Objectif fixé — {created.objective}")
+        if created.token_budget:
+            theme.hint(f"Budget : {created.token_budget} jetons.")
+        theme.hint("Il sera rappelé au modèle à chaque tour, y compris après /compact.")
+        self._record("goal", f"objectif fixé : {created.objective}")
+        theme.console.print()
+        return None
 
     def _mcp(self, argument: str) -> None:
         """What is connected, and what the catalogue offers."""
@@ -975,6 +1124,28 @@ class Session:
         theme.ok(f"Session {resolved[:8]} oubliée.")
         theme.console.print()
         return None
+
+
+def _split_budget(argument: str) -> tuple[str, int | None]:
+    """Pull `--budget N` out of the objective, wherever the user put it."""
+    words = argument.split()
+    budget: int | None = None
+    kept: list[str] = []
+    index = 0
+    while index < len(words):
+        word = words[index]
+        if word in {"--budget", "-b"} and index + 1 < len(words) \
+                and words[index + 1].isdigit():
+            budget = int(words[index + 1])
+            index += 2
+            continue
+        if word.startswith("--budget=") and word.split("=", 1)[1].isdigit():
+            budget = int(word.split("=", 1)[1])
+            index += 1
+            continue
+        kept.append(word)
+        index += 1
+    return " ".join(kept), budget
 
 
 class _Streamer:

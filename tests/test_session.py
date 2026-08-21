@@ -248,3 +248,42 @@ def test_an_empty_startup_session_is_not_left_behind_by_resume(session):
     session._resume(previous)
 
     assert session.store.info(empty) is None
+
+
+# -- goals and custom commands ----------------------------------------------
+
+
+def test_the_goal_rides_in_every_briefing(session):
+    session.store.set_goal(session.root, "zéro HIGH dans le parseur",
+                           token_budget=5000)
+
+    system = session._system()
+    assert "zéro HIGH dans le parseur" in system
+    assert "5000" in system
+    # And it is still there after the conversation is thrown away.
+    session._compact("résumé")
+    assert "zéro HIGH dans le parseur" in session._system()
+
+
+def test_a_turn_is_billed_to_the_goal(session):
+    goal = session.store.set_goal(session.root, "auditer", token_budget=1000)
+    session.provider = ScriptedProvider([Message(role="assistant", content="ok")])
+    session.messages.append(Message(role="user", content="vas-y"))
+    session._turn()
+
+    charged = session.store.goal(session.root)
+    assert charged.tokens_used == 15  # the scripted provider reports 10 + 5
+    assert charged.calls_used == 1
+    assert charged.id == goal.id
+
+
+def test_a_custom_command_expands_into_a_prompt(session, tmp_path):
+    folder = session.root / ".thot" / "commands"
+    folder.mkdir(parents=True, exist_ok=True)
+    (folder / "revue.md").write_text("Relis $1 sans rien changer.", encoding="utf-8")
+
+    assert session._command("/revue src/app.py") == "Relis src/app.py sans rien changer."
+
+
+def test_an_unknown_slash_command_is_not_sent_to_the_model(session):
+    assert session._command("/nexistepas") is None

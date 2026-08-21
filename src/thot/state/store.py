@@ -20,7 +20,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 
-from thot.state import schema
+from thot.state import goals, schema
 from thot.state.search import DEFAULT_LIMIT, Hit, search
 
 from thot.paths import sessions_db
@@ -213,6 +213,41 @@ class SessionStore:
         )
         self._connection.commit()
         return cursor.rowcount > 0
+
+    # -- goals -----------------------------------------------------------
+    #
+    # Thin delegation, the way Hermes composes SessionDB out of mixins: the
+    # goal logic lives in its own module and the store is what owns the
+    # connection.
+
+    def set_goal(self, root: str | Path, objective: str,
+                 *, token_budget: int | None = None) -> "goals.Goal":
+        return goals.start(self._connection, str(root), objective,
+                           token_budget=token_budget)
+
+    def goal(self, root: str | Path) -> "goals.Goal | None":
+        return goals.active(self._connection, str(root))
+
+    def goal_history(self, root: str | Path | None = None,
+                     *, limit: int = 20) -> list["goals.Goal"]:
+        return goals.history(self._connection,
+                             None if root is None else str(root), limit=limit)
+
+    def charge_goal(self, goal_id: str, tokens: int,
+                    *, calls: int = 1) -> "goals.Goal | None":
+        return goals.charge(self._connection, goal_id, tokens, calls=calls)
+
+    def raise_goal_budget(self, goal_id: str,
+                          token_budget: int | None) -> "goals.Goal | None":
+        return goals.raise_budget(self._connection, goal_id, token_budget)
+
+    def finish_goal(self, goal_id: str, status: str = "complete",
+                    *, note: str = "") -> "goals.Goal | None":
+        return goals.finish(self._connection, goal_id, status, note=note)
+
+    def pause_goal(self, goal_id: str, *, paused: bool = True) -> "goals.Goal | None":
+        return goals.set_status(self._connection, goal_id,
+                                "paused" if paused else "active")
 
     # -- reading ---------------------------------------------------------
 
