@@ -271,3 +271,23 @@ def test_the_second_attacker_is_shown_the_angle_that_already_failed(tmp_path):
     assert "l'entrée est validée en amont" in second.instructions
     assert "l'entrée est validée en amont" not in first.instructions
     assert second.id.startswith("refute2:")
+
+
+def test_every_task_pins_the_agent_to_the_tree_that_was_audited(tmp_path):
+    """Thot audits three trees nested inside one another.
+
+    `hermes/` and `prime/` live inside Thot's own repository, so the same
+    relative path exists more than once and a tool resolving from the git
+    root opens the wrong file. It happened: a live SQL injection in Hermes's
+    copy of a template was refuted with an accurate description of Thot's
+    copy, fixed the day before — and the verdict was remembered.
+    """
+    from thot.analysis.probe import _probe_task, _refute_task
+
+    finding = make_finding()
+    probe = _probe_task(tmp_path, finding)
+    refute = _refute_task(tmp_path, finding, "scénario")
+
+    for task in (probe, refute):
+        assert str(tmp_path.resolve()) in task.context
+        assert "L'historique git n'est pas l'état audité" in task.context

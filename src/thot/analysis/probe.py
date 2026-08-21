@@ -106,8 +106,33 @@ def _path_summary(finding: Finding) -> str:
     return "\n".join(f"  {i + 1}. {ref}" for i, ref in enumerate(finding.taint_path))
 
 
+def _scope_note(root: Path) -> str:
+    """Pin the agent to the tree that was actually audited.
+
+    This is not decoration. Thot audits three trees that live inside one
+    another — `hermes/` and `prime/` sit inside Thot's own repository — so the
+    same relative path exists more than once, and a tool that resolves paths
+    from the git root rather than from the working directory opens the wrong
+    file. It happened: a real SQL injection in Hermes's copy of a template
+    was refuted with a detailed, accurate description of *Thot's* copy, which
+    had been fixed the day before. The verdict was then remembered, which is
+    how a live defect gets silenced for good.
+    """
+    return (
+        f"Dépôt audité : {Path(root).resolve()}\n"
+        "Tout chemin relatif se résout sous CETTE racine. Un fichier de même "
+        "chemin peut exister dans un dépôt parent ou voisin : ce n'est pas "
+        "celui-ci.\n"
+        "Le code ci-dessous a été lu sur le disque au moment de l'audit. "
+        "L'historique git n'est pas l'état audité : « ce code a changé depuis » "
+        "n'est pas une réfutation recevable, l'identité du finding est calculée "
+        "sur le contenu qui t'est montré.\n"
+    )
+
+
 def _probe_task(root: Path, finding: Finding) -> AgentTask:
     context = (
+        f"{_scope_note(root)}\n"
         f"Règle déclenchée : {finding.rule}\n"
         f"Emplacement : {finding.location}\n"
         f"Sévérité calculée (accessibilité × impact) : {finding.severity.value}\n"
@@ -139,6 +164,7 @@ def _refute_task(
     root: Path, finding: Finding, scenario: str, *, again: bool = False
 ) -> AgentTask:
     context = (
+        f"{_scope_note(root)}\n"
         f"Emplacement : {finding.location}\n"
         f"Scénario d'exploitation avancé :\n{scenario}\n\n"
         f"Code :\n{excerpt(root, finding.location)}"
