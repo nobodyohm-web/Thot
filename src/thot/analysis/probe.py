@@ -253,7 +253,7 @@ def _review_task(root: Path, finding: Finding, scenario: str, reason: str) -> Ag
 
 
 def _apply_review(
-    finding: Finding, original: Finding, result: AgentResult, engine: Engine
+    finding: Finding, before: Finding, result: AgentResult, engine: Engine
 ) -> Finding:
     """Keep the refutation, or put the finding back where it was.
 
@@ -278,8 +278,8 @@ def _apply_review(
     return replace(
         finding,
         confidence=Confidence.PLAUSIBLE,
-        severity=original.severity,
-        failure_scenario=original.failure_scenario,
+        severity=before.severity,
+        failure_scenario=before.failure_scenario,
         provenance=provenance,
     )
 
@@ -366,15 +366,23 @@ def _analyse_batch(
     original = {f.id: f for f in batch}
     probes = engine.fan_out([_probe_task(root, f) for f in batch])
     to_refute: list[tuple[Finding, str]] = []
-    to_review: list[Finding] = []
+    to_review: list[tuple[Finding, Finding]] = []
 
-    def dispose(judged: Finding) -> None:
-        """Settle, unless a refutation of something serious needs a reader."""
+    def dispose(judged: Finding, before: Finding) -> None:
+        """Settle, unless a refutation of something serious needs a reader.
+
+        `before` is the finding as it stood the instant before this
+        refutation: the deterministic candidate when a probe refused it
+        outright, the argued one when an attacker killed it. That is what a
+        contested refutation has to be restored to — restoring the
+        deterministic text would throw away the exploit an agent had already
+        written down.
+        """
         by_id[judged.id] = judged
         if judged.confidence is Confidence.REFUTED and _worth_reviewing(
             original[judged.id], engine
         ):
-            to_review.append(judged)
+            to_review.append((judged, before))
         else:
             settle(judged)
 
@@ -384,7 +392,7 @@ def _analyse_batch(
         if updated.confidence is Confidence.CONFIRMED:
             to_refute.append((updated, updated.failure_scenario))
         else:
-            dispose(updated)
+            dispose(updated, finding)
 
     survivors: list[tuple[Finding, str]] = []
     if to_refute:
@@ -397,7 +405,7 @@ def _analyse_batch(
             if attacked.confidence is Confidence.CONFIRMED:
                 survivors.append((attacked, scenario))
             else:
-                dispose(attacked)
+                dispose(attacked, finding)
 
     # The cascade. Skipped when the panel has no third voice: an agent that
     # already argued or already attacked this finding would be reviewing its
@@ -408,7 +416,9 @@ def _analyse_batch(
              for f, scenario in survivors]
         )
         for (finding, _), result in zip(survivors, second):
-            dispose(_apply_refutation(finding, result, engine, again=True))
+            dispose(
+                _apply_refutation(finding, result, engine, again=True), finding
+            )
     else:
         for finding, _ in survivors:
             settle(finding)
@@ -417,12 +427,12 @@ def _analyse_batch(
     # something serious is read by an agent that has not spoken about it.
     if to_review:
         reviews = engine.fan_out([
-            _review_task(root, f, original[f.id].failure_scenario,
-                         _refutation_reason(f))
-            for f in to_review
+            _review_task(root, judged, before.failure_scenario,
+                         _refutation_reason(judged))
+            for judged, before in to_review
         ])
-        for finding, result in zip(to_review, reviews):
-            settle(_apply_review(finding, original[finding.id], result, engine))
+        for (judged, before), result in zip(to_review, reviews):
+            settle(_apply_review(judged, before, result, engine))
 
 
 def _can_escalate(engine: Engine) -> bool:

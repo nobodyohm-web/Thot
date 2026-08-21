@@ -396,3 +396,23 @@ def test_a_single_engine_does_not_review_its_own_refutation(tmp_path):
     analyse(tmp_path, [make_finding(severity=Severity.CRITICAL)], engine, limit=1)
 
     assert not any(t.id.startswith("review:") for t in engine.tasks)
+
+
+def test_a_contested_refutation_keeps_the_exploit_an_agent_had_written(tmp_path):
+    """Restoring the deterministic text would throw away real work."""
+    from thot.engine.panel import PanelEngine
+
+    members = [
+        _Member(name, {
+            "probe:": {"verdict": "confirmed",
+                       "scenario": "argv[1] atteint os.system sans filtre"},
+            "refute:": {"refuted": True, "raison": "corrigé au commit suivant"},
+            "review:": {"sound": False, "raison": "ce commit n'est pas audité"},
+        })
+        for name in ("claude", "hermes", "prime")
+    ]
+    result = analyse(tmp_path, [make_finding(severity=Severity.HIGH)],
+                     PanelEngine(members=members), limit=1)[0]
+
+    assert result.confidence is Confidence.PLAUSIBLE
+    assert "argv[1] atteint os.system" in result.failure_scenario
