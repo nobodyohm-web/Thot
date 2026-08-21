@@ -92,6 +92,7 @@ class Session:
         )
         self.messages: list[Message] = []
         self.carry = ""  # a summary handed forward across a /compact
+        self.sandbox = self._open_sandbox()
         self.store, self.session_id = self._open_state(store)
         self._interactive = sys.stdin.isatty()
         self._prompt = (
@@ -146,12 +147,29 @@ class Session:
         path.parent.mkdir(parents=True, exist_ok=True)
         return FileHistory(str(path))
 
+    def _open_sandbox(self):
+        """The configured sandbox, or the host when none is asked for.
+
+        A misconfigured sandbox must not stop the session from opening —
+        but it must not silently become the host either, so the failure is
+        printed and `/sandbox` shows the truth.
+        """
+        from thot.sandbox import SandboxError, build_sandbox
+
+        try:
+            return build_sandbox(self.root)
+        except SandboxError as exc:
+            theme.warn(f"Bac à sable indisponible : {exc}")
+            theme.hint("Les commandes tourneront sous ton compte.")
+            return None
+
     def _tool_context(self) -> ToolContext:
         return ToolContext(
             root=self.root,
             recon=self.recon,
             confirm=self._confirm,
             refresh=self._refresh,
+            sandbox=self.sandbox,
         )
 
     def _refresh(self) -> None:
@@ -529,6 +547,8 @@ class Session:
             ("/verdict", "écarter ou accepter un finding : /verdict 2 refute raison"),
             ("/audit", "relancer l'analyse et afficher les findings"),
             ("/audit deep", "faire analyser puis réfuter les candidats par le modèle"),
+                ("/deps", "vérifier les dépendances contre OSV.dev"),
+                ("/sandbox", "où tournent les commandes : /sandbox docker|local"),
                 ("/goal", "fixer un objectif suivi : /goal <texte> [--budget N]"),
                 ("/mcp", "les serveurs MCP connectés, et le catalogue"),
                 ("/sessions", "les sessions précédentes sur ce dépôt"),
@@ -627,6 +647,12 @@ class Session:
 
         if command == "verdict":
             return self._verdict(argument)
+
+        if command in {"deps", "dépendances", "dependances"}:
+            return self._deps()
+
+        if command in {"sandbox", "bac"}:
+            return self._sandbox(argument)
 
         if command in {"goal", "objectif"}:
             return self._goal_command(argument)
@@ -877,6 +903,75 @@ class Session:
             theme.hint(f"Budget : {created.token_budget} jetons.")
         theme.hint("Il sera rappelé au modèle à chaque tour, y compris après /compact.")
         self._record("goal", f"objectif fixé : {created.objective}")
+        theme.console.print()
+        return None
+
+    def _deps(self) -> None:
+        """The one audit surface that needs the network, asked for explicitly."""
+        from thot.supply import audit_dependencies
+
+        theme.console.print()
+        theme.hint("Interrogation d'OSV.dev…")
+        result = audit_dependencies(self.root)
+
+        if not result.checked:
+            theme.error(f"Dépendances non vérifiées : {result.error}")
+            theme.hint("Rien n'est affirmé sur ces paquets.")
+            theme.console.print()
+            return None
+
+        theme.ok(result.summary())
+        for finding in result.findings[:12]:
+            label = ("MALVEILLANT" if finding.confidence.value == "confirmed"
+                     else finding.severity.value.upper())
+            theme.console.print(
+                theme.entry(label, f"{finding.provenance['paquet']}  "
+                                   f"{finding.provenance['avis']}", width=13)
+            )
+        if len(result.findings) > 12:
+            theme.hint(f"… {len(result.findings) - 12} de plus — `thot deps`.")
+        if result.findings:
+            self._record_audit(result.findings)
+        theme.console.print()
+        return None
+
+    def _sandbox(self, argument: str) -> None:
+        """Show or change where the model's commands run."""
+        from thot.sandbox import SandboxError, build_sandbox, load_config, save_config
+
+        wanted = argument.strip().lower()
+        theme.console.print()
+
+        if wanted:
+            config = load_config()
+            config["kind"] = wanted
+            try:
+                sandbox = build_sandbox(self.root, config=config)
+            except SandboxError as exc:
+                theme.error(str(exc))
+                theme.hint("Rien n'a changé : les commandes continuent de "
+                           "tourner là où elles tournaient.")
+                theme.console.print()
+                return None
+            save_config(config)
+            self.sandbox = sandbox
+            theme.ok(f"{sandbox.name} — {sandbox.describe()}")
+            theme.console.print()
+            return None
+
+        current = self.sandbox
+        if current is None:
+            try:
+                current = build_sandbox(self.root)
+            except SandboxError as exc:
+                theme.error(str(exc))
+                theme.console.print()
+                return None
+        theme.console.print(theme.field("bac à sable", current.name))
+        theme.console.print(theme.field("isolation", current.describe()))
+        if current.name == "local":
+            theme.hint("`/sandbox docker` pour exécuter le code audité dans un "
+                       "conteneur sans réseau.")
         theme.console.print()
         return None
 

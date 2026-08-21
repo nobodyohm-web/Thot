@@ -70,6 +70,38 @@ def build_parser() -> argparse.ArgumentParser:
     )
     sched_run.add_argument("name", nargs="?")
 
+    deps = subparsers.add_parser(
+        "deps", help="Auditer les dépendances d'un dépôt contre OSV.dev"
+    )
+    deps.add_argument("path", nargs="?", default=".")
+    deps.add_argument("--json", action="store_true", help="Sortie JSON")
+    deps.add_argument("--list", action="store_true",
+                      help="Lister ce qui a été trouvé, sans interroger OSV")
+    deps.add_argument("--fail-on", choices=["low", "medium", "high", "critical"],
+                      help="Code de sortie 1 au-dessus de ce seuil")
+
+    sandbox_cmd = subparsers.add_parser(
+        "sandbox", help="Où s'exécutent les commandes lancées par le modèle"
+    )
+    sandbox_sub = sandbox_cmd.add_subparsers(dest="action")
+    sandbox_sub.add_parser("status", help="Le bac à sable actif, et s'il est utilisable")
+    sandbox_use = sandbox_sub.add_parser("use", help="Choisir le bac à sable")
+    sandbox_use.add_argument("kind", choices=["local", "docker"])
+    sandbox_use.add_argument("--image", help="Image du conteneur")
+    sandbox_use.add_argument("--network", action="store_true",
+                             help="Laisser le réseau ouvert (déconseillé)")
+    sandbox_use.add_argument("--writable", action="store_true",
+                             help="Monter le dépôt en écriture (déconseillé)")
+    sandbox_show = sandbox_sub.add_parser(
+        "show", help="Afficher la commande docker exacte qui serait lancée"
+    )
+    # Not "command": that is the top-level subparser's dest, and a
+    # positional of the same name silently overwrites it — the subcommand
+    # then dispatches to nothing and prints the help. REMAINDER so
+    # `thot sandbox show pytest -q` shows the command rather than argparse
+    # claiming -q for itself.
+    sandbox_show.add_argument("shell_command", nargs=argparse.REMAINDER)
+
     gateway = subparsers.add_parser(
         "gateway", help="Recevoir les audits ailleurs que dans ce terminal"
     )
@@ -101,6 +133,11 @@ def build_parser() -> argparse.ArgumentParser:
     mcp_sub = mcp_cmd.add_subparsers(dest="action")
     mcp_list = mcp_sub.add_parser("list", help="Le catalogue et ce qui est connecté")
     mcp_list.add_argument("--json", action="store_true", help="Sortie JSON")
+    mcp_check = mcp_sub.add_parser(
+        "check", help="Vérifier tes serveurs MCP contre OSV.dev (malware, CVE)"
+    )
+    mcp_check.add_argument("--all", action="store_true",
+                           help="Signaler aussi les vulnérabilités ordinaires")
     mcp_show = mcp_sub.add_parser("show", help="Détail d'un serveur")
     mcp_show.add_argument("name")
     mcp_add = mcp_sub.add_parser("add", help="Connecter un serveur du catalogue")
@@ -186,6 +223,10 @@ def build_parser() -> argparse.ArgumentParser:
 
     audit = subparsers.add_parser("audit", help="Auditer un dépôt")
     audit.add_argument("path", nargs="?", default=".")
+    audit.add_argument("--deps", action="store_true",
+                       help="Vérifier aussi les dépendances contre OSV.dev (réseau)")
+    audit.add_argument("--sandbox", choices=["local", "docker"],
+                       help="Où s'exécutent les commandes de la session")
     audit.add_argument("--json", action="store_true", help="Sortie JSON")
     audit.add_argument("--markdown", action="store_true", help="Sortie Markdown")
     audit.add_argument("--paths", action="store_true",
@@ -313,7 +354,8 @@ def _cmd_audit(args) -> int:
 
     try:
         result = run_audit(
-            root, store=store, engine=engine, budget=args.budget, memory=memory
+            root, store=store, engine=engine, budget=args.budget, memory=memory,
+            dependencies=bool(getattr(args, "deps", False)),
         )
     finally:
         if store is not None:
@@ -538,6 +580,163 @@ def _share_verdict(memory, finding_id: str, root) -> int:
     return EXIT_OK
 
 
+def _mcp_check(everything: bool) -> int:
+    """Ask OSV whether the MCP servers you run are known-malicious.
+
+    This is Hermes Agent's original use of OSV, ported: an MCP server is a
+    package that gets executed on your machine, and `MAL-*` advisories are
+    the ones that matter before it runs for the first time.
+    """
+    from thot.llm.claude_cli import user_mcp_definitions
+    from thot.supply import OsvClient, from_mcp_command
+
+    definitions = user_mcp_definitions(Path.cwd().resolve())
+    if not definitions:
+        print("Aucun serveur MCP configuré.")
+        return EXIT_OK
+
+    components, unpinned = [], []
+    for name, entry in sorted(definitions.items()):
+        component = from_mcp_command(name, entry.get("command", ""),
+                                     entry.get("args") or [])
+        (components.append(component) if component else unpinned.append(name))
+
+    if not components:
+        print(f"{len(definitions)} serveur(s), aucun ne fixe une version "
+              f"vérifiable : {', '.join(unpinned)}.")
+        print("Un serveur non épinglé ne peut pas être audité — c'est en soi "
+              "une raison de l'épingler.")
+        return EXIT_OK
+
+    client = OsvClient()
+    try:
+        hits = client.query(components)
+        if not hits and client.last_error:
+            print(f"OSV.dev injoignable : {client.last_error}", file=sys.stderr)
+            return EXIT_USAGE
+        advisories = client.details([i for ids in hits.values() for i in ids])
+    finally:
+        client.close()
+
+    dangerous = False
+    for component in components:
+        found = [advisories[i] for i in hits.get(component, [])
+                 if i in advisories]
+        malware = [a for a in found if a.malware]
+        if malware:
+            dangerous = True
+            print(f"MALVEILLANT  {component.source[4:]:<22} {component.label()}")
+            for advisory in malware:
+                print(f"             {advisory.id} {advisory.summary[:90]}")
+        elif found and everything:
+            print(f"{len(found)} avis      {component.source[4:]:<22} "
+                  f"{component.label()}")
+        elif not found:
+            print(f"propre       {component.source[4:]:<22} {component.label()}")
+
+    if unpinned:
+        print(f"\nNon épinglés, donc non vérifiés : {', '.join(unpinned)}")
+    return EXIT_FINDINGS if dangerous else EXIT_OK
+
+
+def _cmd_deps(args) -> int:
+    """Audit a repository's pinned dependencies against OSV.dev."""
+    from thot.contracts import Severity
+    from thot.supply import audit_dependencies, discover
+
+    root = Path(args.path).resolve()
+
+    if args.list:
+        components = discover(root)
+        for component in components:
+            print(f"{component.ecosystem:<6} {component.label():<40} "
+                  f"{component.source}")
+        print(f"\n{len(components)} dépendance(s) épinglée(s).")
+        return EXIT_OK
+
+    result = audit_dependencies(root)
+
+    if args.json:
+        from thot.report.json_report import render_json
+        from thot.pipeline import AuditResult
+        from thot.scope.detect import detect_scope
+
+        print(render_json(AuditResult(findings=result.findings,
+                                      manifest=detect_scope(root), elapsed=0.0)))
+        return EXIT_OK
+
+    if not result.checked:
+        print(f"Dépendances non vérifiées : {result.error}", file=sys.stderr)
+        print("OSV.dev est injoignable. Rien n'est affirmé sur ces paquets.",
+              file=sys.stderr)
+        return EXIT_USAGE
+
+    print(result.summary())
+    if not result.findings:
+        return EXIT_OK
+
+    print()
+    for finding in result.findings:
+        mark = "MALVEILLANT" if finding.confidence.value == "confirmed" else \
+            finding.severity.value.upper()
+        print(f"{mark:<11} {finding.provenance['paquet']:<34} "
+              f"{finding.provenance['avis']}")
+        print(f"{'':11} {finding.failure_scenario[:150]}")
+
+    if args.fail_on:
+        floor = _SEVERITY_RANK.index(Severity(args.fail_on))
+        worst = max(_SEVERITY_RANK.index(f.severity) for f in result.findings)
+        if worst >= floor:
+            return EXIT_FINDINGS
+    return EXIT_OK
+
+
+def _cmd_sandbox(args) -> int:
+    """Show or choose where model-run commands execute."""
+    from thot.sandbox import SandboxError, build_sandbox, load_config, save_config
+    from thot.sandbox.docker import DEFAULT_IMAGE, DockerSandbox
+
+    action = getattr(args, "action", None) or "status"
+    root = Path.cwd().resolve()
+    config = load_config()
+
+    if action == "use":
+        config["kind"] = args.kind
+        if args.image:
+            config["image"] = args.image
+        config["network"] = bool(args.network)
+        config["writable"] = bool(args.writable)
+        path = save_config(config)
+        print(f"Bac à sable : {args.kind} → {path}")
+        if args.kind == "docker":
+            usable, reason = DockerSandbox(root=root).available()
+            if not usable:
+                print(f"Attention : {reason}", file=sys.stderr)
+        if args.network:
+            print("Le réseau reste ouvert : le code audité peut sortir.")
+        return EXIT_OK
+
+    if action == "show":
+        sandbox = DockerSandbox(
+            root=root, image=str(config.get("image") or DEFAULT_IMAGE),
+            network=bool(config.get("network", False)),
+            writable=bool(config.get("writable", False)),
+        )
+        print(sandbox.preview(" ".join(args.shell_command)))
+        return EXIT_OK
+
+    try:
+        sandbox = build_sandbox(root, config=config)
+    except SandboxError as exc:
+        print(f"Bac à sable indisponible : {exc}", file=sys.stderr)
+        return EXIT_USAGE
+    print(f"{sandbox.name} — {sandbox.describe()}")
+    if sandbox.name == "local":
+        print("`thot sandbox use docker` pour exécuter le code audité "
+              "dans un conteneur sans réseau.")
+    return EXIT_OK
+
+
 def _cmd_gateway(args) -> int:
     """Configure where audits are delivered, and who may answer back."""
     from thot.gateway import config
@@ -641,6 +840,9 @@ def _cmd_mcp(args) -> int:
         done, message = remove(args.name, scope=args.scope)
         print(message, file=sys.stdout if done else sys.stderr)
         return 0 if done else EXIT_USAGE
+
+    if action == "check":
+        return _mcp_check(bool(args.all))
 
     if action == "show":
         server = find(args.name)
@@ -877,6 +1079,10 @@ def main(argv: list[str] | None = None) -> int:
             return _cmd_schedule(args)
         if args.command == "verdicts":
             return _cmd_verdicts(args)
+        if args.command == "deps":
+            return _cmd_deps(args)
+        if args.command == "sandbox":
+            return _cmd_sandbox(args)
         if args.command == "gateway":
             return _cmd_gateway(args)
         if args.command == "serve":

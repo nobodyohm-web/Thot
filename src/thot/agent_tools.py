@@ -33,6 +33,9 @@ class ToolContext:
     recon: Any  # thot.recon.Recon — kept loose to avoid a circular import
     confirm: Callable[[str, str], bool]
     refresh: Callable[[], None]
+    # Where `run_command` executes. None means the host, which is what Thot
+    # has always done; a session started with --sandbox puts a container here.
+    sandbox: Any = None
 
 
 class ToolError(Exception):
@@ -173,21 +176,28 @@ def list_dir(context: ToolContext, *, path: str = ".") -> str:
     return "\n".join(rendered) or "(vide)"
 
 
+def _sandbox_for(context: ToolContext):
+    from thot.sandbox.local import LocalSandbox
+
+    return context.sandbox or LocalSandbox(root=context.root)
+
+
 def run_command(context: ToolContext, *, command: str) -> str:
-    if not context.confirm("Exécuter une commande", command):
+    sandbox = _sandbox_for(context)
+    detail = command if sandbox.name == "local" else (
+        f"{command}\n\n[{sandbox.describe()}]"
+    )
+    if not context.confirm("Exécuter une commande", detail):
         raise ToolError("L'utilisateur a refusé l'exécution.")
-    try:
-        done = subprocess.run(
-            command, shell=True, capture_output=True, text=True,
-            timeout=COMMAND_TIMEOUT, cwd=str(context.root), check=False,
-        )
-    except subprocess.TimeoutExpired:
-        raise ToolError(f"Commande interrompue après {COMMAND_TIMEOUT} s.") from None
-    output = (done.stdout + done.stderr).strip()
-    if len(output) > MAX_OUTPUT_CHARS:
-        output = output[:MAX_OUTPUT_CHARS] + "\n… (sortie tronquée)"
+
+    result = sandbox.run(command, timeout=COMMAND_TIMEOUT)
+    if result.timed_out:
+        raise ToolError(result.output)
+
     context.refresh()
-    return f"code de sortie {done.returncode}\n{output or '(aucune sortie)'}"
+    where = "" if result.sandbox == "local" else f" (dans {result.sandbox})"
+    return (f"code de sortie {result.exit_code}{where}\n"
+            f"{result.output or '(aucune sortie)'}")
 
 
 # --------------------------------------------------------------------------

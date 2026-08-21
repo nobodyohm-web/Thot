@@ -34,6 +34,7 @@ class AuditResult:
     run_id: int | None = None
     engine: str | None = None  # None when the run stayed deterministic
     remembered: int = 0  # findings a stored verdict applied to
+    supply_error: str = ""  # set when a dependency lookup could not happen
 
     @property
     def confirmed(self) -> list[Finding]:
@@ -94,6 +95,7 @@ def run_audit(
     engine: "Engine | None" = None,
     budget: int = DEFAULT_LIMIT,
     memory: Memory | None = None,
+    dependencies: bool = False,
 ) -> AuditResult:
     """Map, taint, score — then, if an engine is given, probe and refute.
 
@@ -124,6 +126,17 @@ def run_audit(
     # Pattern rules cover what the AST indexer never reads — JavaScript, YAML,
     # CI workflows — and shapes that are dangerous without a provable path.
     findings += sweep_patterns(root, list(manifest.files))
+
+    # Dependencies are the one surface that needs the network, so they are
+    # opt-in and imported here rather than at module level: an audit without
+    # `--deps` must stay provably offline.
+    supply_error = ""
+    if dependencies:
+        from thot.supply import audit_dependencies
+
+        supply = audit_dependencies(root)
+        findings += supply.findings
+        supply_error = "" if supply.checked else supply.error
 
     # Past decisions land before the model does: select_for_analysis skips
     # refuted findings, so remembering a dismissal is what stops Thot paying
@@ -160,4 +173,5 @@ def run_audit(
         run_id=run_id,
         engine=engine_name,
         remembered=remembered,
+        supply_error=supply_error,
     )

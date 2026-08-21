@@ -181,6 +181,62 @@ Rien n'est jamais supprimé en silence. Un finding écarté reste dans le rappor
 en `refuted`, avec sa raison et son auteur — un audit qui cache ce qu'on lui a
 dit d'ignorer n'est pas relisable.
 
+## La chaîne d'approvisionnement
+
+```bash
+thot deps                       # les dépendances épinglées, contre OSV.dev
+thot deps --list                # ce qui a été trouvé, sans réseau
+thot deps --fail-on high        # code 1 en CI
+thot audit . --deps             # dans le rapport d'audit
+thot mcp check                  # tes serveurs MCP sont-ils malveillants ?
+```
+
+Les verrous d'abord, toujours : `uv.lock`, `poetry.lock`, `Pipfile.lock`,
+`package-lock.json`, `yarn.lock`, `pnpm-lock.yaml`. Un manifeste dit
+`requests>=2` et OSV ne sait pas répondre à un intervalle ; un verrou dit
+`2.31.0` et OSV sait. **Une dépendance qui n'existe qu'en intervalle n'est pas
+devinée**, elle est rapportée comme non épinglée.
+
+Un avis qui couvre une version exacte est un fait, pas une supposition — mais
+savoir si *ton* code atteint la fonction vulnérable n'est pas analysé, alors
+ces findings restent `PLAUSIBLE` et le disent. Seul `MAL-*` fait exception :
+le paquet **est** la charge utile, l'atteignabilité n'est pas la question.
+
+Et la même propriété que partout ailleurs : l'identité d'un finding porte la
+version épinglée, donc **un `bump` fait expirer le verdict**. Écarter une CVE
+sur `requests==2.19.1` n'écarte rien sur `2.20.0`.
+
+OSV injoignable ne devient jamais un certificat de bonne santé : `thot deps`
+dit « non vérifiées » et rend un code d'erreur.
+
+## Exécuter le code audité sans l'exécuter chez toi
+
+`pytest` sur un dépôt audité, c'est le code de ce dépôt qui tourne sous ton
+compte. C'est le seul endroit où toute la conception fuit.
+
+```bash
+thot sandbox status
+thot sandbox use docker
+thot sandbox show pytest -q     # la commande docker exacte, à relire
+```
+
+Par défaut, dans le conteneur :
+
+| | |
+|---|---|
+| Réseau | **coupé** (`--network none`) |
+| Dépôt | monté en lecture seule, copie inscriptible en tmpfs |
+| Privilèges | `--cap-drop ALL`, `no-new-privileges`, utilisateur 65534 |
+| Bornes | `--pids-limit`, `--memory`, `--cpus`, `--rm` |
+
+Le réseau coupé est le drapeau qui vaut le plus et celui qui gêne le plus :
+c'est pourquoi c'est un drapeau et pas une loi (`--network`).
+
+**Une règle inverse celle du reste de Thot** : partout ailleurs, une
+dépendance manquante coûte sa fonctionnalité et le travail continue. Ici, un
+bac à sable demandé et indisponible **refuse d'exécuter**. Retomber
+silencieusement sur l'hôte transformerait une protection en mensonge.
+
 ## Partager les décisions
 
 Un verdict est un fait sur *cette révision de ce code*. Il voyage donc avec

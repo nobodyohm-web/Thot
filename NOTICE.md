@@ -87,6 +87,25 @@ one memory per verdict with `infer` off, because mem0's inference
 paraphrases and a paraphrased verdict stops matching its finding. No
 upstream code copied.
 
+**Supply-chain audit** (`src/thot/supply/`) — the OSV.dev usage from
+`hermes_cli/security_audit.py` (querybatch, per-advisory detail, severity
+mapping, parallel fetch) and the malware pre-check from
+`tools/osv_check.py`, including its cache-the-verdict-not-the-failure rule,
+whose comment records 779k DNS queries in 16 hours from an uncached retry
+loop. The surface is moved: Hermes scans its own venv, plugins and MCP
+config because it audits the machine it runs on; Thot scans the repository
+under audit, plus the MCP servers the user executes. No upstream code
+copied.
+
+**Sandbox** (`src/thot/sandbox/`) — the container hardening from
+`tools/environments/docker.py`: `--cap-drop ALL`,
+`--security-opt no-new-privileges`, nosuid tmpfs, pids/memory/CPU limits.
+Two of Hermes's eleven environments are kept, local and docker, because
+those are the two that answer "is this code running as me". The lifecycle
+machinery — file sync, long-lived containers, Modal, Daytona, Vercel,
+Singularity, SSH — is not ported: Thot needs one command to run and the
+container to be gone. No upstream code copied.
+
 **Local observability** (`plugins/audit-log/`) — the useful half of Hermes's
 `plugins/observability/*`, without the vendor: a JSONL journal on this
 machine instead of a Langfuse or Datadog client.

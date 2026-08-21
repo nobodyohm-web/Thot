@@ -65,10 +65,16 @@ FIELD_WIDTH = 9
 
 
 def field(label: str, value: str, *, bullet: str = "▪") -> Text:
-    """One `▪ label   value` line, values aligned on a fixed column."""
+    """One `▪ label   value` line, values aligned on a fixed column.
+
+    A label longer than the column keeps its own space rather than running
+    into the value — the alignment is worth less than being able to read
+    the line ("bac à sablelocal" is how this was found).
+    """
     text = Text("   ")
     text.append(f"{bullet} ", style=LAPIS)
-    text.append(label.ljust(FIELD_WIDTH), style=INK)
+    text.append(label.ljust(FIELD_WIDTH) if len(label) < FIELD_WIDTH
+                else f"{label}  ", style=INK)
     text.append(value, style="white")
     return text
 

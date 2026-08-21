@@ -65,6 +65,34 @@ def user_mcp_servers(root: Path) -> tuple[str, ...]:
     return tuple(sorted(names))
 
 
+def user_mcp_definitions(root: Path) -> dict:
+    """The full server declarations, not just their names.
+
+    `user_mcp_servers` answers "what may Thot allow through"; this answers
+    "what is actually going to be executed", which is the question a
+    supply-chain check has to ask.
+    """
+    found: dict = {}
+
+    try:
+        data = json.loads(CLAUDE_CONFIG.read_text())
+    except (OSError, ValueError):
+        data = {}
+    if isinstance(data, dict):
+        found.update(data.get("mcpServers") or {})
+        project = (data.get("projects") or {}).get(str(root)) or {}
+        found.update(project.get("mcpServers") or {})
+
+    try:
+        local = json.loads((Path(root) / ".mcp.json").read_text())
+        found.update(local.get("mcpServers") or {})
+    except (OSError, ValueError, AttributeError):
+        pass
+
+    found.pop("thot", None)
+    return {name: entry for name, entry in found.items() if isinstance(entry, dict)}
+
+
 def configured_model() -> str:
     """The model the official CLI would use, read from its own settings.
 

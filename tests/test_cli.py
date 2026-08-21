@@ -1,5 +1,7 @@
 import json
 
+import pytest
+
 from thot import cli
 from thot.scope.authorization import write_authorization
 
@@ -93,3 +95,61 @@ def test_min_severity_low_shows_more_than_high(toy_repo, capsys):
     cli.main(["audit", str(toy_repo), "--json", "--no-store", "--min-severity", "critical"])
     critical = json.loads(capsys.readouterr().out)["summary"]["total"]
     assert low >= critical
+
+
+# -- every subcommand must actually reach its handler ------------------------
+
+
+def test_no_subcommand_argument_shadows_the_dispatch_key():
+    """`thot sandbox show` silently printed the help for a while.
+
+    Its positional was named `command`, which is the top-level subparser's
+    own dest: parsing overwrote `args.command` with the shell command, the
+    dispatch matched nothing, and argparse printed the usage as if the user
+    had typed nonsense. Any future collision fails here instead.
+    """
+    from thot.cli import build_parser
+
+    parser = build_parser()
+    subparsers = [action for action in parser._actions
+                  if hasattr(action, "choices") and action.choices
+                  and action.dest == "command"]
+    assert subparsers, "le parseur doit avoir des sous-commandes"
+
+    offenders = []
+    for name, sub in subparsers[0].choices.items():
+        for argument in sub._actions:
+            if argument.dest == "command":
+                offenders.append(f"{name}.{argument.dest}")
+            # A nested subparser's dest must not collide either.
+            if getattr(argument, "choices", None) and argument.dest == "command":
+                offenders.append(f"{name} (sous-commandes)")
+    assert offenders == [], f"dest en collision avec la dispatch : {offenders}"
+
+
+@pytest.mark.parametrize(
+    "argv",
+    [
+        ["skills", "list"],
+        ["mcp", "list"],
+        ["sandbox", "status"],
+        ["sandbox", "show", "pytest", "-q"],
+        ["gateway", "list"],
+        ["deps", ".", "--list"],
+        ["sessions", "--all"],
+        ["verdicts", "--where"],
+    ],
+)
+def test_each_subcommand_reaches_a_handler(argv, isolated_home, monkeypatch,
+                                           capsys, tmp_path):
+    """Not about the output — about the dispatch not falling through to help."""
+    from thot.cli import main
+
+    monkeypatch.chdir(tmp_path)
+    code = main(argv)
+    printed = capsys.readouterr().out
+
+    assert code in (0, 2), f"{argv} a rendu {code}"
+    assert "positional arguments:" not in printed, (
+        f"{argv} est retombé sur l'aide au lieu d'un gestionnaire"
+    )
