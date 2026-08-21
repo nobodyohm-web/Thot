@@ -73,6 +73,21 @@ def field(label: str, value: str, *, bullet: str = "▪") -> Text:
     return text
 
 
+def entry(name: str, detail: str, *, width: int = 24) -> Text:
+    """A `name   detail` row whose detail column survives a long name.
+
+    `field` aligns on a fixed narrow column, which is right for a handful of
+    known labels and wrong for a catalogue: a name longer than the column ate
+    the space and ran into its own description.
+    """
+    text = Text("   ")
+    text.append(f"{name}  ", style=ACCENT)
+    if len(name) + 2 < width:
+        text.append(" " * (width - len(name) - 2))
+    text.append(detail, style=INK)
+    return text
+
+
 def _notice(symbol: str, symbol_style: str, message: str, body_style: str) -> None:
     """Print an indented notice whose wrapped lines stay aligned.
 

@@ -82,6 +82,47 @@ déterministes via un petit serveur MCP, et met en forme le flux d'événements.
 Le fil de conversation est porté par `--resume` sur le même identifiant de
 session.
 
+## Skills — les méthodes que Thot connaît
+
+Une skill est une méthode écrite une fois : un `SKILL.md` avec un frontmatter
+YAML. C'est **le format de Hermes Agent et de Prime Agent**, donc une skill
+écrite pour l'un des deux se charge ici sans modification, et l'inverse est
+vrai.
+
+Thot en embarque onze, portées depuis Hermes Agent (MIT — voir `NOTICE.md`) et
+adaptées, plus une native :
+
+| | |
+|---|---|
+| `audit/` | `vulnerability-triage` — nommer l'entrée, puis détruire son propre finding |
+| `software-development/` | `systematic-debugging`, `test-driven-development`, `plan`, `spike`, `simplify-code`, `requesting-code-review`, `python-debugpy` |
+| `review/` | `codebase-inspection`, `github-code-review`, `sdlc-review` |
+
+Le modèle les découvre avec l'outil `skills` et lit celle qui s'applique avec
+`skill`. En session, `/skills` te montre la même liste.
+
+### En ajouter
+
+```
+~/.thot/skills/<nom>/SKILL.md            # partout où tu travailles
+<repo>/.thot/skills/<nom>/SKILL.md       # versionné avec ce dépôt
+```
+
+```markdown
+---
+name: ma-méthode
+description: Ce qu'elle fait et quand s'en servir.
+---
+
+# Ma méthode
+
+Les étapes, dans l'ordre.
+```
+
+Les deux dispositions sont acceptées : un dossier plat (Prime Agent) ou groupé
+par catégories (Hermes Agent). Un nom qui existe déjà remplace la version
+embarquée — de quoi adapter une méthode livrée sans la forker.
+
 ## Les outils du modèle
 
 Les classiques — lire, écrire, éditer, lancer une commande. Toute écriture et

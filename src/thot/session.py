@@ -35,6 +35,11 @@ Les outils `mcp__thot__code_map`, `mcp__thot__find_symbol`, `mcp__thot__callers`
 et `mcp__thot__audit` répondent depuis un index AST et un graphe d'appels \
 précalculés : leurs réponses sont exhaustives et instantanées.
 
+`mcp__thot__skills` liste des méthodes éprouvées (débogage par cause racine, \
+TDD, revue de code, planification, audit). Avant toute tâche non triviale, \
+consulte-les et lis celle qui s'applique avec `mcp__thot__skill`. Elles \
+coûtent une lecture et évitent des allers-retours.
+
 Utilise-les EN PREMIER pour toute question de localisation ou de structure. \
 Un `grep` ou un `Read` exploratoire est presque toujours inutile ici : le graphe \
 sait déjà qui appelle quoi. N'ouvre un fichier que pour en lire le contenu réel, \
@@ -53,6 +58,10 @@ d'appels, chemins de teinte) a été calculée avant cette conversation, et elle
 résumée ci-dessous. Les outils `code_map`, `find_symbol`, `callers` et `audit` \
 interrogent cette carte : leurs réponses sont exhaustives et ne coûtent rien. \
 Utilise-les avant d'ouvrir des fichiers au hasard.
+
+Tu disposes aussi de méthodes écrites : `skills` les liste, `skill` en lit une \
+en entier. Avant une tâche non triviale — un bug tenace, une revue, un plan, \
+un audit — regarde s'il en existe une et suis-la.
 
 Règles de travail :
 - Agis. Si l'utilisateur demande une modification, fais-la avec les outils plutôt \
@@ -333,6 +342,7 @@ class Session:
             theme.console.print()
             for name, description in (
                 ("/status", "sur quoi tu tournes, et où"),
+            ("/skills", "les méthodes disponibles"),
             ("/audit", "relancer l'analyse et afficher les findings"),
             ("/audit deep", "faire analyser puis réfuter les candidats par le modèle"),
                 ("/scan", "recalculer la carte du dépôt"),
@@ -360,6 +370,11 @@ class Session:
                     theme.field("écriture", "sur confirmation")
                 )
             theme.console.print(theme.field("outils", "carte AST + graphe d'appels"))
+            from thot.skills import discover
+
+            theme.console.print(
+                theme.field("skills", f"{len(discover(self.root))} méthodes")
+            )
             if self.claude is not None:
                 from thot.llm.claude_cli import user_mcp_servers
 
@@ -369,6 +384,29 @@ class Session:
                 )
             theme.console.print()
             theme.hint("`/model` pour changer, `thot logout` pour tout oublier.")
+            theme.console.print()
+            return None
+
+        if command == "skills":
+            from thot.skills import discover
+
+            available = discover(self.root)
+            theme.console.print()
+            if not available:
+                theme.hint("Aucun skill.")
+            grouped: dict[str, list] = {}
+            for item in available:
+                grouped.setdefault(item.category or "général", []).append(item)
+            for category in sorted(grouped):
+                theme.console.print(f"   [dim]{category}[/dim]")
+                for item in grouped[category]:
+                    detail = " ".join(item.description.split())
+                    if len(detail) > 48:
+                        detail = detail[:48].rsplit(" ", 1)[0] + "…"
+                    theme.console.print(theme.entry(item.name, detail, width=26))
+                theme.console.print()
+            theme.console.print()
+            theme.hint("Le modèle les lit lui-même avec l'outil `skill`.")
             theme.console.print()
             return None
 

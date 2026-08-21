@@ -20,7 +20,7 @@ SERVER_NAME = "thot"
 
 # Only the deterministic tools are exposed. Reading, writing and running
 # commands stay with the CLI, which already has them and asks for permission.
-EXPOSED = ("code_map", "find_symbol", "callers", "audit")
+EXPOSED = ("code_map", "find_symbol", "callers", "audit", "skills", "skill")
 
 
 def _log(message: str) -> None:

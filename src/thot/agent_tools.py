@@ -184,6 +184,49 @@ def code_map(context: ToolContext, *, pattern: str = "") -> str:
     return f"{len(files)} fichiers\n{listing}{suffix}"
 
 
+_SKILL_CACHE: dict[str, list] = {}
+
+
+def _skills_for(root) -> list:
+    """Discovered once per directory: a session opens dozens of tool calls."""
+    key = str(root)
+    if key not in _SKILL_CACHE:
+        from thot.skills import discover
+
+        _SKILL_CACHE[key] = discover(root)
+    return _SKILL_CACHE[key]
+
+
+def skills(context: ToolContext, *, query: str = "") -> str:
+    """The catalogue: one line each, cheap enough to read before choosing."""
+    available = _skills_for(context.root)
+    if query:
+        needle = query.lower()
+        available = [
+            s for s in available
+            if needle in s.name.lower()
+            or needle in s.description.lower()
+            or needle in s.category.lower()
+        ]
+    if not available:
+        return f"Aucun skill ne correspond à « {query} »." if query else "Aucun skill."
+    lines = [s.summary() for s in available]
+    return f"{len(available)} skill(s)\n" + "\n".join(lines)
+
+
+def skill(context: ToolContext, *, name: str) -> str:
+    """The full method. Read it before applying it, not after."""
+    available = _skills_for(context.root)
+    exact = [s for s in available if s.name == name]
+    chosen = exact or [s for s in available if name.lower() in s.name.lower()]
+    if not chosen:
+        near = ", ".join(s.name for s in available[:8])
+        return f"Skill « {name} » inconnu. Disponibles : {near}…"
+    found = chosen[0]
+    header = f"# {found.name}\n\n{found.description}\n"
+    return f"{header}\n---\n\n{found.body}"
+
+
 def find_symbol(context: ToolContext, *, name: str) -> str:
     recon = context.recon
     needle = name.lower()
@@ -311,6 +354,26 @@ SPECS: list[ToolSpec] = [
         },
     ),
     ToolSpec(
+        name="skills",
+        description="Lister les méthodes disponibles (audit, débogage, TDD, "
+                    "revue, planification). Gratuit. À consulter avant de "
+                    "commencer une tâche non triviale.",
+        parameters={
+            "type": "object",
+            "properties": {"query": _STRING},
+        },
+    ),
+    ToolSpec(
+        name="skill",
+        description="Lire une méthode en entier, par son nom. À faire avant de "
+                    "l'appliquer.",
+        parameters={
+            "type": "object",
+            "properties": {"name": _STRING},
+            "required": ["name"],
+        },
+    ),
+    ToolSpec(
         name="code_map",
         description="Lister les fichiers du projet. Sans motif : tout. Avec motif : glob (`*.py`, `src/**`) ou fragment de chemin (`auth`). Gratuit : réponse issue de l'index, aucun fichier ouvert.",
         parameters={
@@ -352,6 +415,8 @@ HANDLERS: dict[str, Callable[..., str]] = {
     "edit_file": edit_file,
     "list_dir": list_dir,
     "run_command": run_command,
+    "skills": skills,
+    "skill": skill,
     "code_map": code_map,
     "find_symbol": find_symbol,
     "callers": callers,
