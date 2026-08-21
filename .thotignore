@@ -1,0 +1,13 @@
+# What Thot ships but did not write. These are the skill and MCP libraries
+# ported from Hermes Agent: third-party documentation with example scripts
+# inside. Auditing them does not produce findings about Thot, it produces
+# noise that hides them.
+#
+# `thot skills scan` is the right tool for this content — it asks whether a
+# skill is safe to trust, which is the question these files actually pose.
+skills/
+optional-skills/
+mcp-catalog/
+
+# Deliberately broken code, kept broken on purpose.
+tests/fixtures/
