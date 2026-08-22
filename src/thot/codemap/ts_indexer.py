@@ -70,75 +70,146 @@ _METHOD = re.compile(
 _CALL = re.compile(rf"\b({_IDENT}(?:\.{_IDENT})*)\s*\(")
 
 
+# The only characters that can start a comment or a string. Everything
+# between two of them is ordinary code, and stepping through it one character
+# at a time was most of the cost of reading a file.
+_INTERESTING = re.compile(r"[/'\"`]")
+_NOT_NEWLINE = re.compile(r"[^\n]")
+
+
+def _blank(segment: str) -> str:
+    """Whitespace of the same length, with the newlines kept."""
+    return _NOT_NEWLINE.sub(" ", segment)
+
+
+def _skip_string(source: str, index: int) -> int:
+    """Index just past the string literal that starts at `index`."""
+    quote = source[index]
+    index += 1
+    length = len(source)
+    while index < length:
+        char = source[index]
+        if char == "\\":
+            index += 2
+            continue
+        if quote == "`" and char == "$" and index + 1 < length \
+                and source[index + 1] == "{":
+            index = _interpolation_end(source, index + 2)
+            index += 1
+            continue
+        if char == quote:
+            return index + 1
+        index += 1
+    return length
+
+
+def _interpolation_end(source: str, index: int) -> int:
+    """Index of the `}` closing an interpolation opened just before `index`.
+
+    Brace-matching that steps over string literals, because `${obj["}"]}` is
+    legal and a scanner that counted that brace would end the interpolation
+    two characters early and unbalance everything after it.
+    """
+    depth = 1
+    length = len(source)
+    while index < length:
+        char = source[index]
+        if char == "\\":
+            index += 2
+            continue
+        if char in "\"'`":
+            index = _skip_string(source, index)
+            continue
+        if char == "{":
+            depth += 1
+        elif char == "}":
+            depth -= 1
+            if depth == 0:
+                return index
+        index += 1
+    return length
+
+
 def _mask(source: str) -> str:
     """Blank out comments and string bodies, keeping every offset and newline.
 
     Everything downstream works on offsets: braces inside a template literal
     would otherwise close a function three lines early, and a `//` inside a
     URL string would swallow the rest of the line.
+
+    The scan jumps rather than steps. Only four characters can begin a
+    comment or a string, so the loop finds the next one and copies everything
+    before it untouched — on a 22 000-line generated file that is the
+    difference between reading it and waiting for it.
+
+    An interpolation is masked *recursively*, because `${…}` holds code and
+    that code holds strings of its own. Treating its contents as opaque text
+    left `${x.join("\\n")}` with a live backslash-n and left nested quotes
+    unmasked; blanking it wholesale would have hidden the calls inside it
+    from the call graph. Recursion is the only answer that is right about
+    both.
     """
-    out = list(source)
+    out: list[str] = []
     index, length = 0, len(source)
     while index < length:
+        hit = _INTERESTING.search(source, index)
+        if hit is None:
+            out.append(source[index:])
+            break
+        begin = hit.start()
+        out.append(source[index:begin])
+        index = begin
         char = source[index]
         nxt = source[index + 1] if index + 1 < length else ""
 
         if char == "/" and nxt == "/":
-            while index < length and source[index] != "\n":
-                out[index] = " "
-                index += 1
+            stop = source.find("\n", index)
+            stop = length if stop == -1 else stop
+            out.append(_blank(source[index:stop]))
+            index = stop
             continue
 
         if char == "/" and nxt == "*":
-            out[index] = out[index + 1] = " "
-            index += 2
-            while index < length and not (
-                source[index] == "*" and index + 1 < length
-                and source[index + 1] == "/"
-            ):
-                if source[index] != "\n":
-                    out[index] = " "
-                index += 1
-            for _ in range(2):
-                if index < length:
-                    out[index] = " "
-                    index += 1
+            stop = source.find("*/", index + 2)
+            stop = length if stop == -1 else stop + 2
+            out.append(_blank(source[index:stop]))
+            index = stop
             continue
 
-        if char in "\"'`":
-            quote = char
+        if char == "/":  # a division, or a regex literal: ordinary code
+            out.append(char)
             index += 1
-            depth = 0
-            while index < length:
-                current = source[index]
-                if current == "\\":
-                    out[index] = " "
-                    if index + 1 < length and source[index + 1] != "\n":
-                        out[index + 1] = " "
-                    index += 2
-                    continue
-                if quote == "`" and current == "$" and index + 1 < length \
-                        and source[index + 1] == "{":
-                    # An interpolation is code: leave it visible.
-                    depth += 1
-                    index += 2
-                    continue
-                if depth and current == "}":
-                    depth -= 1
-                    index += 1
-                    continue
-                if depth:
-                    index += 1
-                    continue
-                if current == quote:
-                    index += 1
-                    break
-                if current != "\n":
-                    out[index] = " "
-                index += 1
             continue
 
+        quote = char
+        out.append(char)  # the delimiter itself stays
         index += 1
+        segment_start = index
+        while index < length:
+            current = source[index]
+            if current == "\\":
+                index += 2
+                continue
+            if quote == "`" and current == "$" and index + 1 < length \
+                    and source[index + 1] == "{":
+                out.append(_blank(source[segment_start:index]))
+                out.append("${")
+                inner = index + 2
+                closing = _interpolation_end(source, inner)
+                out.append(_mask(source[inner:closing]))
+                if closing < length:
+                    out.append("}")
+                index = closing + 1
+                segment_start = index
+                continue
+            if current == quote:
+                out.append(_blank(source[segment_start:index]))
+                out.append(quote)
+                index += 1
+                break
+            index += 1
+        else:
+            out.append(_blank(source[segment_start:index]))
 
     return "".join(out)
 

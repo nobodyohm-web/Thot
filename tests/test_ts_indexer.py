@@ -8,6 +8,8 @@ is the second half: the shapes it must NOT report.
 
 from __future__ import annotations
 
+import pytest
+
 from thot.codemap.ts_indexer import TypeScriptIndexer
 
 
@@ -110,3 +112,56 @@ def test_a_symbol_is_named_after_its_module():
         "function run() {}\n", "packages/agent/src/main.ts"
     )
     assert found[0].name == "packages.agent.src.main.run"
+
+
+# -- masking: the invariant everything downstream depends on -----------------
+
+
+TRICKY = [
+    'const a = `x ${y.join("\\n")} z`;',
+    'const b = `${obj["}"]} apres`;',
+    'const c = `${f(`${g()}`)} fin`;',
+    'const d = "il a dit \\"bonjour\\" puis // pas un commentaire";',
+    "const e = 'a /* pas un bloc */ b';",
+    "const f = `ligne\nune\n${x}\nligne\ndeux`;",
+    "const g = /regex[\"'`]/.test(s);",
+    "const h = `${`${`${x}`}`}`;",
+    "// commentaire jusqu'au bout",
+    "/* non fermé",
+    "const i = `non fermé ${",
+]
+
+
+@pytest.mark.parametrize("source", TRICKY)
+def test_masking_keeps_every_offset_and_every_newline(source):
+    """Offsets are load-bearing: the indexer finds symbols by brace matching
+    and the taint engine locates sinks by line. A mask that shifts one
+    character shifts every finding after it."""
+    from thot.codemap.ts_indexer import _mask
+
+    masked = _mask(source)
+    assert len(masked) == len(source)
+    assert masked.count("\n") == source.count("\n")
+
+
+def test_an_interpolation_keeps_its_code_and_loses_its_strings():
+    """`${…}` holds code, and that code holds strings of its own.
+
+    Treating the whole interpolation as opaque left a live `\\n` inside it
+    and hid nested quotes from the scanner; blanking it wholesale would have
+    hidden the calls inside it from the call graph.
+    """
+    from thot.codemap.ts_indexer import _mask
+
+    masked = _mask('const a = `x ${y.join("\\n")} z`;')
+    assert "y.join(" in masked, "l'appel doit rester visible"
+    assert "\\n" not in masked, "la chaîne imbriquée doit être effacée"
+
+
+def test_a_brace_inside_a_nested_string_does_not_end_the_interpolation():
+    """`${obj["}"]}` is legal, and counting that brace unbalances the rest."""
+    from thot.codemap.ts_indexer import _mask
+
+    masked = _mask('const b = `${obj["}"]} apres`;')
+    assert masked.count("{") == masked.count("}")
+    assert "obj[" in masked
