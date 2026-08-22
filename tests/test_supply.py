@@ -439,3 +439,63 @@ def test_two_versions_of_one_package_are_both_kept(tmp_path):
 
     versions = sorted(c.version for c in discover(tmp_path) if c.name == "shared")
     assert versions == ["1.0.0", "2.0.0"]
+
+
+# --- ce qui a été mis hors périmètre doit être nommé -----------------------
+#
+# À la racine de l'arbre livré, `.thotignore` écarte `hermes/` et `prime/`
+# — délibérément : `thot fusion audit` les traite chacun de son côté. Le
+# rapport de dépendances, lui, imprimait « 254 dépendance(s), aucune
+# vulnérabilité connue » sans un mot sur les deux dossiers écartés, qui
+# portaient six vulnérabilités dont trois hautes. Un périmètre tu se lit
+# comme un périmètre entier.
+
+
+def test_an_ignored_directory_holding_manifests_is_named(tmp_path):
+    from thot.supply.discover import skipped_manifest_dirs
+
+    (tmp_path / ".thotignore").write_text("legacy/\n", encoding="utf-8")
+    _lock(tmp_path / "package-lock.json", {"root-dep": "1.0.0"})
+    _lock(tmp_path / "legacy" / "package-lock.json", {"legacy-dep": "9.9.9"})
+
+    assert skipped_manifest_dirs(tmp_path) == ("legacy",)
+
+
+def test_an_ignored_directory_with_nothing_to_audit_is_not_named(tmp_path):
+    from thot.supply.discover import skipped_manifest_dirs
+
+    (tmp_path / ".thotignore").write_text("notes/\n", encoding="utf-8")
+    _lock(tmp_path / "package-lock.json", {"root-dep": "1.0.0"})
+    (tmp_path / "notes").mkdir()
+    (tmp_path / "notes" / "todo.md").write_text("rien", encoding="utf-8")
+
+    assert skipped_manifest_dirs(tmp_path) == ()
+
+
+def test_a_vendored_tree_is_not_worth_naming(tmp_path):
+    from thot.supply.discover import skipped_manifest_dirs
+
+    # Le motif est écrit explicitement, sinon la fonction sort avant même
+    # d'atteindre la garde et le test passerait sans rien vérifier.
+    (tmp_path / ".thotignore").write_text("node_modules/\n", encoding="utf-8")
+    _lock(tmp_path / "package-lock.json", {"root-dep": "1.0.0"})
+    _lock(tmp_path / "node_modules" / "x" / "package-lock.json", {"v": "1.0.0"})
+
+    # Personne n'attend un audit de `node_modules`, et le nommer enterrerait
+    # la ligne qui compte.
+    assert skipped_manifest_dirs(tmp_path) == ()
+
+
+def test_the_summary_says_what_it_did_not_look_at(tmp_path):
+    from thot.supply import audit_dependencies
+
+    (tmp_path / ".thotignore").write_text("legacy/\n", encoding="utf-8")
+    _lock(tmp_path / "package-lock.json", {"root-dep": "1.0.0"})
+    _lock(tmp_path / "legacy" / "package-lock.json", {"legacy-dep": "9.9.9"})
+
+    def handler(request):
+        return httpx.Response(200, json={"results": [{} for _ in range(50)]})
+
+    result = audit_dependencies(tmp_path, client=_client(handler))
+
+    assert "legacy" in result.summary(), result.summary()

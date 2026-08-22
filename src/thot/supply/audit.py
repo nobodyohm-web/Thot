@@ -46,13 +46,28 @@ class SupplyResult:
     components: int
     checked: bool           # whether the lookup actually happened
     error: str = ""
+    # Directories `.thotignore` put out of scope that hold dependencies of
+    # their own. Often deliberate — on the shipped tree `hermes/` and `prime/`
+    # are audited separately — but never something to leave unsaid: a scope
+    # that stays quiet reads as a whole scope.
+    skipped: tuple[str, ...] = ()
+
+    def _aside(self) -> str:
+        if not self.skipped:
+            return ""
+        return (f"\n{len(self.skipped)} dossier(s) hors périmètre, avec leurs "
+                f"propres dépendances : {', '.join(self.skipped)} — "
+                f"`thot deps {self.skipped[0]}` pour les auditer.")
 
     def summary(self) -> str:
         if not self.checked:
-            return f"{self.components} dépendance(s) — non vérifiées : {self.error}"
+            return (f"{self.components} dépendance(s) — non vérifiées : "
+                    f"{self.error}") + self._aside()
         if not self.findings:
-            return f"{self.components} dépendance(s), aucune vulnérabilité connue."
-        return f"{self.components} dépendance(s), {len(self.findings)} vulnérable(s)."
+            return (f"{self.components} dépendance(s), aucune vulnérabilité "
+                    f"connue.") + self._aside()
+        return (f"{self.components} dépendance(s), {len(self.findings)} "
+                f"vulnérable(s).") + self._aside()
 
 
 def _finding(component: Component, advisory: Advisory) -> Finding:
@@ -100,9 +115,12 @@ def _finding(component: Component, advisory: Advisory) -> Finding:
 def audit_dependencies(root: Path | str, *,
                        client: OsvClient | None = None) -> SupplyResult:
     """Look up every pinned dependency of this repository against OSV."""
+    from thot.supply.discover import skipped_manifest_dirs
+
     components = discover(root)
+    aside = skipped_manifest_dirs(root)
     if not components:
-        return SupplyResult([], 0, checked=True)
+        return SupplyResult([], 0, checked=True, skipped=aside)
 
     owned = client is None
     client = client or OsvClient()
@@ -110,7 +128,7 @@ def audit_dependencies(root: Path | str, *,
         hits = client.query(components)
         if not hits and client.last_error:
             return SupplyResult([], len(components), checked=False,
-                                error=client.last_error)
+                                error=client.last_error, skipped=aside)
 
         every_id = [i for ids in hits.values() for i in ids]
         advisories = client.details(every_id)
@@ -125,7 +143,7 @@ def audit_dependencies(root: Path | str, *,
             client.close()
 
     findings.sort(key=lambda f: (-_rank(f.severity), f.location.symbol))
-    return SupplyResult(findings, len(components), checked=True)
+    return SupplyResult(findings, len(components), checked=True, skipped=aside)
 
 
 _ORDER = (Severity.INFO, Severity.LOW, Severity.MEDIUM, Severity.HIGH,

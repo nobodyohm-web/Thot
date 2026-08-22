@@ -307,6 +307,61 @@ def _manifests_in(root: Path, names: set[str]) -> dict[str, list[Path]]:
     return found
 
 
+def skipped_manifest_dirs(root: Path | str) -> tuple[str, ...]:
+    """Directories `.thotignore` put out of scope that hold dependencies.
+
+    Being out of scope is often right — on the shipped tree `hermes/` and
+    `prime/` are excluded because `thot fusion audit` handles each on its own
+    terms. What is never right is saying nothing: "254 dependencies, no known
+    vulnerability" read as a clean bill while the two excluded folders carried
+    six between them, three of them HIGH.
+
+    Vendored trees are not named: nobody expects an audit of `node_modules`,
+    and listing it would bury the line that matters.
+    """
+    from thot.scope.detect import is_ignored, load_ignore
+
+    root = Path(root)
+    patterns = load_ignore(root)
+    if not patterns:
+        return ()
+
+    names = {name for name, _ in LOCKFILES} | {name for name, _ in MANIFESTS}
+    skipped: list[str] = []
+    try:
+        entries = sorted(root.iterdir())
+    except OSError:
+        return ()
+    for entry in entries:
+        if not entry.is_dir() or entry.name in VENDORED:
+            continue
+        if entry.name.startswith("."):
+            continue
+        if not is_ignored(entry.name, patterns):
+            continue
+        if any(_holds_manifest(entry, names)):
+            skipped.append(entry.name)
+    return tuple(skipped)
+
+
+def _holds_manifest(directory: Path, names: set[str]):
+    """Yield once if anything under `directory` is a manifest. Stops early."""
+    stack = [directory]
+    while stack:
+        current = stack.pop()
+        try:
+            entries = list(current.iterdir())
+        except OSError:
+            continue
+        for entry in entries:
+            if entry.is_dir():
+                if entry.name not in VENDORED and not entry.name.startswith("."):
+                    stack.append(entry)
+            elif entry.name in names:
+                yield True
+                return
+
+
 def discover(root: Path | str) -> list[Component]:
     """Every pinned dependency this repository declares, deduplicated.
 
