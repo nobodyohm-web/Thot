@@ -724,9 +724,24 @@ def test_the_readme_shows_every_check_the_doctor_runs(tmp_path):
     claimed = re.search(r"^(\d+)/(\d+) vérification\(s\) passées", readme, re.M)
     assert claimed, "le bloc d'exemple de `thot doctor` a disparu du README"
 
-    total = len(doctor.run(tmp_path))
+    checks = doctor.run(tmp_path)
 
-    assert int(claimed.group(2)) == total, (
+    assert int(claimed.group(2)) == len(checks), (
         f"le README annonce {claimed.group(2)} vérifications, "
-        f"`doctor.run` en produit {total}"
+        f"`doctor.run` en produit {len(checks)}"
+    )
+
+    # Les noms et leur ordre, pas seulement le compte : c'est ainsi que
+    # `câblage` a pu être ajouté sans que l'exemple le montre. Les détails de
+    # chaque ligne dépendent de la machine (450 décisions, 91 skills) et ne
+    # sont pas comparables ; les noms, si.
+    block = readme[readme.index("✓ fusion"):claimed.start()]
+    listed = [
+        line.split(maxsplit=2)[1]
+        for line in block.splitlines()
+        if line.startswith(("✓ ", "✗ "))
+    ]
+
+    assert listed == [c.name for c in checks], (
+        f"README : {listed}\n`doctor.run` : {[c.name for c in checks]}"
     )
