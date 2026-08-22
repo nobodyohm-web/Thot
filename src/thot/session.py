@@ -347,23 +347,46 @@ class Session:
         theme.console.print()
 
     def _warn_about_refused_skills(self) -> None:
-        """Say out loud when this repository tried to supply a skill.
+        """Say out loud when a skill was refused, and by whom it was offered.
 
-        Silently dropping it would be safe and useless: the user needs to
-        know the repository they are auditing tried to write part of the
-        briefing, because that is itself a finding.
+        Silently dropping it would be safe and useless: a repository that
+        tried to write part of the briefing is itself a finding. But the
+        screened sources are not only the repository — Hermes's and Prime's
+        installed libraries go through the same guard, and calling those
+        "supplied by this repository" accuses the audited code of something
+        the user's own installation did. On a third-party repository that
+        accusation is both alarming and false.
         """
         from thot.skills.loader import discover_report
 
         refused = discover_report(self.root)[1]
         if not refused:
             return
+
+        here = Path(self.root).resolve()
+
+        def from_repo(item) -> bool:
+            try:
+                Path(item.path).resolve().relative_to(here)
+            except ValueError:
+                return False
+            return True
+
+        mine = [item for item in refused if from_repo(item)]
+        theirs = [item for item in refused if not from_repo(item)]
+
         theme.console.print()
-        theme.warn(
-            f"{len(refused)} skill(s) fourni(s) par ce dépôt ont été refusés — "
-            f"ils seraient passés au modèle comme instructions."
-        )
-        for item in refused:
+        if mine:
+            theme.warn(
+                f"{len(mine)} skill(s) fourni(s) par ce dépôt ont été refusés — "
+                f"ils seraient passés au modèle comme instructions."
+            )
+        if theirs:
+            theme.warn(
+                f"{len(theirs)} skill(s) installés sur cette machine (Hermes, "
+                f"Prime) ont été refusés — ils ne viennent pas du code audité."
+            )
+        for item in mine + theirs:
             theme.console.print(theme.entry(item.name, item.summary()[:70], width=20))
 
     def _warn_about_refused_plugins(self) -> None:

@@ -423,3 +423,42 @@ def test_the_next_sweep_stops_paying_for_a_refuted_finding(session, monkeypatch)
     assert not select_for_analysis(fresh.findings, 10), (
         "un finding réfuté ne doit plus être soumis au modèle"
     )
+
+
+def test_a_refused_skill_is_attributed_to_whoever_offered_it(tmp_path, capsys):
+    """Calling someone else's library "supplied by this repository" is an
+    accusation, and on a third-party repository it is a false one.
+
+    Hermes's and Prime's installed libraries go through the same guard as the
+    audited repository's own skills. The message said all of them came from
+    the code being audited.
+    """
+    from pathlib import Path
+
+    from thot.session import Session
+    from thot.skills.loader import Rejected
+
+    repo_skill = Rejected(name="local", path=tmp_path / ".thot" / "skills"
+                          / "local" / "SKILL.md", verdict="dangerous",
+                          reasons=("lit ~/.thot",))
+    machine_skill = Rejected(name="ailleurs",
+                             path=Path.home() / ".hermes" / "skills"
+                             / "ailleurs" / "SKILL.md",
+                             verdict="dangerous", reasons=("npm install",))
+
+    session = Session.__new__(Session)
+    session.root = tmp_path
+
+    import thot.skills.loader as loader
+
+    original = loader.discover_report
+    loader.discover_report = lambda root=None, **kw: ([], [repo_skill,
+                                                          machine_skill])
+    try:
+        session._warn_about_refused_skills()
+    finally:
+        loader.discover_report = original
+
+    printed = capsys.readouterr().out
+    assert "1 skill(s) fourni(s) par ce dépôt" in printed
+    assert "1 skill(s) installés sur cette machine" in printed
