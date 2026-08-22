@@ -459,3 +459,57 @@ def test_verdicts_without_an_argument_still_means_here(toy_repo, capsys,
     monkeypatch.chdir(toy_repo)
 
     assert cli.main(["verdicts"]) == 0
+
+
+# --- une phrase d'aide est une affirmation sur le programme ----------------
+#
+# `thot verdicts <chemin>` a été conseillé dans une sortie alors que la
+# commande ne prenait pas d'argument : le conseil pointait sur une erreur
+# d'usage. Écrire une phrase d'aide, c'est affirmer quelque chose du
+# programme, et cela mérite la même vérification qu'une ligne de code.
+
+
+def _advertised_commands() -> set[tuple[str, ...]]:
+    """Every `thot …` command quoted in the source, as token tuples."""
+    import re
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parents[1]
+    quoted = re.compile(r"`thot ((?:[a-z][a-z-]*)(?: [a-z][a-z-]*)*)")
+    found: set[tuple[str, ...]] = set()
+    for folder in ("src/thot", "plugins"):
+        for path in (root / folder).rglob("*.py"):
+            if "__pycache__" in path.parts:
+                continue
+            for match in quoted.findall(path.read_text(encoding="utf-8")):
+                found.add(tuple(match.split()))
+    return found
+
+
+def test_every_command_the_program_suggests_exists():
+    import argparse
+
+    from thot import cli
+
+    parser = cli.build_parser()
+    top = parser._subparsers._group_actions[0].choices
+    inner = {}
+    for name, sub in top.items():
+        for action in sub._actions:
+            if isinstance(action, argparse._SubParsersAction):
+                inner[name] = set(action.choices)
+
+    unknown = []
+    for tokens in sorted(_advertised_commands()):
+        if tokens[0] not in top:
+            unknown.append(" ".join(tokens))
+            continue
+        if len(tokens) > 1 and tokens[0] in inner and tokens[1] not in inner[tokens[0]]:
+            unknown.append(" ".join(tokens))
+
+    assert unknown == [], unknown
+
+
+def test_the_sweep_actually_finds_commands():
+    """Guard the guard: an empty sweep would pass the test above silently."""
+    assert len(_advertised_commands()) >= 20
