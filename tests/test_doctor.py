@@ -705,3 +705,28 @@ def test_the_loop_check_reports_a_job_that_never_wrote(tmp_path, monkeypatch):
 
     assert ok is False, detail
     assert "jamais exécutée" in detail, detail
+
+
+def test_the_readme_shows_every_check_the_doctor_runs(tmp_path):
+    """The README's sample drifted to eleven checks while the tool ran twelve.
+
+    Nothing guarded it, and a README that undersells the tool is as wrong as
+    one that oversells it. The count is the part a reader trusts without
+    verifying, so it is the part worth pinning.
+    """
+    import re
+
+    from thot.paths import home  # noqa: F401  (kept: home isolation is autouse)
+
+    readme = (Path(__file__).resolve().parents[1] / "README.md").read_text(
+        encoding="utf-8"
+    )
+    claimed = re.search(r"^(\d+)/(\d+) vérification\(s\) passées", readme, re.M)
+    assert claimed, "le bloc d'exemple de `thot doctor` a disparu du README"
+
+    total = len(doctor.run(tmp_path))
+
+    assert int(claimed.group(2)) == total, (
+        f"le README annonce {claimed.group(2)} vérifications, "
+        f"`doctor.run` en produit {total}"
+    )

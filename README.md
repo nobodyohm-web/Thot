@@ -867,6 +867,7 @@ thot doctor
 
 ```
 ✓ fusion                 thot · hermes · prime
+✓ câblage                3/3 fichiers en place
 ✓ moteurs                claude, hermes, prime
 ✓ panel                  claude-cli contre hermes contre prime · cascade oui
 ✓ indexeurs              python 9 symbole(s) · typescript 1
@@ -874,12 +875,22 @@ thot doctor
 ✓ règles                 python 7 sinks · javascript 8
 ✓ skills                 91 chargée(s) · 8 refusée(s)
 ✓ plugins                4 chargé(s) · 0 refusé(s)
-✓ mémoire                232 décision(s)
+✓ mémoire                450 décision(s)
 ✓ mcp                    6 outil(s) exposé(s)
-✓ amélioration           daily, 8 candidats par arbre
+✗ amélioration           daily, 8 candidats par arbre · l'import passe par
+                         /Users/dev/Desktop/Thot/src, que macOS refuse à un
+                         agent launchd — le job se bloque au démarrage de
+                         l'interpréteur, sans écrire une ligne.
 
-11/11 vérification(s) passées en 0.87 s
+11/12 vérification(s) passées en 0.96 s
 ```
+
+La dernière ligne est la sortie réelle sur la machine de développement, et
+elle est gardée telle quelle : c'est ce que le contrôle sert à produire. Un
+`launchctl list` montre l'unité chargée, son `LastExitStatus` vaut 0, et son
+journal n'existe pas — trois signaux qui disent « tout va bien » pour une
+tâche qui n'a jamais démarré. Nommer la cause vaut mieux que compter les
+lignes vertes.
 
 Et une vérification qu'aucune inspection statique n'aurait pu faire :
 
@@ -889,9 +900,23 @@ thot doctor --agents        # un appel modèle par agent installé
 
 ```
 ✓ lecture · claude       lit un fichier par chemin absolu
+✓ écriture · claude      n'a pas écrit cette fois
+✓ outils · claude        10 outil(s), tous en lecture seule
 ✓ lecture · hermes       lit un fichier par chemin absolu
+✓ écriture · hermes      peut écrire — aucun mode lecture seule
+                         (`-t file` et `--safe-mode` ne restreignent pas les permissions)
+✓ outils · hermes        mcp__patch, mcp__read_file, mcp__search_files, mcp__write_file
 ✓ lecture · prime        lit un fichier par chemin absolu
+✓ écriture · prime       peut écrire — outil unique : un noyau IPython
+✓ outils · prime         ipython
 ```
+
+Les lignes d'écriture sont vertes alors qu'elles annoncent une capacité
+gênante : elles rapportent ce qui est, pas ce qu'on voudrait. Deux des trois
+agents peuvent écrire et aucun drapeau ne l'empêche — mesuré en leur demandant
+de créer un fichier, puis en regardant le disque. Ce qui ne peut pas être
+empêché est rendu impossible à manquer : `AuditResult.touched` nomme ce qu'une
+passe a modifié, et la boucle nocturne le crie sur `stderr`.
 
 Elle plante un fichier dans un dossier temporaire et demande son contenu.
 Elle existe à cause d'un défaut réel : Hermes n'ouvrait pas un chemin relatif
@@ -994,7 +1019,7 @@ Thot embarque **la bibliothèque complète d'Hermes Agent** (MIT — voir
 `NOTICE.md`) : 90 méthodes chargées, 117 de plus disponibles.
 
 ```bash
-thot skills list              # les 90 chargées
+thot skills list              # les 91 chargées
 thot skills search pentest    # y compris la bibliothèque optionnelle
 thot skills install ast-grep  # activer une optionnelle
 thot skills show plan         # ce que lirait le modèle
