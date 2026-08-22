@@ -1643,12 +1643,16 @@ class Session:
         # honest number in account mode — Thot's own list holds neither the
         # files a tool read nor the tool traffic itself.
         measured = int(getattr(self.claude, "last_tokens", 0) or 0)
-        proposal = compaction.plan(self.messages, budget=compaction.AUTO_BUDGET)
+        # Sized from the window the CLI reported, not from a constant.
+        budget = compaction.budget_for(
+            int(getattr(self.claude, "context_window", 0) or 0)
+        )
+        proposal = compaction.plan(self.messages, budget=budget)
         if not compaction.should_compact(estimated=proposal.before,
-                                         measured=measured):
+                                         measured=measured, budget=budget):
             return
 
-        full = measured >= compaction.AUTO_BUDGET
+        full = measured >= budget
         theme.console.print()
         theme.warn(
             f"Contexte à ~{max(proposal.before, measured)} jetons — compactage "
@@ -1657,7 +1661,7 @@ class Session:
         # A full window with a short message list is the ordinary account-mode
         # shape: there is little of Thot's own to summarise, and restarting the
         # CLI thread is what actually frees the context.
-        self._compact("", budget=compaction.AUTO_BUDGET, force=full)
+        self._compact("", budget=budget, force=full)
 
     @staticmethod
     def _carry_text(messages) -> str:

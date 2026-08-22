@@ -170,6 +170,7 @@ class ClaudeCli:
     session_id: str = field(default_factory=lambda: str(uuid.uuid4()))
     active_model: str = ""  # what the CLI actually used, learned from the stream
     last_tokens: int = 0  # what the last turn cost, learned from the result event
+    context_window: int = 0  # the model's window, published by the CLI itself
     isolated: bool = False  # cut the user's own MCP servers out of the session
     denied: tuple[str, ...] = ()  # CLI tools the session's posture forbids
     _started: bool = False
@@ -310,6 +311,15 @@ class ClaudeCli:
                             "cache_read_input_tokens",
                             "cache_creation_input_tokens")
             )
+            # The CLI names the window per model, so Thot never has to keep a
+            # model-to-window table correct: {"claude-opus-5[1m]": {...,
+            # "contextWindow": 1000000}}. Without it the compaction threshold
+            # is a constant that is right for one window size and wrong for
+            # every other.
+            for entry in (event.get("modelUsage") or {}).values():
+                window = int((entry or {}).get("contextWindow") or 0)
+                if window > self.context_window:
+                    self.context_window = window
             if event.get("is_error"):
                 events.on_error(str(event.get("result", "erreur inconnue")))
 

@@ -413,6 +413,15 @@ modèle se souvient au lieu de relire.
 qui garde le lien. Compacter coûte du contexte, jamais des preuves : la session
 parente reste entière et `/search` la trouve toujours.
 
+Le compactage se déclenche aussi tout seul, et le seuil n'est pas une
+constante : le CLI publie la fenêtre du modèle qu'il emploie
+(`contextWindow: 1000000` pour `claude-opus-5[1m]`), et Thot compacte à 70 %
+de cette fenêtre — 700 000 jetons ici, 140 000 sur une fenêtre de 200k. Le
+déclencheur lit la taille réelle rapportée par le CLI, pas une estimation
+faite sur les messages : en mode compte le fil appartient au CLI, et Thot n'y
+voit ni les fichiers lus ni le trafic d'outils. Mesuré sur un tour ordinaire,
+l'estimation donnait 95 jetons contre 88 290 réellement dans la fenêtre.
+
 ## Objectifs — savoir quand s'arrêter
 
 Un objectif survit à la conversation qu'il traverse, et se rappelle au modèle

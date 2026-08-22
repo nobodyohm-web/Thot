@@ -50,6 +50,30 @@ def estimate_tokens(text: str) -> int:
     return max(1, len(text or "") // CHARS_PER_TOKEN)
 
 
+# How full the window is allowed to get before the thread is restarted. The
+# headroom is for the next turn: a single tool result can be very large, and
+# a compaction that leaves no room simply fails again on the following turn.
+FILL = 0.7
+
+
+def budget_for(window: int) -> int:
+    """The automatic threshold for a window of this size.
+
+    The CLI publishes `contextWindow` per model in its result event — measured
+    as 1 000 000 for `claude-opus-5[1m]` — so nothing here has to guess, and no
+    model-to-window table has to be kept correct. A fixed 120 000 is right for
+    a 200k window and eight times too low for a 1M one: it would compact a long
+    task that still had 880 000 tokens ahead of it.
+
+    An unknown window keeps the old constant, which is deliberately low —
+    compacting early costs context and recovers, compacting late kills the
+    thread.
+    """
+    if window <= 0:
+        return AUTO_BUDGET
+    return int(window * FILL)
+
+
 def should_compact(*, estimated: int, measured: int = 0,
                    budget: int = AUTO_BUDGET) -> bool:
     """Whether the window is full enough to be worth restarting the thread.

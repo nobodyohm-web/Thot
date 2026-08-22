@@ -7,6 +7,8 @@ a follow-up question met a paraphrase of the answer instead of the answer.
 
 from __future__ import annotations
 
+from pathlib import Path
+
 from dataclasses import dataclass
 
 from thot.state import compaction
@@ -273,3 +275,64 @@ def test_a_local_session_without_a_cli_still_uses_its_own_estimate():
 
     assert fake.compacted is not None
     assert fake.compacted[1] is False, "rien de mesuré : pas de forçage"
+
+
+# --- le seuil se déduit de la fenêtre annoncée par le CLI ------------------
+#
+# Un seuil fixe à 120 000 est juste pour une fenêtre de 200k et huit fois trop
+# bas pour une fenêtre de 1M : il compacterait une tâche longue qui avait
+# encore 880 000 jetons devant elle. Inutile de deviner — le CLI publie
+# `contextWindow` par modèle dans son événement de résultat, mesuré ici :
+# {"claude-opus-5[1m]": {..., "contextWindow": 1000000}}.
+
+
+def test_a_known_window_sets_the_threshold_instead_of_the_constant():
+    from thot.state.compaction import AUTO_BUDGET, budget_for
+
+    wide = budget_for(1_000_000)
+
+    assert wide > AUTO_BUDGET * 4, wide
+    assert wide < 1_000_000, "il faut de la place pour le tour suivant"
+
+
+def test_an_unknown_window_falls_back_to_the_constant():
+    from thot.state.compaction import AUTO_BUDGET, budget_for
+
+    assert budget_for(0) == AUTO_BUDGET
+
+
+def test_a_small_window_is_never_widened_by_the_fallback():
+    from thot.state.compaction import budget_for
+
+    # le repli ne doit jamais dépasser la fenêtre réelle
+    assert budget_for(60_000) < 60_000
+
+
+def test_the_cli_learns_its_window_from_the_result_event():
+    from thot.llm.claude_cli import ClaudeCli, Events
+
+    cli = ClaudeCli(root=Path("."))
+    cli._consume(
+        {
+            "type": "result",
+            "usage": {"input_tokens": 6, "output_tokens": 583},
+            "modelUsage": {
+                "claude-opus-5[1m]": {
+                    "contextWindow": 1_000_000,
+                    "maxOutputTokens": 64_000,
+                }
+            },
+        },
+        Events(), [], set(),
+    )
+
+    assert cli.context_window == 1_000_000
+
+
+def test_a_result_event_without_the_field_leaves_the_window_unknown():
+    from thot.llm.claude_cli import ClaudeCli, Events
+
+    cli = ClaudeCli(root=Path("."))
+    cli._consume({"type": "result", "usage": {}}, Events(), [], set())
+
+    assert cli.context_window == 0
