@@ -119,6 +119,18 @@ def _remember(findings: list, root=None) -> list:
         getattr(memory, "close", lambda: None)()
 
 
+def _count(shown, whole) -> str:
+    """`(12 des 30)` when the list was cut, `(30)` when it was not.
+
+    A model over-relies on what is in its context: a bare ellipsis lets it
+    guess how much it is missing, a count tells it. The tools that fetch the
+    rest are free — this line is what makes the model know to call them.
+    """
+    if len(shown) < len(whole):
+        return f"({len(shown)} des {len(whole)})"
+    return f"({len(whole)})"
+
+
 def context_brief(recon: Recon, *, max_symbols: int = 60) -> str:
     """A compact briefing for the model's system prompt.
 
@@ -144,23 +156,26 @@ def context_brief(recon: Recon, *, max_symbols: int = 60) -> str:
 
     if recon.manifest.entrypoints:
         shown = list(recon.manifest.entrypoints[:12])
-        suffix = "…" if len(recon.manifest.entrypoints) > 12 else ""
-        lines.append(f"Points d'entrée : {', '.join(shown)}{suffix}")
+        lines.append(f"Points d'entrée {_count(shown, recon.manifest.entrypoints)}"
+                     f" : {', '.join(shown)}")
 
     top_files = _busiest_files(recon)
     if top_files:
         lines.append("Fichiers principaux : " + ", ".join(top_files))
 
-    if recon.symbols:
-        names = [s.name for s in recon.symbols if s.kind == "function"][:max_symbols]
-        suffix = "…" if len(recon.symbols) > max_symbols else ""
-        lines.append(f"Symboles ({len(recon.symbols)}) : {', '.join(names)}{suffix}")
+    # Functions only, and counted as functions. The marker used to compare the
+    # total number of *symbols* against the limit while listing only
+    # functions, so it announced a cut on a file full of classes where nothing
+    # had been left out.
+    functions = [s.name for s in recon.symbols if s.kind == "function"]
+    if functions:
+        shown = functions[:max_symbols]
+        lines.append(f"Fonctions {_count(shown, functions)} : {', '.join(shown)}")
 
     if recon.findings:
-        summary = ", ".join(
-            f"{f.rule} en {f.location}" for f in recon.findings[:8]
-        )
-        lines.append(f"Findings d'audit ({len(recon.findings)}) : {summary}")
+        shown = recon.findings[:8]
+        summary = ", ".join(f"{f.rule} en {f.location}" for f in shown)
+        lines.append(f"Findings d'audit {_count(shown, recon.findings)} : {summary}")
 
     return "\n".join(lines)
 
