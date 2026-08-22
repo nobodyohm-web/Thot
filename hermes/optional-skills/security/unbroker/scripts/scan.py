@@ -14,9 +14,20 @@ USER_AGENT = "Mozilla/5.0 (compatible; unbroker/1.0; data opt-out)"
 
 
 def fetch(url: str, timeout: int = 20) -> tuple[int, str]:
+    # The suppression here used to read "https only by convention", and a
+    # convention is not a check: `urlopen` reads `file:///etc/passwd` as
+    # happily as it fetches a page, and this function is a helper in a script
+    # people copy into their own work — where the URL will come from wherever
+    # they get theirs.
+    #
+    # Enforced inline rather than through a shared guard: this script has to
+    # keep working when it is copied out of the tree, which is the whole
+    # point of the library it lives in.
+    if not str(url).lower().startswith(("http://", "https://")):
+        return 0, ""
     req = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
     try:
-        with urllib.request.urlopen(req, timeout=timeout) as resp:  # noqa: S310 (https only by convention)
+        with urllib.request.urlopen(req, timeout=timeout) as resp:  # noqa: S310 - scheme enforced above
             charset = resp.headers.get_content_charset() or "utf-8"
             return getattr(resp, "status", 200), resp.read().decode(charset, errors="replace")
     except urllib.error.HTTPError as exc:

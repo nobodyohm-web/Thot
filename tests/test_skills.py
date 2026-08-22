@@ -302,3 +302,33 @@ def test_hermes_copy_of_the_template_carries_the_same_fix():
     )
     assert "LIMIT {safe_limit}" not in code
     assert "fetchmany(safe_limit)" in code
+
+
+def test_the_unbroker_scanner_enforces_the_convention_it_claimed():
+    """"https only by convention" — and a convention is not a check.
+
+    `urlopen` reads `file:///etc/passwd` as happily as it fetches a page, and
+    this is a helper in a script people copy into their own work, where the
+    URL comes from wherever they get theirs. Same category as the SQL
+    template: a thing handed out to be copied, whose safety was a comment.
+    """
+    import importlib.util
+    import sys
+
+    from thot.fusion.locate import hermes_root
+
+    root = hermes_root()
+    if root is None:
+        pytest.skip("Hermes n'est pas installé ici")
+    script = (root / "optional-skills" / "security" / "unbroker" / "scripts"
+              / "scan.py")
+    if not script.is_file():
+        pytest.skip("cette version de Hermes n'a pas ce script")
+
+    spec = importlib.util.spec_from_file_location("unbroker_scan_test", script)
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
+
+    assert module.fetch("file:///etc/passwd", timeout=2) == (0, "")
+    assert module.fetch("ftp://example.com/x", timeout=2) == (0, "")
