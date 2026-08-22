@@ -24,6 +24,35 @@ def _thot_binary() -> str:
     return shutil.which("thot") or f"{sys.executable} -m thot.cli"
 
 
+def agent_path() -> str:
+    """A PATH that can still find the agents when nobody is logged in.
+
+    launchd hands a job `/usr/bin:/bin:/usr/sbin:/sbin` and cron gives even
+    less. `claude`, `hermes` and `node` live in none of those — on this
+    machine they are in `~/.local/bin` — so a nightly deep audit built no
+    engine, judged nothing, and exited 0. Every night, silently, for ever:
+    the worst shape an unattended job can take.
+
+    The directories of the binaries that exist right now are prepended, so
+    the unit carries the answer rather than hoping the daemon's environment
+    resembles a shell's.
+    """
+    wanted = ("claude", "hermes", "node", "thot", "uv")
+    found: list[str] = []
+    for name in wanted:
+        located = shutil.which(name)
+        if not located:
+            continue
+        directory = str(Path(located).resolve().parent)
+        if directory not in found:
+            found.append(directory)
+    for fallback in ("/usr/local/bin", "/opt/homebrew/bin", "/usr/bin", "/bin",
+                     "/usr/sbin", "/sbin"):
+        if fallback not in found:
+            found.append(fallback)
+    return ":".join(found)
+
+
 def label(job: Job) -> str:
     return f"com.thot.{job.name}"
 
@@ -57,6 +86,11 @@ def launchd_plist(job: Job) -> str:
   <dict>
 {_launchd_calendar(job.schedule)}
   </dict>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PATH</key><string>{agent_path()}</string>
+    <key>HOME</key><string>{Path.home()}</string>
+  </dict>
   <key>StandardOutPath</key><string>{log_file(job.name)}</string>
   <key>StandardErrorPath</key><string>{log_file(job.name)}</string>
   <key>RunAtLoad</key><false/>
@@ -66,8 +100,12 @@ def launchd_plist(job: Job) -> str:
 
 
 def crontab_line(job: Job) -> str:
+    # The PATH rides in the line: cron's default is shorter than launchd's,
+    # and a deep job with no agent on the path judges nothing and says so
+    # only in a log nobody opens.
     return (
-        f"{cron_expression(job.schedule)} {_thot_binary()} schedule run {job.name} "
+        f"{cron_expression(job.schedule)} PATH={agent_path()} "
+        f"{_thot_binary()} schedule run {job.name} "
         f">> {log_file(job.name)} 2>&1"
     )
 

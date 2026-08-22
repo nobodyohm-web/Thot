@@ -686,6 +686,9 @@ def _run_scheduled(name: str | None) -> int:
         print(f"Aucun audit nommé « {name} ».", file=sys.stderr)
         return EXIT_USAGE
 
+    from thot.schedule.runner import MISSING_ENGINE
+
+    MISSING_ENGINE.clear()
     store = Store.open(run_store())
     found_something = False
     try:
@@ -707,6 +710,18 @@ def _run_scheduled(name: str | None) -> int:
                 print(f"  {finding.severity.value.upper():<8} {finding.rule}  {finding.location}")
     finally:
         store.close()
+
+    if MISSING_ENGINE:
+        # Loud, and non-zero. A deep job that judged nothing because no agent
+        # was on the daemon's PATH used to exit 0 — so launchd recorded a
+        # success every night, for ever, while the loop did nothing at all.
+        print(
+            f"Aucun agent pour {', '.join(sorted(MISSING_ENGINE))} : la passe "
+            f"est restée déterministe. Vérifie le PATH de l'unité "
+            f"(`thot improve --every daily` la réécrit).",
+            file=sys.stderr,
+        )
+        return EXIT_ERROR
 
     return EXIT_FINDINGS if found_something else EXIT_OK
 

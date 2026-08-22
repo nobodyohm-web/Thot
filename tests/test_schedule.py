@@ -380,3 +380,64 @@ def test_a_night_where_everything_failed_says_so(tmp_path, monkeypatch, capsys):
     run_job(Job(name="nuit", root=str(_toy(tmp_path)), deep=True, budget=2))
 
     assert "aucun verdict" in capsys.readouterr().err
+
+
+# -- what a daemon's environment does not contain -----------------------------
+
+
+def test_the_unit_carries_a_path_that_can_find_the_agents():
+    """launchd hands a job `/usr/bin:/bin:/usr/sbin:/sbin`; cron gives less.
+
+    `claude`, `hermes` and `node` live in none of those — on the machine this
+    was found on they are in `~/.local/bin`. So the nightly deep audit built
+    no engine, judged nothing, and exited 0. Every night, silently, for ever.
+    """
+    import shutil
+
+    from thot.schedule.install import agent_path, crontab_line, launchd_plist
+    from thot.schedule.jobs import FUSION, Job
+
+    path = agent_path()
+    assert "/usr/bin" in path, "les chemins du système restent"
+
+    located = shutil.which("claude") or shutil.which("node")
+    if located:
+        from pathlib import Path as _Path
+
+        assert str(_Path(located).resolve().parent) in path, (
+            "le dossier de l'agent doit être dans le PATH de l'unité"
+        )
+
+    job = Job(name="improve", root=FUSION, deep=True)
+    plist = launchd_plist(job)
+    assert "<key>EnvironmentVariables</key>" in plist
+    assert "<key>PATH</key>" in plist
+    assert f"PATH={path}" in crontab_line(job)
+
+
+def test_a_deep_job_without_an_agent_is_recorded_as_such(tmp_path, monkeypatch):
+    """Exit 0 on a run that judged nothing is a lie told to the daemon."""
+    from thot.engine.factory import NoEngine
+    from thot.schedule.jobs import Job
+    from thot.schedule.runner import MISSING_ENGINE, run_job
+
+    MISSING_ENGINE.clear()
+
+    def _absent(*args, **kwargs):
+        raise NoEngine("aucun agent installé")
+
+    monkeypatch.setattr("thot.engine.factory.build_engine", _absent)
+    run_job(Job(name="nuit", root=str(_toy(tmp_path)), deep=True, budget=2))
+
+    assert "nuit" in MISSING_ENGINE
+
+
+def test_a_shallow_job_without_an_agent_is_not_a_failure(tmp_path, monkeypatch):
+    """It never wanted one."""
+    from thot.schedule.jobs import Job
+    from thot.schedule.runner import MISSING_ENGINE, run_job
+
+    MISSING_ENGINE.clear()
+    run_job(Job(name="jour", root=str(_toy(tmp_path))))
+
+    assert MISSING_ENGINE == set()

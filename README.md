@@ -896,6 +896,15 @@ thot improve --rounds 5           # jusqu'à ce qu'un tour ne juge plus rien
 thot improve --every daily        # la boucle devient permanente
 ```
 
+L'unité écrite porte son propre `PATH`. launchd donne à un job
+`/usr/bin:/bin:/usr/sbin:/sbin`, cron encore moins, et `claude`, `hermes` et
+`node` ne sont dans aucun de ces dossiers — ils vivent sous `~/.local/bin`.
+Sans ça, la passe nocturne ne construisait aucun moteur, ne jugeait rien, et
+**sortait avec le code 0** : launchd enregistrait un succès chaque nuit,
+indéfiniment. Un job de ce genre qui échoue en silence est indiscernable d'un
+job qui marche, donc une passe profonde privée d'agent sort désormais en
+erreur et le dit.
+
 La version nocturne remonte ce qu'elle a **décidé**, pas ce qui est apparu.
 La distinction compte : le mécanisme de rapport des audits programmés répond
 à « qu'y a-t-il de neuf au-dessus du seuil », ce qui est la bonne question

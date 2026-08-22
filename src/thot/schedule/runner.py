@@ -45,6 +45,13 @@ def roots_for(job) -> list[Path]:
     return [Path(job.root)]
 
 
+# Jobs that asked for a deep pass and got no agent. A nightly run that
+# judges nothing must not exit 0: launchd would record a success every night
+# for ever, which is exactly what happened when the daemon's PATH turned out
+# not to contain `claude`.
+MISSING_ENGINE: set[str] = set()
+
+
 def _engine_for(job, root: Path):
     """The agent a deep job argues with, or None with the reason on stderr.
 
@@ -64,6 +71,7 @@ def _engine_for(job, root: Path):
     except NoEngine as exc:
         print(f"[thot] {job.name} : analyse assistée impossible — {exc}",
               file=sys.stderr)
+        MISSING_ENGINE.add(job.name)
         return None
 
 
