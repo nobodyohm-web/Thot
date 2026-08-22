@@ -265,3 +265,35 @@ def test_a_symlink_inside_the_root_pointing_out_is_still_refused(tmp_path):
 
     assert "hors du répertoire de travail" in answer, answer
     assert "secret" not in answer
+
+
+def test_a_confirmation_names_the_file_relatively_on_a_symlinked_root(tmp_path):
+    """The confirmation text is what a human reads before allowing a write.
+
+    `_relative` compared against the unresolved root, so on a symlinked root
+    it fell back to the absolute path — and since `_resolve` now hands it a
+    resolved path, that fallback became the only outcome. A prompt saying
+    `/private/var/folders/b1/…/src/app.py` instead of `src/app.py` degrades
+    exactly the moment that matters.
+    """
+    from thot.agent_tools import ToolContext, write_file
+    from thot.recon import sweep
+
+    real = tmp_path / "real"
+    real.mkdir()
+    (real / "seed.py").write_text("x = 1\n", encoding="utf-8")
+    link = tmp_path / "through-a-link"
+    link.symlink_to(real)
+
+    asked: list[str] = []
+
+    def confirm(action, detail):
+        asked.append(action)
+        return True
+
+    context = ToolContext(root=link, recon=sweep(link), confirm=confirm,
+                          refresh=lambda: None)
+    answer = write_file(context, path="src/app.py", content="y = 2\n")
+
+    assert asked == ["Créer src/app.py"], asked
+    assert answer.startswith("src/app.py "), answer

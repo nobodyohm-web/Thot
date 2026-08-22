@@ -73,9 +73,16 @@ def _resolve(context: ToolContext, path: str) -> Path:
 
 
 def _relative(context: ToolContext, path: Path) -> str:
+    """The short name a human reads in a confirmation prompt.
+
+    Resolved on both sides for the same reason `_resolve` is: against an
+    unresolved root this fell through to the absolute path on any symlinked
+    working directory, so the prompt asking permission to write said
+    `/private/var/folders/b1/…/src/app.py` where it meant `src/app.py`.
+    """
     try:
-        return str(path.relative_to(context.root))
-    except ValueError:
+        return str(path.resolve().relative_to(context.root.resolve()))
+    except (ValueError, OSError):
         return str(path)
 
 
