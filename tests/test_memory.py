@@ -331,3 +331,62 @@ def test_a_whole_agent_s_judgements_can_be_forgotten_at_once(tmp_path):
         assert [v.author for v in left] == ["prime"]
     finally:
         memory.close()
+
+
+def test_a_shared_verdict_travels_to_a_colleague_who_has_no_history(tmp_path,
+                                                                    monkeypatch):
+    """The whole point of committing `.thot/verdicts.json`.
+
+    Verified by hand first, on a scratch machine with an empty THOT_HOME: the
+    decision *and its reason* cross, attributed to whoever took it, and the
+    finding drops from HIGH to INFO. A colleague must not inherit a silently
+    downgraded finding — they must see who decided and why.
+    """
+    from thot.cli import _share_verdict
+    from thot.contracts import Confidence
+    from thot.memory import build_memory
+    from thot.memory.base import Decision, Verdict
+    from thot.pipeline import run_audit
+    from thot.scope.authorization import write_authorization
+
+    (tmp_path / "app.py").write_text(
+        "import os\nimport sys\n\n\ndef run():\n    os.system('ls ' + sys.argv[1])\n"
+    )
+    write_authorization(tmp_path, owner="tester")
+
+    finding = run_audit(tmp_path).findings[0]
+    assert finding.severity.value == "high"
+
+    # Alex decides, on their machine.
+    author = build_memory(tmp_path)
+    try:
+        author.remember(
+            Verdict.of(finding, Decision.ACCEPTED, "entrée locale seulement",
+                       "dev")
+        )
+        _share_verdict(author, finding.id, tmp_path)
+    finally:
+        author.close()
+
+    assert (tmp_path / ".thot" / "verdicts.json").is_file()
+
+    # The colleague: same repository, no history of their own. The memory is
+    # built the way the CLI builds it — `run_audit` reads no verdicts unless
+    # it is handed a store, which is what makes this a round trip and not a
+    # test of `apply_memory` in isolation.
+    monkeypatch.setenv("THOT_HOME", str(tmp_path / "vierge"))
+    colleague = build_memory(tmp_path)
+    try:
+        inherited = run_audit(tmp_path, memory=colleague)
+        seen = colleague.recall(finding.id)
+    finally:
+        colleague.close()
+    same = next(f for f in inherited.findings if f.id == finding.id)
+
+    assert inherited.remembered == 1
+    assert same.confidence is not Confidence.CONFIRMED
+    assert same.severity.value == "info", "la décision doit dégrader le finding"
+
+    assert seen is not None, "le collègue doit voir la décision, pas seulement la subir"
+    assert seen.author == "dev"
+    assert "entrée locale" in seen.reason
