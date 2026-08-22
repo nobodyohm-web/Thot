@@ -123,7 +123,22 @@ class PythonIndexer:
                             ast_hash=normalized_ast_hash(child),
                             kind="function",
                             calls=calls,
-                            params=tuple(a.arg for a in child.args.args),
+                            # Every named parameter, not only the plain
+                            # positional ones. A keyword-only parameter —
+                            # `def launch(*, command)` — is the recommended
+                            # shape for a dangerous API precisely because it
+                            # forces the caller to write the name, and taint
+                            # could not flow through one. `*args`/`**kwargs`
+                            # stay out: they carry no name a caller's argument
+                            # can be matched to.
+                            params=tuple(
+                                a.arg
+                                for a in (
+                                    child.args.posonlyargs
+                                    + child.args.args
+                                    + child.args.kwonlyargs
+                                )
+                            ),
                             references=references,
                         )
                     )

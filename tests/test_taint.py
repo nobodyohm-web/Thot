@@ -456,3 +456,52 @@ def test_an_ambiguous_import_is_still_followed(tmp_path):
     assert any(c.sink.path == "sender.py" for c in found), (
         "la teinte s'est abstenue sur un nom ambigu et a perdu un vrai chemin"
     )
+
+
+# --- un paramètre nommé obligatoire porte la teinte comme un autre ---------
+#
+# `params` ne retenait que `child.args.args` : ni les paramètres nommés
+# obligatoires (`def f(*, command)`), ni les positionnels stricts
+# (`def f(a, /)`). Or le premier est l'idiome Python *recommandé* pour une API
+# dangereuse — on force l'appelant à écrire le nom. Le moteur était donc
+# aveugle précisément là où le code soigneux met ses paramètres sensibles :
+#
+#   def launch(command):      → 1 chemin
+#   def launch(*, command):   → 0 chemin
+
+
+def _two_files(tmp_path, signature, call):
+    (tmp_path / "helpers.py").write_text(
+        "import subprocess\n\n\n" + signature
+        + "\n    subprocess.run(command, shell=True)\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "app.py").write_text(
+        "import sys\nfrom helpers import launch\n\n\ndef run():\n"
+        "    cmd = sys.argv[1]\n" + call + "\n",
+        encoding="utf-8",
+    )
+    from thot.codemap.graph import CodeGraph
+    from thot.codemap.index import index_files
+    from thot.taint.engine import find_candidates
+
+    graph = CodeGraph.build(index_files(tmp_path, ["helpers.py", "app.py"]))
+    return find_candidates(tmp_path, graph)
+
+
+def test_a_keyword_only_parameter_carries_taint(tmp_path):
+    found = _two_files(tmp_path, "def launch(*, command):", "    launch(command=cmd)")
+
+    assert any(c.sink.path == "helpers.py" for c in found), found
+
+
+def test_a_positional_only_parameter_carries_taint(tmp_path):
+    found = _two_files(tmp_path, "def launch(command, /):", "    launch(cmd)")
+
+    assert any(c.sink.path == "helpers.py" for c in found), found
+
+
+def test_an_ordinary_parameter_still_does(tmp_path):
+    found = _two_files(tmp_path, "def launch(command):", "    launch(cmd)")
+
+    assert any(c.sink.path == "helpers.py" for c in found), found
