@@ -19,6 +19,7 @@ import tokenize
 from pathlib import Path
 
 from thot.contracts import CodeRef, Confidence, Finding, Severity
+from thot.guard.patterns import _JS_EXTS as _JS_SUFFIXES
 from thot.guard.patterns import SECURITY_PATTERNS
 from thot.scoring.role import Role, role_of
 from thot.scoring.severity import compute_severity
@@ -65,7 +66,7 @@ _PY_SUFFIXES = (".py", ".pyi")
 
 
 def code_only(relative: str, text: str) -> str:
-    """Blank out Python string literals and comments, preserving offsets.
+    """Blank out string literals and comments, preserving offsets.
 
     A rule catalog, a test fixture and a piece of documentation all *mention*
     dangerous calls without making them. Scanning raw text flags all three:
@@ -73,9 +74,30 @@ def code_only(relative: str, text: str) -> str:
     with spaces rather than deleting keeps every line number intact, so a real
     finding still points at the right line.
 
-    Not applicable outside Python, and a file that will not tokenise is scanned
-    as-is — a syntax error must never silently disable the sweep.
+    JavaScript and TypeScript are masked by the same routine the taint
+    engine uses, which is where this was measured: on the two shipped trees,
+    a JSDoc line reading "prefer this over `exec()`" and a Python snippet
+    held in a TypeScript template literal both became HIGH findings — ranked
+    above findings that had a traced path behind them.
+
+    Every other language is scanned as-is, and so is a file that will not
+    tokenise — a syntax error must never silently disable the sweep. Blanking
+    literals is safe only while no rule needs to match inside one; none of
+    the 25 looks for a secret or a URL.
     """
+    if relative.endswith(_JS_SUFFIXES):
+        from thot.codemap.ts_indexer import _mask
+
+        try:
+            return _mask(text)
+        except RecursionError:
+            # Nested template literals exhaust the masker's mutual recursion.
+            # Until now the only caller was the indexer, which catches per
+            # file; this one is reached straight from the sweep, so it carries
+            # its own net. Scanned as-is, exactly like a Python file that will
+            # not tokenise: one file's shape must never take the sweep down.
+            return text
+
     if not relative.endswith(_PY_SUFFIXES):
         return text
 

@@ -12,7 +12,7 @@ from __future__ import annotations
 import pytest
 
 from thot.contracts import Confidence, Severity
-from thot.guard.scanner import scan_text, sweep_patterns
+from thot.guard.scanner import code_only, scan_text, sweep_patterns
 
 
 def test_pickle_load_is_flagged():
@@ -581,3 +581,77 @@ def test_a_bot_name_cannot_open_an_attribute_in_the_desktop_app():
     )
     assert "escapeAttribute(name)" in markup
     assert "&quot;" in source, "l'échappeur doit couvrir le guillemet"
+
+
+# -- comments and literals, in JavaScript too -----------------------------
+#
+# `code_only` blanked Python comments and strings and returned every other
+# language untouched, so prose that *mentions* a dangerous call became a
+# finding — and, on the two shipped trees, a HIGH one. Measured there: a
+# JSDoc line reading "prefer this over `exec()`" and a Python snippet held
+# in a TypeScript template literal both scored above findings that had an
+# actual taint path behind them.
+
+
+def test_a_mention_in_a_typescript_comment_is_not_a_finding():
+    source = (
+        "/**\n"
+        " * Route the command directly. Prefer this over `exec()` whenever\n"
+        " * the gateway exposes a method for it.\n"
+        " */\n"
+        "export const routed = true;\n"
+    )
+    assert scan_text("commands.ts", source) == []
+
+
+def test_code_quoted_inside_a_template_literal_is_not_a_finding():
+    """A generator holding Python in a backtick string is not running it."""
+    source = (
+        "const program = `\n"
+        "import dill\n"
+        "with open(path, 'rb') as fh:\n"
+        "    payload = dill.load(fh)\n"
+        "`;\n"
+    )
+    assert scan_text("snapshot.ts", source) == []
+
+
+def test_a_real_call_in_typescript_is_still_found():
+    findings = scan_text("clip.ts", "execSync(command, options);\n")
+    assert [f.rule for f in findings] == ["pattern.child_process_exec"]
+
+
+def test_masking_keeps_the_line_of_a_real_call():
+    """Blanking must preserve offsets, or every line number shifts."""
+    source = (
+        "/* a comment\n"
+        "   spanning\n"
+        "   four\n"
+        "   lines */\n"
+        "execSync(command);\n"
+    )
+    findings = scan_text("clip.ts", source)
+    assert [f.location.line for f in findings] == [5]
+
+
+def test_the_whole_javascript_family_is_masked():
+    """The masker covers exactly the files the JavaScript rules fire on.
+
+    Pinned against the catalog's own extension list rather than a second
+    copy of it: a rule that fires on `.vue` and a masker that skips `.vue`
+    would put the mention-only findings back, in one language at a time.
+    """
+    mention = "// prefer this over exec()\nexport const routed = true;\n"
+    for name in ("a.js", "a.jsx", "a.mjs", "a.cjs",
+                 "a.ts", "a.tsx", "a.mts", "a.cts", "a.vue", "a.svelte"):
+        assert scan_text(name, mention) == [], name
+
+
+def test_a_file_the_masker_chokes_on_is_scanned_as_is():
+    """A masker failure costs that file's precision, never the sweep.
+
+    The sweep reaches the masker directly, so it cannot lean on the
+    indexer's per-file net the way every earlier caller did.
+    """
+    source = "const x = " + "`${" * 1500 + "1" + "}`" * 1500 + ";\n"
+    assert code_only("deep.ts", source) == source  # unmasked, not a crash
