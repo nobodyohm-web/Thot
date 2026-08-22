@@ -1181,9 +1181,16 @@ def _deep_progress():
             or provenance.get("moteur")
             or "?"
         )
+        # An agent that failed and a model that hesitated both left the
+        # finding `plausible`, and the line said the same thing for both —
+        # so a run where every task timed out looked exactly like a run
+        # where nothing could be decided. Say which one it was.
+        failure = provenance.get("erreur") or provenance.get("réfutation")
+        verdict = label.get(finding.confidence, finding.confidence.value)
+        if failure:
+            verdict = f"échec : {str(failure).splitlines()[0][:60]}"
         print(
-            f"  [{state['n']}] {finding.location} — "
-            f"{label.get(finding.confidence, finding.confidence.value)} · {who}",
+            f"  [{state['n']}] {finding.location} — {verdict} · {who}",
             file=sys.stderr,
             flush=True,
         )

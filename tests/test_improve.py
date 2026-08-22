@@ -39,14 +39,14 @@ def test_the_backlog_counts_what_a_further_round_could_still_judge():
     assert backlog_of([live, refuted]) == 1
 
 
-def test_the_loop_stops_as_soon_as_a_round_judges_nothing(monkeypatch):
+def test_the_loop_stops_as_soon_as_a_round_settles_nothing(monkeypatch):
     """Paying for identical empty rounds answers nothing."""
     calls = []
 
     def _round(**kwargs):
         calls.append(kwargs)
         judged = 2 if len(calls) == 1 else 0
-        return [PartRound(part="thot", judged=judged, backlog=0)]
+        return [PartRound(part="thot", judged=judged, refuted=judged, backlog=0)]
 
     monkeypatch.setattr("thot.improve.one_round", _round)
 
@@ -62,7 +62,7 @@ def test_each_round_is_told_what_the_previous_ones_judged(monkeypatch):
     def _round(*, seen, **kwargs):
         seen_sizes.append(len(seen))
         seen.update({f"f{len(seen_sizes)}"})
-        return [PartRound(part="thot", judged=1, backlog=1)]
+        return [PartRound(part="thot", judged=1, refuted=1, backlog=1)]
 
     monkeypatch.setattr("thot.improve.one_round", _round)
     improve(rounds=3)
@@ -108,3 +108,27 @@ def test_each_tree_is_credited_with_its_own_decisions(monkeypatch):
 
     assert result["thot"].judged == 1
     assert result["hermes"].judged == 2
+
+
+def test_a_round_where_everything_failed_stops_the_loop(monkeypatch):
+    """A quota that ran out mid-pass must not buy four more identical rounds."""
+    calls = []
+
+    def _round(**kwargs):
+        calls.append(kwargs)
+        return [PartRound(part="hermes", judged=3, failed=3, backlog=40)]
+
+    monkeypatch.setattr("thot.improve.one_round", _round)
+    session = improve(rounds=5)
+
+    assert len(calls) == 1
+    assert session.failed == 3
+    assert session.settled == 0
+    assert "toutes les tâches ont échoué" in session.summary()
+
+
+def test_a_failure_is_not_reported_as_an_undecided_finding():
+    """They look identical in the finding and mean opposite things."""
+    line = PartRound(part="prime", judged=2, failed=2, backlog=9).line()
+
+    assert "2 échec(s)" in line

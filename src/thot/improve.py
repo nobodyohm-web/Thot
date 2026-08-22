@@ -38,6 +38,11 @@ class PartRound:
     # number: it is the one outcome that means the program caught itself
     # about to bury something, and burying is the expensive mistake.
     contested: int = 0
+    # Tasks whose agent never answered — a timeout, a crashed CLI, a
+    # subscription that ran out mid-pass. Counted apart from a model that
+    # simply would not commit: the two look identical in the finding and
+    # mean opposite things about whether running again is worth anything.
+    failed: int = 0
     backlog: int = 0  # still unjudged after this round
     error: str = ""
 
@@ -47,6 +52,8 @@ class PartRound:
         detail = f"{self.refuted} réfuté · {self.confirmed} confirmé"
         if self.contested:
             detail += f" · {self.contested} réfutation(s) contestée(s)"
+        if self.failed:
+            detail += f" · {self.failed} échec(s)"
         return (
             f"{self.part:<8} {self.judged:>3} jugé(s) ({detail}) · "
             f"{self.backlog} en attente"
@@ -65,6 +72,17 @@ class Session:
         return sum(part.judged for run in self.rounds for part in run)
 
     @property
+    def failed(self) -> int:
+        return sum(part.failed for run in self.rounds for part in run)
+
+    @property
+    def settled(self) -> int:
+        """Decisions that actually decided something."""
+        return sum(
+            part.refuted + part.confirmed for run in self.rounds for part in run
+        )
+
+    @property
     def backlog(self) -> int:
         """What the last round left behind, across every tree."""
         return sum(part.backlog for part in self.rounds[-1]) if self.rounds else 0
@@ -76,10 +94,19 @@ class Session:
         detail = f"{refuted} réfuté · {confirmed} confirmé"
         if contested:
             detail += f" · {contested} réfutation(s) contestée(s)"
-        return (
+        if self.failed:
+            detail += f" · {self.failed} échec(s)"
+        line = (
             f"{len(self.rounds)} tour(s) · {self.judged} jugement(s) "
             f"({detail}) · {self.backlog} candidat(s) encore sans décision"
         )
+        if self.failed and not self.settled:
+            line += (
+                "\nAucun verdict : toutes les tâches ont échoué. Regarde la "
+                "raison au-dessus — un quota épuisé ou un agent absent se "
+                "règle avant de relancer."
+            )
+        return line
 
 
 def backlog_of(findings: list) -> int:
@@ -144,6 +171,11 @@ def one_round(
                     1 for f in mine
                     if (f.provenance or {}).get("réfutation contestée")
                 ),
+                failed=sum(
+                    1 for f in mine
+                    if (f.provenance or {}).get("erreur")
+                    or (f.provenance or {}).get("réfutation")
+                ),
                 backlog=backlog_of(part.result.findings),
             )
         )
@@ -161,9 +193,9 @@ def improve(
 ) -> Session:
     """Run bounded rounds until the budget stops buying anything.
 
-    Stops early on a round that judged nothing: the backlog is either empty
-    or made of candidates this engine cannot settle, and paying for more
-    identical rounds would answer neither.
+    Stops early on a round that settled nothing — an empty backlog, an
+    engine that cannot decide these candidates, or a subscription that ran
+    out mid-pass. All three make the next identical round worthless.
     """
     session = Session()
     for index in range(max(1, rounds)):
@@ -177,6 +209,9 @@ def improve(
         session.rounds.append(done)
         if on_round is not None:
             on_round(index + 1, done)
-        if not any(part.judged for part in done):
+        # Stops on "nothing was decided", not on "nothing was looked at".
+        # A round where every task failed leaves findings judged and nothing
+        # settled; running the same round again buys the same nothing.
+        if not any(part.refuted + part.confirmed for part in done):
             break
     return session
