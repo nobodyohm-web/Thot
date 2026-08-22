@@ -479,9 +479,15 @@ en un outil qui rapporte des chemins *plausibles*.
 
 Le moteur balaie le **fichier**, pas les corps de fonctions nommées. La forme
 ordinaire d'un handler web est une flèche anonyme passée à une route —
-`app.get("/x", (req, res) => { … })` — qu'aucun indexeur ne nomme : mesuré,
-**24 454** fonctions de cette forme sur les deux arbres, toutes invisibles à
-un moteur qui suivrait les symboles.
+`app.get("/x", (req, res) => { … })` — qu'aucun indexeur ne nomme.
+
+Mesuré ainsi : une flèche dont la liste de paramètres est parenthésée et qui
+suit une virgule ou une parenthèse ouvrante, soit `[(,]\s*(?:async\s*)?\([^)]*\)\s*=>`,
+sur la source masquée des fichiers que `detect_scope` retient — **15 094 sur
+Prime, 19 625 sur Hermes**, toutes invisibles à un moteur qui suivrait les
+symboles. Une version antérieure annonçait 24 454 sans noter comment ils
+avaient été comptés ; le chiffre dépend entièrement de la définition, donc la
+définition est écrite.
 
 Mesuré sur les deux corpus : **8 chemins sur Prime, 13 sur Hermes**, sur
 3 400 fichiers JS/TS. Vingt et un, pas trois cents — c'est la forme qu'a un
