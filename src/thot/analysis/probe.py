@@ -116,11 +116,21 @@ def select_for_analysis(
 
 
 def excerpt(root: Path, ref: CodeRef, radius: int = 12) -> str:
-    """The lines around a location, numbered. Empty when unreadable."""
+    """The lines around a location, numbered. Says so when unreadable.
+
+    An empty string used to be returned here, and the three task builders
+    embed it under a heading that reads "Code :". An agent asked whether the
+    candidate is "réellement exploitable dans ce code, tel qu'il est écrit",
+    shown no code, can answer `refuted` — and a refutation is remembered for
+    good. That is the disaster `_scope_note` was written about, reached by
+    another route: absence of evidence read as evidence of absence.
+    """
     try:
         lines = (Path(root) / ref.path).read_text(errors="replace").splitlines()
     except OSError:
-        return ""
+        return (f"  (code illisible : {Path(root) / ref.path} — ne conclus "
+                f"rien de cette absence, ouvre le fichier toi-même ou "
+                f"réponds `plausible`)")
     start = max(0, ref.line - radius - 1)
     end = min(len(lines), ref.line + radius)
     return "\n".join(f"{n + 1:5d}  {lines[n]}" for n in range(start, end))

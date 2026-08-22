@@ -86,8 +86,19 @@ def test_excerpt_reads_around_the_location(toy_repo):
     assert "\n" in text
 
 
-def test_excerpt_of_a_missing_file_is_empty(toy_repo):
-    assert excerpt(toy_repo, CodeRef(path="nope.py", line=1)) == ""
+def test_excerpt_of_a_missing_file_says_so_rather_than_going_blank(toy_repo):
+    """This pinned `== ""` and had no reason written for it.
+
+    Empty is the dangerous answer: the three task builders drop the excerpt
+    under a heading reading "Code :", and an agent asked whether a candidate
+    is exploitable "dans ce code, tel qu'il est écrit" — shown nothing — can
+    answer `refuted`, which is then remembered for good.
+    """
+    text = excerpt(toy_repo, CodeRef(path="nope.py", line=1))
+
+    assert "nope.py" in text
+    assert "illisible" in text.lower()
+    assert "conclus" in text.lower()
 
 
 # -- analysis ----------------------------------------------------------------
