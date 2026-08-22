@@ -422,3 +422,38 @@ def test_a2a_call_refuses_a_raw_internal_url_from_the_model():
     assert "is_safe_callback_url" in resolve, (
         "l'URL brute passée comme nom d'agent doit être contrôlée"
     )
+
+
+def test_the_template_catalog_checks_the_address_it_was_handed():
+    """"fixed https catalog" was false twice over.
+
+    `catalog_url()` reads an environment variable, both fetchers take a `url`
+    argument, and `fetch_manifest` builds its target with `urljoin` from a
+    field of the catalog it just downloaded — an absolute `manifest_file`
+    replaces the base entirely, so the remote server picks the next
+    destination.
+    """
+    from thot.fusion.locate import hermes_root
+
+    root = hermes_root()
+    if root is None:
+        pytest.skip("Hermes n'est pas installé ici")
+    module = root / "plugins" / "memory" / "hindsight" / "templates.py"
+    if not module.is_file():
+        pytest.skip("cette version de Hermes n'a pas ce plugin")
+
+    source = module.read_text(encoding="utf-8")
+    getter = source.split("def _get_json")[1].split("\ndef ")[0]
+    assert "refuse_internal_url" in getter, (
+        "le contrôle doit être au point de passage, pas chez les appelants"
+    )
+    # The suppression line itself, not the file: the comment explaining the
+    # fix quotes the old claim, and a test that matched prose would fail on
+    # the explanation of its own fix.
+    suppressions = [
+        line for line in source.splitlines() if "noqa: S310" in line
+    ]
+    assert suppressions
+    assert not any("fixed https catalog" in line for line in suppressions), (
+        "la justification de la suppression était fausse"
+    )

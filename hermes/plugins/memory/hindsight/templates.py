@@ -44,8 +44,23 @@ def catalog_url() -> str:
 
 
 def _get_json(url: str) -> dict:
+    # The suppression here used to read "fixed https catalog", and the
+    # catalog is not fixed: `catalog_url()` reads HINDSIGHT_TEMPLATES_URL
+    # from the environment, both fetchers take a `url` argument, and
+    # `fetch_manifest` builds its target with `urljoin` from a field of the
+    # catalog it just downloaded — an absolute `manifest_file` replaces the
+    # base entirely, so the remote server picks the next destination.
+    #
+    # Guarded here rather than at the two callers, because guarding callers
+    # one at a time is how the second one gets missed.
+    from utils import refuse_internal_url
+
+    refusal = refuse_internal_url(url)
+    if refusal:
+        raise ValueError(f"refused template catalog — {refusal}")
+
     req = urllib.request.Request(url, headers={"Accept": "application/json"})
-    with urllib.request.urlopen(req, timeout=_HTTP_TIMEOUT) as resp:  # noqa: S310 - fixed https catalog
+    with urllib.request.urlopen(req, timeout=_HTTP_TIMEOUT) as resp:  # noqa: S310 - address checked above
         return json.loads(resp.read().decode("utf-8"))
 
 
