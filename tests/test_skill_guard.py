@@ -156,3 +156,63 @@ def test_a_secret_lookup_is_still_reported(tmp_path):
 def test_a_config_lookup_stays_exempt(tmp_path):
     assert _environ_findings(
         tmp_path, 'level = os.environ.get("LOG_LEVEL")\n') == []
+
+
+# --- mentionner n'est pas écrire -------------------------------------------
+#
+# Mesuré sur la bibliothèque livrée : 117 skills, 47 bloqués DANGEROUS, dont
+# 17 par la seule prose de leur Markdown — « Add to `~/.hermes/config.yaml`: »,
+# « Helper script: `~/.hermes/skills/…` », et jusqu'à « The web UI does NOT
+# create `.claude/` or `CLAUDE.md`. », une négation classée CRITICAL.
+# `--force` ne lève pas un verdict dangereux : 15 % de la bibliothèque était
+# définitivement non installable parce que sa documentation dit où elle habite.
+#
+# Le fichier a déjà sa convention pour les références : `~/.kube` et
+# `~/.docker`, qui pointent de vrais identifiants, sont HIGH. Deux règles la
+# rompaient. Ce qui reste CRITICAL est l'écriture, qui elle persiste des
+# instructions entre les sessions.
+
+
+def _worst(tmp_path, source: str, name: str = "SKILL.md") -> str:
+    from thot.guard.skill_guard import scan_file
+
+    target = tmp_path / name
+    target.write_text(source, encoding="utf-8")
+    found = scan_file(target, name)
+    for level in ("critical", "high", "medium", "low"):
+        if any(f.severity == level for f in found):
+            return level
+    return "none"
+
+
+def test_a_prose_mention_of_an_agent_config_is_not_critical(tmp_path):
+    assert _worst(tmp_path, "The web UI does NOT create `CLAUDE.md`.\n") == "high"
+
+
+def test_a_skill_naming_its_own_home_is_not_critical(tmp_path):
+    assert _worst(tmp_path, "Helper script: `~/.hermes/skills/x/run.py`\n") == "high"
+
+
+def test_writing_into_an_agent_config_is_still_critical(tmp_path):
+    assert _worst(tmp_path, 'echo "evil" >> ~/.hermes/config.yaml\n') == "critical"
+
+
+def test_appending_to_claude_md_is_still_critical(tmp_path):
+    assert _worst(tmp_path, "cat payload >> ~/.claude/CLAUDE.md\n") == "critical"
+
+
+def test_opening_an_agent_config_for_writing_is_still_critical(tmp_path):
+    assert _worst(
+        tmp_path, 'open("~/.hermes/config.yaml", "w").write(x)\n', "setup.py"
+    ) == "critical"
+
+
+def test_a_kubernetes_reference_keeps_the_severity_it_had(tmp_path):
+    """The convention this fix aligns with, pinned so it cannot drift."""
+    assert _worst(tmp_path, "See `~/.kube/config` for the cluster.\n") == "high"
+
+
+def test_reading_the_agent_home_with_a_command_is_critical(tmp_path):
+    """The distinction the downgrade must preserve: mention, read, write."""
+    assert _worst(tmp_path, "cat ~/.thot/config.json\n", "run.sh") == "critical"
+    assert _worst(tmp_path, "See `~/.thot/config.json` for details.\n") == "high"

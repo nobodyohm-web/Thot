@@ -128,8 +128,8 @@ THREAT_PATTERNS = [
      "docker_dir_access", "high", "exfiltration",
      "references Docker config (may contain registry creds)"),
     (r'\$HOME/\.(?:hermes|thot)/|\~/\.(?:hermes|thot)/',
-     "agent_home_access", "critical", "exfiltration",
-     "accède au dossier privé de l'agent (~/.thot, ~/.hermes)"),
+     "agent_home_access", "high", "exfiltration",
+     "référence le dossier privé de l'agent (~/.thot, ~/.hermes)"),
     # Match `cat <secrets-file>` (reading credentials) but NOT `cat > <file>`
     # or `cat >> <file>`, which are output redirections that WRITE a file
     # (e.g. a setup doc telling the user to write their own keys into their
@@ -451,11 +451,40 @@ THREAT_PATTERNS = [
 
     # ── Agent config persistence ──
     (r'AGENTS\.md|CLAUDE\.md|\.cursorrules|\.clinerules',
-     "agent_config_mod", "critical", "persistence",
+     "agent_config_ref", "high", "persistence",
      "references agent config files (could persist malicious instructions across sessions)"),
     (r'\.hermes/config\.yaml|\.hermes/SOUL\.md|\.thot/(?:config\.json|rules/)',
-     "agent_config_mod", "critical", "persistence",
-     "modifie la configuration de l'agent (persistance entre sessions)"),
+     "agent_config_ref", "high", "persistence",
+     "référence la configuration de l'agent"),
+    # Reading the agent's private folder with a command is not a mention
+    # either: `cat ~/.thot/config.json` is the credential read the rule was
+    # written for. Three categories, three severities — mention HIGH, read
+    # CRITICAL, write CRITICAL — instead of one substring rated as the worst
+    # of them.
+    (r'(?:\bcat\b|\bless\b|\bmore\b|\bhead\b|\btail\b|\bcp\b|\bmv\b'
+     r'|\bxxd\b|\bbase64\b|\bstrings\b)\s+[^|;&]*'
+     r'(?:\$HOME/\.(?:hermes|thot)/|\~/\.(?:hermes|thot)/)',
+     "agent_home_read", "critical", "exfiltration",
+     "lit le dossier privé de l'agent (~/.thot, ~/.hermes)"),
+    # Writing is what persists instructions between sessions; mentioning is
+    # not. The two patterns above detect a mention and were rated for an
+    # action — measured on the shipped library, that put 17 of 117 skills
+    # permanently out of reach (`--force` does not override a dangerous
+    # verdict) for sentences like "Add to `~/.hermes/config.yaml`:" and even
+    # "The web UI does NOT create `CLAUDE.md`". A reference now carries the
+    # severity this file already gives references elsewhere — `~/.kube` and
+    # `~/.docker`, which point at real credentials, are HIGH — and CRITICAL is
+    # kept for the write these rules were named after.
+    (r'(?:>>?|\btee\b\s+(?:-a\s+)?)\s*\S*'
+     r'(?:AGENTS\.md|CLAUDE\.md|\.cursorrules|\.clinerules'
+     r'|\.hermes/|\.thot/)',
+     "agent_config_write", "critical", "persistence",
+     "écrit dans la configuration de l'agent (persistance entre sessions)"),
+    (r'open\(\s*["\'][^"\']*'
+     r'(?:AGENTS\.md|CLAUDE\.md|\.cursorrules|\.clinerules'
+     r'|\.hermes/|\.thot/)[^"\']*["\']\s*,\s*["\'][aw]',
+     "agent_config_write", "critical", "persistence",
+     "ouvre la configuration de l'agent en écriture"),
     (r'\.claude/settings|\.codex/config',
      "other_agent_config", "high", "persistence",
      "references other agent configuration files"),
