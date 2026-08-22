@@ -267,3 +267,91 @@ def test_the_sudoers_rule_is_untouched(tmp_path):
 
     assert any(f.pattern_id == "sudoers_mod" and f.severity == "critical"
                for f in found)
+
+
+# --- toucher ~/.ssh, lire une clé privée, poser une porte dérobée ----------
+#
+# Les 33 occurrences de `ssh_dir_access` sur la bibliothèque livrée sont, à
+# une près, de vrais usages : `ssh-keygen -f ~/.ssh/container_key`,
+# `ssh -i ~/.ssh/lambda_key`, `cat ~/.ssh/container_key.pub`. Aucun n'est une
+# exfiltration, et une clé *publique* n'est pas un secret.
+#
+# Ce que la règle manquait est l'inverse : lire une clé *privée* était HIGH
+# comme le reste, donc franchissable par `--force`. (`authorized_keys` avait
+# déjà sa propre règle CRITICAL, `ssh_backdoor` — vérifié plutôt que supposé,
+# et le test ci-dessous l'épingle.) Rien n'est abaissé ici ; un CRITICAL est
+# ajouté.
+
+
+def _ssh(tmp_path, source: str, name: str = "install.sh"):
+    from thot.guard.skill_guard import scan_file
+
+    target = tmp_path / name
+    target.write_text(source, encoding="utf-8")
+    found = scan_file(target, name)
+    for level in ("critical", "high", "medium", "low"):
+        if any(f.severity == level for f in found):
+            return level
+    return "none"
+
+
+def test_reading_a_private_key_is_critical(tmp_path):
+    assert _ssh(tmp_path, "cat ~/.ssh/id_rsa\n") == "critical"
+
+
+def test_copying_a_private_key_out_is_critical(tmp_path):
+    assert _ssh(tmp_path, "cp ~/.ssh/id_ed25519 /tmp/stash\n") == "critical"
+
+
+def test_reading_a_named_private_key_is_critical(tmp_path):
+    """Not only the default names: a key without .pub is a private key."""
+    assert _ssh(tmp_path, "base64 ~/.ssh/container_key\n") == "critical"
+
+
+def test_adding_an_authorized_key_is_critical(tmp_path):
+    assert _ssh(tmp_path, "echo 'ssh-rsa AAAA' >> ~/.ssh/authorized_keys\n") == "critical"
+
+
+def test_reading_a_public_key_is_not_critical(tmp_path):
+    """A public key is meant to be shared; it still earns a mention."""
+    assert _ssh(tmp_path, 'SSH_KEY="$(cat ~/.ssh/container_key.pub)"\n') == "high"
+
+
+def test_using_a_key_to_connect_is_not_critical(tmp_path):
+    assert _ssh(tmp_path, "ssh -i ~/.ssh/lambda_key ubuntu@example.com\n") == "high"
+
+
+def test_creating_a_key_is_not_critical(tmp_path):
+    assert _ssh(tmp_path, "ssh-keygen -t ed25519 -f ~/.ssh/lambda_key\n") == "high"
+
+
+def _ssh_private(tmp_path, source: str):
+    from thot.guard.skill_guard import scan_file
+
+    target = tmp_path / "install.sh"
+    target.write_text(source, encoding="utf-8")
+    return [f for f in scan_file(target, "install.sh")
+            if f.pattern_id == "ssh_private_key_read"]
+
+
+def test_authorized_keys_is_not_a_private_key(tmp_path):
+    """Found by running the new rule over the shipped library before trusting it.
+
+    `authorized_keys` does not end in `.pub`, so the first version of this
+    rule called reading it a private-key read — a CRITICAL, which --force
+    cannot override. It is a list of *public* keys, and a troubleshooting
+    step reads it.
+    """
+    assert _ssh_private(tmp_path, "cat ~/.ssh/authorized_keys\n") == []
+
+
+def test_a_public_key_read_is_not_reclassified_by_a_later_path(tmp_path):
+    """The gap before the path must not skip over the file actually read.
+
+    `ssh host "echo '$(cat ~/.ssh/k.pub)' >> ~/.ssh/authorized_keys"` reads a
+    public key; the first version matched the *second* path on the line and
+    called it private.
+    """
+    line = ("ssh ubuntu@host \"echo '$(cat ~/.ssh/lambda_key_new.pub)' "
+            ">> ~/.ssh/authorized_keys\"\n")
+    assert _ssh_private(tmp_path, line) == []

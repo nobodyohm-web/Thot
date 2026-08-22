@@ -112,6 +112,22 @@ THREAT_PATTERNS = [
     (r'base64[^\n]*env',
      "encoded_exfil", "high", "exfiltration",
      "base64 encoding combined with environment access"),
+    # Reading a private key is not ordinary SSH use. Measured on the shipped
+    # library, every hit but one is legitimate — `ssh-keygen -f`, `ssh -i`,
+    # `cat ~/.ssh/container_key.pub` — and a public key is not a secret. What
+    # the single HIGH rule could not say is that `cat ~/.ssh/id_rsa` is a
+    # different act, and HIGH is overridable by --force.
+    #
+    # Any file under ~/.ssh that does not end in `.pub` is a private key: the
+    # default names are not the only ones, as `container_key` in that same
+    # library shows.
+    (r'(?:\bcat\b|\bless\b|\bmore\b|\bhead\b|\btail\b|\bcp\b|\bmv\b'
+     r'|\bbase64\b|\bxxd\b|\bstrings\b|\bscp\b)\s+[^|;&]*'
+     r'(?:\$HOME/\.ssh|\~/\.ssh)/'
+     r'(?!(?:authorized_keys|known_hosts|config|environment)\b)'
+     r'(?![^\s"\'`]*\.pub)[^\s"\'`]+',
+     "ssh_private_key_read", "critical", "exfiltration",
+     "lit une clé SSH privée"),
     (r'\$HOME/\.ssh|\~/\.ssh',
      "ssh_dir_access", "high", "exfiltration",
      "references user SSH directory"),
