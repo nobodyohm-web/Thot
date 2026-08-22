@@ -357,3 +357,62 @@ def test_an_unreadable_toolbelt_is_not_a_clean_one():
     shown_ok, shown_detail = doctor._toolbelt(_Kernel, strict=False)
     assert shown_ok is True
     assert shown_detail == "ipython", "montré tel quel, jamais qualifié"
+
+
+def test_a_unit_whose_path_cannot_find_the_agents_is_a_failure(tmp_path,
+                                                               monkeypatch):
+    """The failure this exists for is invisible until someone reads a log.
+
+    launchd hands a job `/usr/bin:/bin:/usr/sbin:/sbin`, the agents are not
+    there, and a deep pass that finds none of them judges nothing and exits
+    0 — a success recorded every night while nothing happens.
+    """
+    from thot.schedule.jobs import FUSION, Job
+
+    monkeypatch.setattr(
+        "thot.schedule.jobs.load",
+        lambda: [Job(name="improve", root=FUSION, deep=True, budget=8)],
+    )
+    monkeypatch.setattr("thot.schedule.install.LAUNCH_AGENTS", tmp_path)
+
+    unit = tmp_path / "com.thot.improve.plist"
+    unit.write_text(
+        "<plist><dict><key>EnvironmentVariables</key><dict>"
+        "<key>PATH</key><string>/usr/bin:/bin</string>"
+        "</dict></dict></plist>",
+        encoding="utf-8",
+    )
+    ok, detail = doctor._loop()
+    assert ok is False
+    assert "aucun agent dans le PATH" in detail
+
+    unit.write_text(
+        "<plist><dict><key>EnvironmentVariables</key><dict>"
+        "<key>PATH</key><string>/usr/bin:/bin</string>"
+        "</dict></dict></plist>".replace(
+            "/usr/bin:/bin", f"{tmp_path}:/usr/bin"
+        ),
+        encoding="utf-8",
+    )
+    (tmp_path / "claude").write_text("#!/bin/sh\n")
+    (tmp_path / "hermes").write_text("#!/bin/sh\n")
+    ok, detail = doctor._loop()
+    assert ok is True
+    assert "joignables" in detail
+
+
+def test_a_unit_without_any_path_is_a_failure(tmp_path, monkeypatch):
+    from thot.schedule.jobs import FUSION, Job
+
+    monkeypatch.setattr(
+        "thot.schedule.jobs.load",
+        lambda: [Job(name="improve", root=FUSION, deep=True, budget=8)],
+    )
+    monkeypatch.setattr("thot.schedule.install.LAUNCH_AGENTS", tmp_path)
+    (tmp_path / "com.thot.improve.plist").write_text(
+        "<plist><dict></dict></plist>", encoding="utf-8"
+    )
+
+    ok, detail = doctor._loop()
+    assert ok is False
+    assert "n'a pas de PATH" in detail

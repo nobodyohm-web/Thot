@@ -193,7 +193,37 @@ def _loop():
     job = next((j for j in load() if j.whole_program and j.deep), None)
     if job is None:
         return False, "non programmée — `thot improve --every daily`"
-    return True, f"{job.schedule}, {job.budget} candidats par arbre"
+
+    # The unit's own PATH, not this shell's. launchd hands a job
+    # `/usr/bin:/bin:/usr/sbin:/sbin`, the agents are not there, and a deep
+    # pass that finds none of them judges nothing and exits 0 — a success
+    # recorded every night while nothing happens. That failure is invisible
+    # until someone reads a log, so it is checked here instead.
+    from thot.schedule.install import LAUNCH_AGENTS, label
+
+    unit = LAUNCH_AGENTS / f"{label(job)}.plist"
+    detail = f"{job.schedule}, {job.budget} candidats par arbre"
+    if not unit.is_file():
+        return True, detail + " · unité non écrite (cron ?)"
+
+    text = unit.read_text(encoding="utf-8", errors="replace")
+    marker = "<key>PATH</key><string>"
+    if marker not in text:
+        return False, detail + " · l'unité n'a pas de PATH — elle ne jugera rien"
+    written = text.split(marker, 1)[1].split("</string>", 1)[0]
+
+    missing = [
+        name for name in ("claude", "hermes")
+        if not any((Path(part) / name).exists() for part in written.split(":"))
+    ]
+    if len(missing) == 2:
+        return False, (
+            detail + f" · aucun agent dans le PATH de l'unité ({', '.join(missing)})"
+            " — `thot improve --every daily` la réécrit"
+        )
+    if missing:
+        return True, detail + f" · {missing[0]} hors du PATH de l'unité"
+    return True, detail + " · agents joignables depuis l'unité"
 
 
 def run(root: Path) -> list[Check]:
