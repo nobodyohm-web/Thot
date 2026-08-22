@@ -297,3 +297,62 @@ def test_a_confirmation_names_the_file_relatively_on_a_symlinked_root(tmp_path):
 
     assert asked == ["Créer src/app.py"], asked
     assert answer.startswith("src/app.py "), answer
+
+
+# --- l'avertissement était tu exactement quand il était vrai ---------------
+#
+# `run_command` affichait la posture du bac à sable *sauf* pour `local`, et
+# `local` veut dire « aucune isolation — la commande tourne sous ton compte ».
+# La confirmation rassurait donc quand elle pouvait, et se taisait quand il
+# aurait fallu parler. C'est le seul texte qu'un humain lit avant d'autoriser
+# l'exécution d'une commande arbitraire.
+
+
+def _asking(sandbox=None):
+    """A context whose confirm records what it was shown, then refuses."""
+    from pathlib import Path
+
+    from thot.agent_tools import ToolContext
+
+    shown: list[tuple[str, str]] = []
+
+    def confirm(action, detail):
+        shown.append((action, detail))
+        return False
+
+    context = ToolContext(root=Path("."), recon=None, confirm=confirm,
+                          refresh=lambda: None, sandbox=sandbox)
+    return context, shown
+
+
+def test_the_prompt_says_there_is_no_isolation(tmp_path):
+    from thot.agent_tools import ToolError, run_command
+
+    context, shown = _asking()
+    try:
+        run_command(context, command="rm -rf /tmp/x")
+    except ToolError:
+        pass
+
+    assert shown, "aucune confirmation demandée"
+    _, detail = shown[0]
+    assert "rm -rf /tmp/x" in detail
+    assert "aucune isolation" in detail, detail
+
+
+def test_a_real_sandbox_still_names_itself(tmp_path):
+    from thot.agent_tools import ToolError, run_command
+
+    class _Box:
+        name = "docker"
+
+        def describe(self):
+            return "conteneur sans réseau"
+
+    context, shown = _asking(_Box())
+    try:
+        run_command(context, command="ls")
+    except ToolError:
+        pass
+
+    assert "conteneur sans réseau" in shown[0][1]

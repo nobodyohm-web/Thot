@@ -229,9 +229,11 @@ def _sandbox_for(context: ToolContext):
 
 def run_command(context: ToolContext, *, command: str) -> str:
     sandbox = _sandbox_for(context)
-    detail = command if sandbox.name == "local" else (
-        f"{command}\n\n[{sandbox.describe()}]"
-    )
+    # The posture always, and `local` above all: it means "no isolation, the
+    # command runs under your account". Showing it only for the other
+    # sandboxes reassured when it could and went quiet when it mattered, in
+    # the one text a human reads before allowing an arbitrary command.
+    detail = f"{command}\n\n[{sandbox.describe()}]"
     if not context.confirm("Exécuter une commande", detail):
         raise ToolError("L'utilisateur a refusé l'exécution.")
 
