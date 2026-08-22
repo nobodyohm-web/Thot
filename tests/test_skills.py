@@ -332,3 +332,12 @@ def test_the_unbroker_scanner_enforces_the_convention_it_claimed():
 
     assert module.fetch("file:///etc/passwd", timeout=2) == (0, "")
     assert module.fetch("ftp://example.com/x", timeout=2) == (0, "")
+    # Every hop: `urlopen` follows redirects, so a scheme check on the first
+    # URL let the site being scanned name the next destination. Seventh time
+    # in one day that a first-hop check was mistaken for a check.
+    assert module._public_http("http://127.0.0.1/x") is False
+    assert module._public_http("http://10.0.0.5/x") is False
+    handlers = module._opener().handlers
+    assert any(type(h).__name__ == "_PublicOnly" for h in handlers), (
+        "l'opener doit revalider chaque redirection"
+    )
