@@ -87,4 +87,17 @@ def detail(index: int, finding: Finding) -> str:
         parts.append("Chemin :")
         parts += [f"   {ref.path}:{ref.line} {ref.symbol}".rstrip()
                   for ref in finding.taint_path[:8]]
+
+    # Who decided, and at which stage. The confidence word says *what* was
+    # decided and, for a refutation, the reason rides along in the scenario —
+    # but never the author. The terminal report has carried the stages since
+    # `judgement()` was written; this view, the one read away from a desk,
+    # had not.
+    from thot.report import judgement
+
+    stages = judgement(finding)
+    if stages:
+        parts.append("")
+        parts.append("Jugement :")
+        parts += [f"   {label} {value}" for label, value in stages]
     return "\n".join(parts)

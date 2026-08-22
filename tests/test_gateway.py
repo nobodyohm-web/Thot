@@ -500,3 +500,44 @@ def test_a_deterministic_push_says_nothing_about_a_panel():
                   title="Nouveau")
 
     assert "jugé par" not in text.lower(), text
+
+
+def test_the_detail_view_says_who_judged():
+    """Asking "tell me about finding 3" should answer who decided it.
+
+    `detail` showed the confidence word — `refuted` — and, for a refutation,
+    the reason, because that is appended to the scenario. Never the author.
+    The terminal report has carried the stages since `judgement()` was
+    written; the chat view, which is the one someone reads away from their
+    desk, did not.
+    """
+    from thot.contracts import CodeRef, Confidence, Finding, Severity
+    from thot.gateway.render import detail
+
+    finding = Finding(
+        id="n1", rule="sink.os.system", severity=Severity.INFO,
+        confidence=Confidence.REFUTED,
+        location=CodeRef(path="app.py", line=9, symbol="handle", ast_hash="h"),
+        failure_scenario="argv atteint os.system\n\nRéfuté : commande littérale",
+        provenance={"moteur": "panel", "contradicteur": "hermes",
+                    "relecture": "prime", "réfutation vérifiée": "oui"},
+    )
+
+    text = detail(1, finding)
+
+    assert "hermes" in text, text
+    assert "prime" in text, text
+
+
+def test_a_finding_nobody_judged_gains_no_empty_section():
+    from thot.contracts import CodeRef, Confidence, Finding, Severity
+    from thot.gateway.render import detail
+
+    finding = Finding(
+        id="n2", rule="sink.os.system", severity=Severity.HIGH,
+        confidence=Confidence.PLAUSIBLE,
+        location=CodeRef(path="app.py", line=9, symbol="handle", ast_hash="h"),
+        failure_scenario="argv atteint os.system",
+    )
+
+    assert "jugement" not in detail(1, finding).lower()
