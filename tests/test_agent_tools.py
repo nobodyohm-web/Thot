@@ -199,3 +199,69 @@ def test_a_short_report_is_left_whole(tmp_path):
     answer = audit(_context_with(_many_findings(3), tmp_path))
 
     assert "autre(s) finding(s)" not in answer
+
+
+# --- une racine atteinte par un lien symbolique reste la racine ------------
+#
+# `_resolve` résolvait le candidat et comparait à une racine non résolue. Sur
+# macOS `tempfile.mkdtemp()` rend `/var/folders/…`, lien vers
+# `/private/var/folders/…` : chaque lecture d'un fichier pourtant intérieur
+# était refusée avec « Chemin hors du répertoire de travail », et l'agent en
+# concluait qu'il ne pouvait pas lire le code. Même chose pour `/tmp` et pour
+# tout raccourci utilisateur (`~/code -> /Volumes/Data/code`).
+
+
+def _context(root):
+    from thot.agent_tools import ToolContext
+    from thot.recon import sweep
+
+    return ToolContext(root=root, recon=sweep(root),
+                       confirm=lambda action, detail: False,
+                       refresh=lambda: None)
+
+
+def test_a_file_inside_a_symlinked_root_is_readable(tmp_path):
+    from thot.agent_tools import dispatch
+
+    real = tmp_path / "real"
+    real.mkdir()
+    (real / "inside.py").write_text("x = 1\n", encoding="utf-8")
+    link = tmp_path / "through-a-link"
+    link.symlink_to(real)
+
+    out = dispatch(_context(link), "read_file", {"path": "inside.py"})
+
+    assert "x = 1" in out
+
+
+def test_an_escape_is_still_refused_from_a_symlinked_root(tmp_path):
+    from thot.agent_tools import dispatch
+
+    real = tmp_path / "real"
+    real.mkdir()
+    (real / "inside.py").write_text("x = 1\n", encoding="utf-8")
+    (tmp_path / "outside.py").write_text("secret = 1\n", encoding="utf-8")
+    link = tmp_path / "through-a-link"
+    link.symlink_to(real)
+    context = _context(link)
+
+    for path in ("../outside.py", str(tmp_path / "outside.py"), "/etc/passwd"):
+        answer = dispatch(context, "read_file", {"path": path})
+        assert "hors du répertoire de travail" in answer, (path, answer)
+        assert "secret" not in answer
+
+
+def test_a_symlink_inside_the_root_pointing_out_is_still_refused(tmp_path):
+    """The fix must not open a door while closing a false one."""
+    from thot.agent_tools import dispatch
+
+    real = tmp_path / "real"
+    real.mkdir()
+    (real / "inside.py").write_text("x = 1\n", encoding="utf-8")
+    (tmp_path / "outside.py").write_text("secret = 1\n", encoding="utf-8")
+    (real / "escape.py").symlink_to(tmp_path / "outside.py")
+
+    answer = dispatch(_context(real), "read_file", {"path": "escape.py"})
+
+    assert "hors du répertoire de travail" in answer, answer
+    assert "secret" not in answer

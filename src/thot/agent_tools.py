@@ -46,10 +46,24 @@ class ToolError(Exception):
 
 
 def _resolve(context: ToolContext, path: str) -> Path:
-    """Resolve a path and refuse anything outside the working directory."""
-    candidate = (context.root / path).resolve() if not Path(path).is_absolute() else Path(path).resolve()
+    """Resolve a path and refuse anything outside the working directory.
+
+    Both sides are resolved, and that symmetry is the whole point. Resolving
+    only the candidate refused every legitimate file whenever the root was
+    reached through a symlink — on macOS `/tmp` is `/private/tmp` and
+    `tempfile.mkdtemp()` hands back `/var/folders/…` for
+    `/private/var/folders/…`, so an agent working there was told "outside the
+    working directory" about files sitting in it, and concluded it could not
+    read the code at all.
+
+    It does not widen the guard: an escape still resolves outside the root and
+    is still refused, and so is a symlink *inside* the root that points out of
+    it — resolving the candidate is what catches that one.
+    """
+    root = context.root.resolve()
+    candidate = (root / path).resolve() if not Path(path).is_absolute() else Path(path).resolve()
     try:
-        candidate.relative_to(context.root)
+        candidate.relative_to(root)
     except ValueError:
         raise ToolError(
             f"Chemin hors du répertoire de travail : {path}. "
