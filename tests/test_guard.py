@@ -523,3 +523,41 @@ def test_the_image_plugin_refuses_an_internal_source_when_run():
     with pytest.raises(ValueError) as raised:
         plugin._load_image_bytes("http://169.254.169.254/latest/meta-data/")
     assert "refused image source" in str(raised.value)
+
+
+def test_the_peer_does_not_get_to_name_an_internal_rpc_endpoint(monkeypatch):
+    """Third order, and found by Prime with the reasoning spelled out.
+
+    `_rpc_url` prefers the endpoint advertised in the agent card — a document
+    the *peer* serves. A redirect guard never sees this: nothing redirects,
+    the peer simply names the next destination, and it can name localhost.
+    The configured base is kept instead.
+    """
+    import socket
+
+    tools = _hermes_package("plugins.platforms.a2a.tools")
+    base = "https://pair.example"
+
+    def resolving_to(address):
+        return lambda *a, **kw: [(2, 1, 6, "", (address, 0))]
+
+    monkeypatch.setattr(socket, "getaddrinfo", resolving_to("93.184.216.34"))
+    assert tools._rpc_url(base, {"url": "https://pair.example/rpc"}) \
+        == "https://pair.example/rpc"
+
+    monkeypatch.setattr(socket, "getaddrinfo", resolving_to("127.0.0.1"))
+    assert tools._rpc_url(base, {"url": "https://pair.example/rpc"}) == base
+
+    monkeypatch.setattr(socket, "getaddrinfo", resolving_to("169.254.169.254"))
+    assert tools._rpc_url(base, {"url": "http://metadata.example/"}) == base
+
+
+def test_the_configured_base_is_not_second_guessed(monkeypatch):
+    """An agent peered with a service on its own network is a deployment."""
+    import socket
+
+    tools = _hermes_package("plugins.platforms.a2a.tools")
+    monkeypatch.setattr(
+        socket, "getaddrinfo", lambda *a, **kw: [(2, 1, 6, "", ("10.0.0.5", 0))]
+    )
+    assert tools._rpc_url("http://10.0.0.5:9999", None) == "http://10.0.0.5:9999"

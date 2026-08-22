@@ -140,11 +140,29 @@ def _select_jsonrpc_interface(card: Optional[dict]) -> Optional[dict]:
 
 def _rpc_url(base_url: str, card: Optional[dict]) -> str:
     """Prefer the card's JSONRPC interface (v1.0 supportedInterfaces), then the
-    card's legacy top-level url, then the configured base."""
+    card's legacy top-level url, then the configured base.
+
+    The first two come out of a document the *peer* served, so they are
+    checked before being used and the configured base is kept when they point
+    somewhere only this host can reach. Not a redirect — a redirect guard
+    never sees this — but the same move one step further out: a peer that is
+    reachable and public names the next destination, and it can name
+    localhost.
+
+    `base_url` is not checked here. It is what the operator configured, and
+    an agent peered with a service on its own network is a deployment and not
+    an attack.
+    """
+    def usable(candidate: str) -> bool:
+        from utils import refuse_internal_url
+
+        return bool(candidate) and not refuse_internal_url(candidate)
+
     iface = _select_jsonrpc_interface(card)
-    if iface:
+    if iface and usable(str(iface.get("url") or "")):
         return str(iface["url"])
-    if isinstance(card, dict) and isinstance(card.get("url"), str) and card["url"]:
+    if isinstance(card, dict) and isinstance(card.get("url"), str) \
+            and usable(card["url"]):
         return card["url"]
     return base_url.rstrip("/")
 
