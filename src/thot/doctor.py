@@ -302,6 +302,7 @@ def _loop():
             "à l'interpréteur qui exécute l'unité."
         )
 
+
     text = unit.read_text(encoding="utf-8", errors="replace")
     marker = "<key>PATH</key><string>"
     if marker not in text:
@@ -319,6 +320,24 @@ def _loop():
         )
     if missing:
         return True, detail + f" · {missing[0]} hors du PATH de l'unité"
+
+    # The same refusal as the import path, one step later in the run. An
+    # install outside the guarded folders starts fine and then reads nothing,
+    # because the tree it audits is inside one. Checked last because that is
+    # the order a run meets these: the interpreter starts, the agents are
+    # found on the PATH, and only then is the tree opened.
+    from thot.schedule.runner import roots_for
+
+    blind = unreachable_from_launchd(
+        [str(root) for root in roots_for(job)], home=Path.home()
+    )
+    if blind:
+        return False, (
+            detail + f" · l'arbre audité {blind[0]} est refusé à un agent "
+            "launchd : la tâche démarrera et ne lira rien. Même remède — "
+            "sortir l'arbre de Desktop/Documents/Downloads, ou accorder "
+            "l'accès complet au disque."
+        )
     return True, detail + " · agents joignables depuis l'unité"
 
 

@@ -396,6 +396,11 @@ def test_a_unit_whose_path_cannot_find_the_agents_is_a_failure(tmp_path,
     )
     (tmp_path / "claude").write_text("#!/bin/sh\n")
     (tmp_path / "hermes").write_text("#!/bin/sh\n")
+    # Un arbre hors des dossiers protégés : ce test porte sur le PATH, et les
+    # arbres réels de cette machine sont sur le Bureau, que le contrôle
+    # suivant refuse — à juste titre, mais pas ici.
+    monkeypatch.setattr("thot.fusion.audit.parts",
+                        lambda: [("thot", tmp_path)])
     ok, detail = doctor._loop()
     assert ok is True
     assert "joignables" in detail
@@ -549,3 +554,43 @@ def test_the_loop_check_itself_fails_on_a_guarded_import_path(tmp_path, monkeypa
     assert ok is False, detail
     assert "Desktop" in detail
     assert "launchd" in detail
+
+
+def test_the_loop_check_also_guards_the_trees_it_audits(tmp_path, monkeypatch):
+    """An install outside the Desktop that audits a project inside it.
+
+    The import-path check passes there and the job starts — then reads
+    nothing, because macOS refuses the tree just as it refuses the source.
+    Both are the same failure and both must be named.
+    """
+    from thot.schedule.jobs import Job
+
+    home = tmp_path / "home"
+    (home / "Desktop" / "projet").mkdir(parents=True)
+    binaries = home / ".local" / "bin"
+    binaries.mkdir(parents=True)
+    script = binaries / "thot"
+    script.write_text("#!/bin/sh\n")
+    for agent in ("claude", "hermes"):
+        (binaries / agent).write_text("#!/bin/sh\n")
+
+    from thot.schedule.jobs import FUSION
+
+    monkeypatch.setattr(
+        "thot.schedule.jobs.load",
+        lambda: [Job(name="improve", root=FUSION, deep=True, budget=8)],
+    )
+    monkeypatch.setattr("thot.fusion.audit.parts",
+                        lambda: [("projet", home / "Desktop" / "projet")])
+    monkeypatch.setattr("thot.schedule.install.LAUNCH_AGENTS", tmp_path)
+    monkeypatch.setattr("pathlib.Path.home", classmethod(lambda cls: home))
+    (tmp_path / "com.thot.improve.plist").write_text(
+        f"<plist><dict><string>{script}</string>"
+        f"<key>PATH</key><string>{binaries}</string></dict></plist>",
+        encoding="utf-8",
+    )
+
+    ok, detail = doctor._loop()
+
+    assert ok is False, detail
+    assert "projet" in detail, detail
