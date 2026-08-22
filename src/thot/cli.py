@@ -803,8 +803,17 @@ def _cmd_verdicts(args) -> int:
         )
         header = f"{len(stored)} décision(s)"
         if dormant:
-            header += f" · {dormant} sans finding correspondant"
+            # "sans finding correspondant" reads as orphaned, and the memory
+            # is shared across trees while an audit is per repository — so a
+            # verdict recorded against a finding in `hermes/` counts here
+            # whatever its worth. Measured on the development machine: 446 of
+            # 450, 99%, every one of them valid and scoped elsewhere. A reader
+            # who trusts the old wording forgets them.
+            header += f" · {dormant} hors du dernier audit de ce dépôt"
         print(header + "\n")
+        if dormant:
+            print("La mémoire est commune aux dépôts ; `thot verdicts "
+                  "<chemin>` pour en viser un autre.\n")
 
         for verdict in stored:
             where = f"{verdict.path}:{verdict.symbol}" if verdict.symbol else verdict.path
@@ -812,7 +821,7 @@ def _cmd_verdicts(args) -> int:
             # Not "expired": the last stored run is the only thing consulted,
             # and it may predate the code. What can be said is what is said.
             stale = (
-                "  [absent du dernier audit]"
+                "  [hors du dernier audit de ce dépôt]"
                 if known is not None and verdict.finding_id not in known
                 else ""
             )

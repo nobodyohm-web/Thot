@@ -192,11 +192,11 @@ def test_a_verdict_pointing_at_nothing_is_listed_as_such(
     assert main(["verdicts"]) == 0
     printed = capsys.readouterr().out
 
-    assert "1 sans finding correspondant" in printed
+    assert "1 hors du dernier audit de ce dépôt" in printed
     ghost_line = next(l for l in printed.splitlines() if l.startswith("0" * 16))
     live_line = next(l for l in printed.splitlines() if l.startswith(live.id))
-    assert "absent du dernier audit" in ghost_line
-    assert "absent du dernier audit" not in live_line
+    assert "hors du dernier audit" in ghost_line
+    assert "hors du dernier audit" not in live_line
 
 
 def test_nothing_is_called_stale_before_the_first_audit(
@@ -345,3 +345,56 @@ def test_the_markdown_report_is_handed_the_pass_and_the_engine(
 
     assert "judged" in seen, "le CLI n'a pas transmis la passe au rapport markdown"
     assert seen["judged"] is not None
+
+
+def test_verdicts_from_another_tree_are_not_called_orphans(
+    toy_repo, capsys, monkeypatch, isolated_home
+):
+    """The memory is shared across trees; the audit is per repository.
+
+    A verdict recorded against a finding in `hermes/` has no counterpart in
+    Thot's own last audit, and the listing called that "sans finding
+    correspondant" with "[absent du dernier audit]" on every line. Measured on
+    this machine: 446 of 450 decisions, 99%, every one of them valid and
+    scoped to another tree. A reader who trusts that wording forgets them.
+    """
+    from thot.contracts import CodeRef, Confidence, Finding, Severity
+    from thot.memory import build_memory
+    from thot.memory.base import record_verdicts
+
+    elsewhere = CodeRef(path="hermes/utils.py", line=3, symbol="fetch",
+                        ast_hash="z")
+    finding = Finding(
+        id=Finding.compute_id("sink.network", elsewhere), rule="sink.network",
+        severity=Severity.INFO, confidence=Confidence.REFUTED,
+        location=elsewhere,
+        failure_scenario="x\n\nRéfuté : garde en amont",
+    )
+    # Un audit stocké, sinon rien n'est dit « hors du dernier audit » — le
+    # compteur se tait tant qu'aucune passe n'a été enregistrée, et un autre
+    # test épingle ce silence.
+    from thot.paths import run_store
+    from thot.pipeline import run_audit
+    from thot.store.db import Store
+
+    store = Store.open(run_store())
+    try:
+        run_audit(toy_repo, store, require_authorization=False)
+    finally:
+        store.close()
+
+    memory = build_memory(toy_repo)
+    try:
+        record_verdicts([finding], memory, author="hermes")
+    finally:
+        memory.close()
+
+    monkeypatch.chdir(toy_repo)
+    assert cli.main(["verdicts"]) == 0
+    out = capsys.readouterr().out
+
+    assert "sans finding correspondant" not in out, out
+    assert "hors du dernier audit de ce dépôt" in out, out
+    # Et la raison : sans elle, « hors du dernier audit » invite encore à
+    # supprimer une décision parfaitement valide.
+    assert "commune aux dépôts" in out, out
