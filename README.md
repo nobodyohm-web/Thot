@@ -119,8 +119,15 @@ Ce qu'elle tient après :
 
 ```
 ✓ outils · claude        7 outil(s), tous en lecture seule
-  Glob, Grep, ListAgents, Read, ReportFindings, Skill, ToolSearch
+✓ outils · hermes        mcp__patch, mcp__read_file, mcp__search_files, mcp__write_file
+✓ outils · prime         ipython
 ```
+
+Les trois sont **montrés**, un seul est **jugé** : le jeu `file` de Hermes
+livre `write_file` et `patch` avec la lecture, et l'unique outil intégré de
+Prime est un noyau. Une ligne rouge permanente sur ce qu'on ne peut pas
+changer est une ligne qu'on cesse de lire ; qui choisit `--engine hermes`
+voit ce qu'il accepte.
 
 Une liste noire est fragile par construction — `Task` y manquait et un
 sous-agent a écrit un fichier par ce trou, une fois sur six. Alors l'écart

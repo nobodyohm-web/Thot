@@ -267,3 +267,60 @@ def test_an_empty_answer_is_a_failure_not_a_pass():
     ok, detail = doctor._toolbelt(_Silent)
     assert ok is False
     assert "liste" in detail
+
+
+def test_the_toolbelt_check_reads_names_and_not_prose():
+    """It was measuring how the model writes, not what it holds.
+
+    Asked for a bare list, a probe answered "TaskStop (outils différés,
+    ToolSearch (outils chargés) + CronList, appelables uniquement après…" —
+    and the comma split turned that into three imaginary tools and a red
+    line. A name is CamelCase or an `mcp__` prefix; a French word is neither.
+    """
+    from thot.engine.base import AgentResult, EngineCapabilities
+
+    class _Prose:
+        def __init__(self, root, max_parallel=1):
+            pass
+
+        @property
+        def capabilities(self):
+            return EngineCapabilities(name="bavard", max_parallel=1)
+
+        def run(self, task):
+            return AgentResult(task_id=task.id, data={"verdict": (
+                "TaskStop (outils différés, ToolSearch (outils chargés) + "
+                "CronList, appelables uniquement après chargement du schéma"
+            )})
+
+        def fan_out(self, tasks):
+            return [self.run(t) for t in tasks]
+
+    ok, detail = doctor._toolbelt(_Prose)
+    assert ok is True, detail
+    assert "lecture seule" in detail
+
+
+def test_prose_does_not_hide_a_real_surplus():
+    """The looser parser must not become a looser check."""
+    from thot.engine.base import AgentResult, EngineCapabilities
+
+    class _Mixed:
+        def __init__(self, root, max_parallel=1):
+            pass
+
+        @property
+        def capabilities(self):
+            return EngineCapabilities(name="mixte", max_parallel=1)
+
+        def run(self, task):
+            return AgentResult(task_id=task.id, data={"verdict": (
+                "Read et Grep, plus Bash (pour les commandes) et CronCreate"
+            )})
+
+        def fan_out(self, tasks):
+            return [self.run(t) for t in tasks]
+
+    ok, detail = doctor._toolbelt(_Mixed)
+    assert ok is False
+    assert "Bash" in detail and "CronCreate" in detail

@@ -20,6 +20,7 @@ gap. The only way to know was to plant a file and ask.
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -310,7 +311,7 @@ READ_ONLY_TOOLBELT = frozenset({
 })
 
 
-def _toolbelt(cls) -> tuple[bool, str]:
+def _toolbelt(cls, *, strict: bool = True) -> tuple[bool, str]:
     """Ask a live probe what it actually holds, and name the surplus.
 
     Not what the flags say it holds. `--allowed-tools` pre-approves and does
@@ -327,9 +328,11 @@ def _toolbelt(cls) -> tuple[bool, str]:
         task = AgentTask(
             id="probe:doctor-tools",
             instructions=(
-                "Liste EXACTEMENT les noms des outils dont tu disposes dans "
-                'cette session, séparés par des virgules. Réponds {"verdict": '
-                '"<la liste>", "scenario": "x", "severity": "info"}'
+                "Liste EXACTEMENT les noms des outils dont tu disposes "
+                "dans cette session, séparés par des virgules. Rien d'autre : "
+                "pas de parenthèses, pas de commentaire, pas de phrase. "
+                'Réponds {"verdict": "<la liste>", "scenario": "x", '
+                '"severity": "info"}'
             ),
             schema={"type": "object",
                     "properties": {"verdict": {"type": "string"}}},
@@ -338,20 +341,29 @@ def _toolbelt(cls) -> tuple[bool, str]:
 
     if not result.ok:
         return False, result.error or "réponse vide"
-    listed = [
-        name.strip() for name in
-        str((result.data or {}).get("verdict", "")).split(",")
-        if name.strip()
-    ]
+    answer = str((result.data or {}).get("verdict", ""))
+    listed = [name.strip() for name in answer.split(",") if name.strip()]
     if not listed:
         return False, "n'a pas répondu par une liste"
-    surplus = sorted(set(listed) - READ_ONLY_TOOLBELT)
-    if surplus:
-        return False, (
-            f"{len(surplus)} outil(s) hors lecture seule : "
-            + ", ".join(surplus[:6])
-        )
-    return True, f"{len(listed)} outil(s), tous en lecture seule"
+    # Tool names, not prose. Asked for a bare list and handed a sentence
+    # once — "TaskStop (outils différés, ToolSearch (outils chargés) + …" —
+    # which the comma split turned into three imaginary tools. A name is
+    # CamelCase or an `mcp__` prefix; a French word is neither, and this
+    # check is about what the probe holds rather than how it writes.
+    named = re.compile(r"^(?:mcp__[\w.-]+|[A-Z][A-Za-z0-9_]*)$")
+    tools = {token for token in re.findall(r"[\w.]+", answer) if named.match(token)}
+    surplus = sorted(tools - READ_ONLY_TOOLBELT)
+    if not surplus:
+        return True, f"{len(tools) or len(listed)} outil(s), tous en lecture seule"
+    if not strict:
+        # Hermes and Prime cannot be narrowed further — `-t file` is "File
+        # Operations", reads and writes together, and Prime's one built-in
+        # tool is a kernel. A red line nobody can act on is a line people
+        # stop reading, so what they hold is shown instead of judged.
+        return True, ", ".join(listed[:6]) + ("…" if len(listed) > 6 else "")
+    return False, (
+        f"{len(surplus)} outil(s) hors lecture seule : " + ", ".join(surplus[:6])
+    )
 
 
 def run_agents(*, writes: bool = True) -> list[Check]:
@@ -375,12 +387,21 @@ def run_agents(*, writes: bool = True) -> list[Check]:
         checks.append(_safe(f"lecture · {name}", lambda c=cls: _can_read(c)))
         if not writes:
             continue
+
         if name in UNRESTRICTABLE:
             checks.append(Check(f"écriture · {name}", True, UNRESTRICTABLE[name]))
-            continue
-        checks.append(_safe(f"écriture · {name}", lambda c=cls: _cannot_write(c)))
-        if name == "claude":
-            # Only the official client answers this reliably, and it is the
-            # only one whose toolbelt Thot can narrow at all.
-            checks.append(_safe("outils · claude", lambda c=cls: _toolbelt(c)))
+        else:
+            checks.append(
+                _safe(f"écriture · {name}", lambda c=cls: _cannot_write(c))
+            )
+
+        # Shown for all three, judged only for the one that can be narrowed.
+        # Someone choosing `--engine hermes` should see what they are
+        # accepting rather than read about it — which is why this sits after
+        # the branch above and not inside it: an early `continue` there is
+        # what dropped two of the three lines the first time.
+        checks.append(_safe(
+            f"outils · {name}",
+            lambda c=cls, n=name: _toolbelt(c, strict=n == "claude"),
+        ))
     return checks
