@@ -177,3 +177,29 @@ def test_stats_say_how_search_is_actually_being_done(store):
     stats = store.stats()
     assert stats["sessions"] == 1
     assert stats["search"] in {"fts5", "substring"}
+
+
+def test_an_empty_session_is_counted_but_not_listed(tmp_path, capsys):
+    """A session where nothing was said is dropped on the way out — but a
+    process that is killed cannot drop anything, and those rows are noise
+    rather than history."""
+    import argparse
+
+    from thot.cli import _cmd_sessions
+    from thot.state import SessionStore
+
+    store = SessionStore.open()
+    try:
+        empty = store.start(root=str(tmp_path), title="")
+        spoken = store.start(root=str(tmp_path), title="vrai travail")
+        store.append(spoken, "user", "bonjour")
+    finally:
+        store.close()
+
+    _cmd_sessions(argparse.Namespace(forget=None, show=None, all=True,
+                                     path=str(tmp_path)))
+    printed = capsys.readouterr().out
+
+    assert spoken[:8] in printed
+    assert empty[:8] not in printed
+    assert "1 session(s) vide(s) non listée(s)" in printed

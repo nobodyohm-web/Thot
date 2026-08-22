@@ -1505,14 +1505,24 @@ def _cmd_sessions(args) -> int:
 
         root = None if args.all else str(Path(args.path).resolve())
         found = store.sessions(root, limit=50)
+        # A session where nothing was said is dropped on the way out, but a
+        # process that is killed cannot drop anything. Those rows are noise,
+        # not history — counted so the number still adds up, never listed as
+        # if something had happened in them.
+        silent = [info for info in found if not info.message_count]
+        found = [info for info in found if info.message_count]
         if not found:
-            print("Aucune session enregistrée.")
+            print("Aucune session enregistrée."
+                  + (f" ({len(silent)} vide(s) ignorée(s))" if silent else ""))
             return 0
         for info in found:
             title = info.title or "(sans titre)"
             marker = " " if info.ended_at else "*"
             print(f"{marker}{info.id[:8]}  {info.message_count:>4} msg  "
                   f"{info.started_at[:16]}  {title[:60]}")
+        if silent:
+            print(f"\n{len(silent)} session(s) vide(s) non listée(s) — "
+                  f"un processus tué ne peut pas se ranger.")
         return 0
     finally:
         store.close()
