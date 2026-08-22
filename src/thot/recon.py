@@ -82,10 +82,15 @@ def sweep(root: Path, *, deep: bool = True) -> Recon:
         recon.findings = findings_from_graph(root, recon.graph)
 
     if deep:
-        # Same analysis the CLI runs, so /audit and `thot audit` never disagree.
+        # Same analysis the CLI runs, so /audit and `thot audit` never
+        # disagree. A rule added on one side and not the other makes this
+        # comment a lie without breaking a test — which is what happened to
+        # the suppression sweep, an hour after it was written.
         from thot.guard.scanner import sweep_patterns
+        from thot.guard.suppressions import sweep_suppressions
 
         recon.findings += sweep_patterns(root, list(manifest.files))
+        recon.findings += sweep_suppressions(root, list(manifest.files))
         recon.findings = _remember(recon.findings, root)
 
     recon.elapsed = time.monotonic() - started

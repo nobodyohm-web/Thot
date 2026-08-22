@@ -165,3 +165,30 @@ def test_an_interrupted_deep_pass_keeps_what_it_already_decided(tmp_path):
         memory.close()
 
     assert len(kept) == 4, "les lots terminés doivent être sur disque"
+
+
+def test_the_session_and_the_cli_see_the_same_analysis(tmp_path):
+    """`/audit` and `thot audit` must never disagree about what ran.
+
+    They are two call sites for the same rules, and a rule added to one of
+    them makes the promise false without failing anything — which is exactly
+    what happened to the suppression sweep, an hour after it was written.
+    """
+    from thot.recon import sweep
+    from thot.scope.authorization import write_authorization
+
+    (tmp_path / "app.py").write_text(
+        "import os, sys\n\n"
+        "def run():\n"
+        "    os.system('ls ' + sys.argv[1])  # nosec B605 — entrée contrôlée\n"
+    )
+    write_authorization(tmp_path, owner="tester")
+
+    from_cli = {f.rule for f in run_audit(tmp_path).findings}
+    from_session = {f.rule for f in sweep(tmp_path, deep=True).findings}
+
+    assert from_cli == from_session, (
+        f"seulement en CLI : {from_cli - from_session} · "
+        f"seulement en session : {from_session - from_cli}"
+    )
+    assert "suppression.security" in from_cli
