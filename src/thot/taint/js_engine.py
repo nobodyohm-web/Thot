@@ -361,7 +361,9 @@ def _scan_body(
                         tainted.get(culprit) if culprit
                         else _source_in(fragment)
                     )
-                    if mark and not _sanitised(fragment):
+                    # An unnamed slot holds a position and binds nothing:
+                    # a destructured parameter cannot be seeded by name.
+                    if mark and callee.params[index] and not _sanitised(fragment):
                         handed.append((where, callee, callee.params[index],
                                        mark, ref(_line_of(starts, position
                                                           + match.start()))))

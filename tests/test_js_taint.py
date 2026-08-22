@@ -622,3 +622,88 @@ def test_a_long_but_reasonable_call_is_still_read(tmp_path):
     body = "x" * (ARGUMENT_LIMIT // 2)
 
     assert _arguments(f"f({body})", 0) == body
+
+
+# --- une déstructuration occupe quand même sa place ------------------------
+#
+# `_params` lisait un identifiant en tête de chaque tranche, et une
+# déstructuration ne commence pas par un identifiant. Les positions glissaient
+# donc :
+#
+#   ({opts}, command)    → ('command',)      l'argument 0 désigne 'command'
+#   (req, {body}, next)  → ('req', 'next')   l'argument 1 désigne 'next'
+#
+# C'est la forme la plus répandue en JavaScript — intergiciel Express, props,
+# objet d'options — et une teinte portée par le deuxième argument se voyait
+# attribuée au troisième paramètre. Faux négatif et attribution fausse à la
+# fois. Un jeton vide garde la place sans jamais rien semer.
+
+
+def test_a_destructured_parameter_keeps_its_position():
+    from thot.codemap.ts_indexer import _mask, _params
+
+    def read(signature):
+        source = "function f" + signature + " {}"
+        return _params(_mask(source), source.index("(") + 1)
+
+    assert read("({opts}, command)") == ("", "command")
+    assert read("(req, {body}, next)") == ("req", "", "next")
+    assert read("({ command })") == ("",)
+
+
+def test_ordinary_signatures_are_unchanged():
+    from thot.codemap.ts_indexer import _mask, _params
+
+    def read(signature):
+        source = "function f" + signature + " {}"
+        return _params(_mask(source), source.index("(") + 1)
+
+    assert read("(command)") == ("command",)
+    assert read("(a, command)") == ("a", "command")
+    assert read("(...args)") == ("args",)
+    assert read('(command = "x")') == ("command",)
+
+
+def test_taint_reaches_the_parameter_it_was_passed_to(tmp_path):
+    """`run(cfg, userInput)` must seed `command`, not the name beside it."""
+    found = scan_tree(tmp_path, {
+        "app.ts": 'import { launch } from "./helpers";\n'
+                  "function handler(req, res) {\n"
+                  "  launch({}, req.query.host);\n"
+                  "}\n",
+        "helpers.ts": REQUIRE + "export function launch({opts}, command) {\n"
+                                '  exec("ping " + command);\n'
+                                "}\n",
+    })
+
+    assert [c.rule for c in found] == ["sink.js.exec"], found
+
+
+def test_an_empty_slot_costs_no_second_pass(tmp_path, monkeypatch):
+    """A destructured slot binds no name, so it must not be followed.
+
+    Nothing in the findings can show this: a taint keyed by the empty
+    string matches no identifier, so the extra pass is silent — it just
+    re-reads the callee's module and finds nothing. The cost is the only
+    observable, so the cost is what this measures.
+    """
+    reads: list[str] = []
+    real = js_engine.read_masked
+    monkeypatch.setattr(
+        js_engine,
+        "read_masked",
+        lambda path: (reads.append(Path(path).name), real(path))[1],
+    )
+
+    found = scan_tree(tmp_path, {
+        "app.ts": 'import { launch } from "./helpers";\n'
+                  "function handler(req, res) {\n"
+                  '  launch(req.query.host, "ping");\n'
+                  "}\n",
+        "helpers.ts": REQUIRE + "export function launch({opts}, command) {\n"
+                                '  exec("run " + command);\n'
+                                "}\n",
+    })
+
+    assert found == []  # the tainted value reached no named parameter
+    assert reads.count("helpers.ts") == 1, reads

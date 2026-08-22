@@ -257,7 +257,19 @@ def _line_of(offsets: list[int], position: int) -> int:
 
 
 def _body_span(masked: str, start: int) -> tuple[int, int] | None:
-    """From a declaration, the offsets of its body's braces. None if unclosed."""
+    """From a declaration, the offsets of its body's braces. None if unclosed.
+
+    The parameter list is stepped over first, because a destructured
+    parameter puts a brace in it: `function launch({opts}, command) {` used to
+    have its body read as the `{opts}` pair, so the real body — every sink in
+    it — was never scanned. That is the ordinary shape of an Express handler,
+    a React component and any options object.
+    """
+    parenthesis = masked.find("(", start)
+    brace = masked.find("{", start)
+    if parenthesis != -1 and (brace == -1 or parenthesis < brace):
+        start = _skip_balanced(masked, parenthesis, "(", ")")
+
     opening = masked.find("{", start)
     if opening == -1:
         return None
@@ -362,8 +374,14 @@ def _params(masked: str, header_end: int) -> tuple[str, ...]:
             depth -= 1
         if char == "," and depth == 0:
             match = re.match(rf"\s*(?:\.\.\.)?({_IDENT})", current)
-            if match:
-                names.append(match.group(1))
+            # An empty slot rather than a missing one. A destructured
+            # parameter — `({body}, next)`, the ordinary shape of an Express
+            # handler or a props object — starts with a brace and yields no
+            # name, and dropping it shifted every parameter after it: an
+            # argument at index 1 was seeded into the name at index 2. The
+            # placeholder holds the position and matches no variable, so it
+            # seeds nothing.
+            names.append(match.group(1) if match else "")
             current = ""
             continue
         current += char
