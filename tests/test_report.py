@@ -241,3 +241,55 @@ def test_the_three_tiers_are_consistent_with_each_other():
 
     assert set(DEEP_TAINT_LANGUAGES) <= set(TAINTED_LANGUAGES)
     assert set(TAINTED_LANGUAGES) <= set(INDEXED_LANGUAGES)
+
+
+# --- deux appels dangereux dans une fonction sont deux findings ------------
+#
+# `Finding.compute_id` intègre `site` précisément pour que cinq `httpx.get`
+# dans un même corps soient cinq findings, et qu'un verdict sur l'un ne parle
+# pas pour les quatre autres. Le JSON exportait `path`, `line` et `symbol`
+# mais pas `site` : deux findings au même endroit y étaient indiscernables,
+# distingués seulement par un identifiant opaque. Mesuré sur Hermes,
+# `sink.js.path` apparaît deux fois à `ui-tui/src/lib/memory.ts:219`, et 362
+# findings portent un site.
+
+
+def _sited(site):
+    from thot.contracts import CodeRef, Confidence, Finding, Severity
+
+    location = CodeRef(path="a.ts", line=219, symbol="load", ast_hash="h",
+                       site=site)
+    return Finding(
+        id=Finding.compute_id("sink.js.path", location),
+        rule="sink.js.path", severity=Severity.LOW,
+        confidence=Confidence.PLAUSIBLE, location=location,
+        failure_scenario="une valeur atteint join",
+    )
+
+
+def _rendered(findings):
+    import json
+
+    from thot.report.json_report import render_json
+    from thot.scope.detect import ScopeManifest
+
+    manifest = ScopeManifest(root=".", files=["a.ts"],
+                             languages={"typescript": 1},
+                             entrypoints=(), test_command="")
+    return json.loads(render_json(findings, manifest, 0.1))
+
+
+def test_two_findings_at_one_line_are_distinguishable_in_json():
+    body = _rendered([_sited("join#0"), _sited("join#1")])
+
+    sites = [f["location"].get("site") for f in body["findings"]]
+
+    assert sites == ["join#0", "join#1"], body["findings"]
+
+
+def test_a_location_without_a_site_says_nothing_extra():
+    body = _rendered([_sited(None)])
+
+    # Absente, pas présente à None : sinon la clé apparaît dans tous les
+    # emplacements et la mutation qui l'exporte inconditionnellement passe.
+    assert "site" not in body["findings"][0]["location"]

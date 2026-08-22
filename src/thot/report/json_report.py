@@ -41,10 +41,19 @@ def render_json(
                 "rule": f.rule,
                 "severity": f.severity.value,
                 "confidence": f.confidence.value,
+                # `site` travels with the location because it is what makes
+                # two findings at one line two findings: `compute_id` folds it
+                # in so a verdict on one dangerous call does not speak for the
+                # four others in the same body. Without it a consumer sees two
+                # identical rows told apart only by an opaque id — and a human
+                # reading that sees a duplicate, which looks like a bug in
+                # Thot. Measured on Hermes: `sink.js.path` twice at
+                # `ui-tui/src/lib/memory.ts:219`, and 362 findings carry one.
                 "location": {
                     "path": f.location.path,
                     "line": f.location.line,
                     "symbol": f.location.symbol,
+                    **({"site": f.location.site} if f.location.site else {}),
                 },
                 "taint_path": [
                     {"path": r.path, "line": r.line, "symbol": r.symbol}
