@@ -416,3 +416,19 @@ def test_a_contested_refutation_keeps_the_exploit_an_agent_had_written(tmp_path)
 
     assert result.confidence is Confidence.PLAUSIBLE
     assert "argv[1] atteint os.system" in result.failure_scenario
+
+
+def test_the_reviewer_is_told_to_read_what_the_refutation_leans_on(tmp_path):
+    """A refutation almost always cites code outside the excerpt.
+
+    The one that got through said the path handed to `dill.load` was fixed.
+    It was not: the session id it is built from is taken verbatim from a
+    JSONL header, in a different file the reviewer never opened. Validating
+    an unchecked claim is how a real defect gets buried.
+    """
+    from thot.analysis.probe import _review_task
+
+    task = _review_task(tmp_path, make_finding(), "scénario", "c'est validé en amont")
+
+    assert "Va lire ces endroits" in task.instructions
+    assert "vérifiée toi-même" in task.instructions
