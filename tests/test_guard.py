@@ -939,3 +939,92 @@ def test_a_composed_literal_inside_a_conditional_is_constant():
     source = ("import os\n"
               'os.system(("echo %s" % "hi") if verbose else "clear")\n')
     assert scan_text("cli.py", source) == []
+
+
+# -- a loader named by a variable is still the loader ----------------------
+#
+# The rule wants the word `Safe` within 80 characters of the call. Both
+# yaml findings on Hermes name a safe loader through a variable instead:
+# `Loader=loader` and `Loader=_get_fast_yaml_loader()`, each resolving to
+# `getattr(yaml, "CSafeLoader", None) or yaml.SafeLoader`.
+
+
+def test_yaml_load_without_a_loader_is_a_finding():
+    findings = scan_text("cfg.py", "import yaml\ndoc = yaml.load(fh)\n")
+    assert [f.rule for f in findings] == ["pattern.unsafe_yaml_load"]
+
+
+def test_a_safe_loader_named_inline_is_not():
+    source = "import yaml\ndoc = yaml.load(fh, Loader=yaml.SafeLoader)\n"
+    assert scan_text("cfg.py", source) == []
+
+
+def test_a_safe_loader_held_in_a_variable_is_not():
+    source = ("import yaml\n"
+              'loader = getattr(yaml, "CSafeLoader", None) or yaml.SafeLoader\n'
+              "doc = yaml.load(value, Loader=loader)\n")
+    assert scan_text("skill_utils.py", source) == []
+
+
+def test_a_safe_loader_returned_by_a_local_function_is_not():
+    source = ("import yaml\n"
+              "def _fast_loader():\n"
+              '    return getattr(yaml, "CSafeLoader", None) or yaml.SafeLoader\n'
+              "def load(stream):\n"
+              "    return yaml.load(stream, Loader=_fast_loader())\n")
+    assert scan_text("utils.py", source) == []
+
+
+def test_an_unsafe_loader_held_in_a_variable_still_is():
+    source = ("import yaml\n"
+              "loader = yaml.UnsafeLoader\n"
+              "doc = yaml.load(value, Loader=loader)\n")
+    assert [f.rule for f in scan_text("cfg.py", source)] \
+        == ["pattern.unsafe_yaml_load"]
+
+
+def test_a_loader_that_cannot_be_resolved_still_reports():
+    """Unknown is not safe: a loader from somewhere else keeps the finding."""
+    source = ("import yaml\n"
+              "from .other import loader\n"
+              "doc = yaml.load(value, Loader=loader)\n")
+    assert [f.rule for f in scan_text("cfg.py", source)] \
+        == ["pattern.unsafe_yaml_load"]
+
+
+def test_a_safe_call_does_not_hide_an_unsafe_one():
+    source = ("import yaml\n"
+              "first = yaml.load(a, Loader=yaml.SafeLoader)\n"
+              "second = yaml.load(b)\n")
+    findings = scan_text("cfg.py", source)
+    assert [(f.rule, f.location.line) for f in findings] \
+        == [("pattern.unsafe_yaml_load", 3)]
+
+
+def test_a_lazily_initialised_loader_is_resolved():
+    """The shape `utils.py` has: a call, a global, an `or`, a `getattr`.
+
+    Only the first two are indirections. Counting the other two against the
+    budget exhausted it one step before the answer.
+    """
+    source = ("import yaml\n"
+              "_fast_yaml_loader = None\n"
+              "def _get_fast_yaml_loader():\n"
+              "    global _fast_yaml_loader\n"
+              "    if _fast_yaml_loader is None:\n"
+              "        _fast_yaml_loader = ("
+              'getattr(yaml, "CSafeLoader", None) or yaml.SafeLoader)\n'
+              "    return _fast_yaml_loader\n"
+              "def fast_safe_load(stream):\n"
+              "    return yaml.load(stream, Loader=_get_fast_yaml_loader())\n")
+    assert scan_text("utils.py", source) == []
+
+
+def test_a_loader_passed_positionally_is_read_too():
+    """Written with `yaml.SafeLoader` spelled out this proves nothing — the
+    rule's own lookahead sees the word `Safe` and never fires. It has to be
+    a safe loader the call does not name, handed over without a keyword."""
+    source = ("import yaml\n"
+              'loader = getattr(yaml, "CSafeLoader", None) or yaml.SafeLoader\n'
+              "doc = yaml.load(value, loader)\n")
+    assert scan_text("cfg.py", source) == []

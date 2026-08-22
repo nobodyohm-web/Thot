@@ -289,6 +289,123 @@ def _is_declaration(masked: str, span: tuple[int, int]) -> bool:
     return tail.startswith("{") or tail.startswith(":")
 
 
+# The rule wants the word `Safe` within eighty characters of the call, which
+# a loader held in a variable never satisfies. Both yaml findings on Hermes
+# were that: `Loader=loader` and `Loader=_get_fast_yaml_loader()`, each
+# resolving to `getattr(yaml, "CSafeLoader", None) or yaml.SafeLoader`.
+_YAML_RULE = "unsafe_yaml_load"
+_SAFE_LOADER = "SafeLoader"
+
+
+def _is_none(node: ast.AST) -> bool:
+    return isinstance(node, ast.Constant) and node.value is None
+
+
+def _all_safe(candidates: list, env: dict, returns: dict, depth: int) -> bool:
+    """Every binding that is not a `None` sentinel names a safe loader.
+
+    The sentinel is skipped rather than counted unsafe — `_fast_yaml_loader
+    = None` at module scope is the lazy-initialisation shape, not a loader.
+    Skipping it cannot empty the question, because a name with nothing but
+    sentinels behind it is unresolved, and unresolved is not safe.
+    """
+    real = [node for node in candidates if not _is_none(node)]
+    return bool(real) and all(
+        _safe_loader(node, env, returns, depth) for node in real
+    )
+
+
+def _safe_loader(node: ast.AST, env: dict, returns: dict, depth: int = 3) -> bool:
+    """Whether this expression can only ever produce a safe YAML loader.
+
+    `depth` counts indirections followed — a name looked up, a function's
+    returns read — and not structural descent. Spending it on the shape of
+    an expression exhausted it before the answer: the lazy initialiser in
+    `utils.py` is a call, reading a global, holding an `or`, holding a
+    `getattr`, and only the first two of those are indirections.
+    """
+    if depth < 0:
+        return False
+    if isinstance(node, ast.Constant):
+        return isinstance(node.value, str) and node.value.endswith(_SAFE_LOADER)
+    if isinstance(node, ast.Attribute):
+        return node.attr.endswith(_SAFE_LOADER)
+    if isinstance(node, ast.Name):
+        if node.id.endswith(_SAFE_LOADER):
+            return True
+        return _all_safe(env.get(node.id, []), env, returns, depth - 1)
+    if isinstance(node, ast.BoolOp):
+        return _all_safe(list(node.values), env, returns, depth)
+    if isinstance(node, ast.Call):
+        function = node.func
+        if isinstance(function, ast.Name) and function.id == "getattr":
+            # `getattr(yaml, "CSafeLoader", None)` — the name asked for is
+            # what decides; the default is what the `or` beside it handles.
+            return len(node.args) >= 2 and _safe_loader(
+                node.args[1], env, returns, depth
+            )
+        if isinstance(function, ast.Name):
+            return _all_safe(
+                returns.get(function.id, []), env, returns, depth - 1
+            )
+        if isinstance(function, ast.Attribute):
+            return function.attr.endswith(_SAFE_LOADER)
+    return False
+
+
+def _local_bindings(tree: ast.AST) -> tuple[dict, dict]:
+    """What each name is assigned, and what each function returns.
+
+    Every binding of a name is kept, not the last: a name assigned twice is
+    only safe if both assignments are.
+    """
+    env: dict[str, list] = {}
+    returns: dict[str, list] = {}
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Assign):
+            for target in node.targets:
+                if isinstance(target, ast.Name):
+                    env.setdefault(target.id, []).append(node.value)
+        elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            returns.setdefault(node.name, []).extend(
+                inner.value
+                for inner in ast.walk(node)
+                if isinstance(inner, ast.Return) and inner.value is not None
+            )
+    return env, returns
+
+
+def _unsafe_yaml_lines(source: str) -> set[int] | None:
+    """The lines where `yaml.load` is called without a loader that is safe.
+
+    None when the file will not parse — nothing to conclude from that, so
+    the rule keeps whatever its own matcher found.
+    """
+    try:
+        tree = ast.parse(source)
+    except (SyntaxError, ValueError, MemoryError, RecursionError):
+        return None
+    env, returns = _local_bindings(tree)
+    lines: set[int] = set()
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        function = node.func
+        if not (isinstance(function, ast.Attribute) and function.attr == "load"):
+            continue
+        if not (isinstance(function.value, ast.Name)
+                and function.value.id == "yaml"):
+            continue
+        loader = next(
+            (word.value for word in node.keywords if word.arg == "Loader"), None
+        )
+        if loader is None and len(node.args) >= 2:
+            loader = node.args[1]
+        if loader is None or not _safe_loader(loader, env, returns):
+            lines.add(node.lineno)
+    return lines
+
+
 def _is_foreign_name(
     source: str, masked: str, span: tuple[int, int], module: str
 ) -> bool:
@@ -314,19 +431,27 @@ def _fire_line(
     """The line to report, or None when every match on the rule is inert."""
     module = _BOUND_FROM.get(name)
     judged = name in _INJECTION_RULES
-    if module is None and not judged:
+    yaml_lines = (
+        _unsafe_yaml_lines(source)
+        if name == _YAML_RULE and relative.endswith(_PY_SUFFIXES)
+        else None
+    )
+    if module is None and not judged and yaml_lines is None:
         return _first_line(masked, pattern)
     spans = _spans(masked, pattern)
     if not spans:
         return _first_line(masked, pattern)  # a rule that fires on the path
     for span in spans:
+        line = masked.count("\n", 0, span[0]) + 1
+        if yaml_lines is not None and line not in yaml_lines:
+            continue
         if module and _is_foreign_name(source, masked, span, module):
             continue
         if judged and _constant_command(relative, masked, source, span):
             continue
         if judged and _is_declaration(masked, span):
             continue
-        return masked.count("\n", 0, span[0]) + 1
+        return line
     return None
 
 
