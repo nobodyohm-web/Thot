@@ -200,11 +200,23 @@ def _analyse_body(symbol: Symbol, node: ast.AST) -> _Facts:
             facts.tainted[name] = seed
 
     def is_tainted(names: set[str]) -> CodeRef | None:
-        """Return where the taint came from, or None."""
-        for name in names:
-            if name in facts.tainted:
-                return facts.tainted[name]
-        for name in names:
+        """Return where the taint came from, or None.
+
+        The *earliest* origin when several names carry taint, and not
+        whichever the set happened to yield first. Sets iterate in hash
+        order, string hashing is randomised per process, and the reported
+        source line therefore moved between two runs of the same audit —
+        measured on Hermes: 5 findings of 417, same identities, different
+        origins. A report that changes when nothing changed is a report
+        nobody can diff.
+        """
+        carriers = [
+            (facts.tainted[name].line, name) for name in names
+            if name in facts.tainted
+        ]
+        if carriers:
+            return facts.tainted[min(carriers)[1]]
+        for name in sorted(names):
             if match_source(name):
                 return None  # direct source: caller assigns the ref
         return None
@@ -275,7 +287,11 @@ def _analyse_body(symbol: Symbol, node: ast.AST) -> _Facts:
 
             if rule is not None:
                 facts.sink_calls.append((rule.id, ref, tuple(sorted(argument_refs))))
-                for name in argument_refs & params:
+                # Sorted: this decides the insertion order of `param_sinks`,
+                # the fixed point iterates it by that order, and `emit` keeps
+                # the first candidate per sink — so a set's hash order was
+                # choosing which origin a finding reported.
+                for name in sorted(argument_refs & params):
                     facts.param_sinks.setdefault(name, []).append((rule.id, ref))
             else:
                 outgoing: set[str] = set()
@@ -283,7 +299,10 @@ def _analyse_body(symbol: Symbol, node: ast.AST) -> _Facts:
                     outgoing |= _referenced_names(argument)
                 for keyword in child.keywords:
                     outgoing |= _referenced_names(keyword.value)
-                for name in outgoing:
+                # Sorted, like every other set that reaches the output. Case 2
+                # emits the first caller that feeds a given sink and dedupes
+                # the rest, so this order chose which origin a finding showed.
+                for name in sorted(outgoing):
                     facts.calls_out.append((called.rsplit(".", 1)[-1], name, ref))
 
     return facts
