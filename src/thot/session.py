@@ -540,7 +540,9 @@ class Session:
                 f"L'analyse a modifié {len(touched)} fichier(s) du dépôt — "
                 f"ce n'est pas normal. `git diff` avant toute autre chose."
             )
-            for name in touched[:10]:
+            from thot.pipeline import touched_lines
+
+            for name in touched_lines(touched):
                 theme.console.print(theme.entry(name, "modifié", width=40))
 
         confirmed = sum(1 for f in analysed if f.confidence is Confidence.CONFIRMED)

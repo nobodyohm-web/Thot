@@ -192,3 +192,34 @@ def test_the_session_and_the_cli_see_the_same_analysis(tmp_path):
         f"seulement en session : {from_session - from_cli}"
     )
     assert "suppression.security" in from_cli
+
+
+# --- une liste coupée doit dire qu'elle l'est ------------------------------
+#
+# Le reste du programme marque ses coupes : « … et N autres » pour les
+# findings du journal, « (+N) » pour les fichiers d'une ronde, une ligne
+# dédiée au-delà de douze dépendances vulnérables. Les deux listes de
+# fichiers modifiés par une sonde s'arrêtaient à dix sans le dire, laissant
+# le lecteur soustraire contre l'en-tête — dans le message le plus alarmant
+# que l'outil produise.
+
+
+def test_a_short_list_is_shown_whole():
+    from thot.pipeline import touched_lines
+
+    assert touched_lines(("a.py", "b.py")) == ["a.py", "b.py"]
+
+
+def test_a_long_list_names_what_it_left_out():
+    from thot.pipeline import touched_lines
+
+    lines = touched_lines(tuple(f"f{i}.py" for i in range(25)))
+
+    assert len(lines) == 11
+    assert lines[-1] == "… et 15 autre(s) non listé(s)"
+
+
+def test_a_list_exactly_at_the_limit_says_nothing_extra():
+    from thot.pipeline import touched_lines
+
+    assert len(touched_lines(tuple(f"f{i}.py" for i in range(10)))) == 10

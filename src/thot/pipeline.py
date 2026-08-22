@@ -29,6 +29,24 @@ if TYPE_CHECKING:  # the core knows the port, never an implementation
     from thot.engine.base import Engine
 
 
+TOUCHED_SHOWN = 10
+
+
+def touched_lines(names, limit: int = TOUCHED_SHOWN) -> list[str]:
+    """The files to print, and a line saying what was left out.
+
+    Every other cut in the program marks itself — "… et N autres" in the
+    session log, "(+N)" in an improve round, a dedicated line past twelve
+    vulnerable dependencies. These two lists stopped at ten in silence and
+    left the reader to subtract against the header, in the loudest message
+    the tool produces.
+    """
+    shown = list(names[:limit])
+    if len(names) > limit:
+        shown.append(f"… et {len(names) - limit} autre(s) non listé(s)")
+    return shown
+
+
 @dataclass(frozen=True)
 class AuditResult:
     findings: list[Finding]

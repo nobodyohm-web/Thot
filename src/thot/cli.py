@@ -571,7 +571,9 @@ def _cmd_audit(args) -> int:
             f"— ce n'est pas normal :",
             file=sys.stderr,
         )
-        for name in result.touched[:10]:
+        from thot.pipeline import touched_lines
+
+        for name in touched_lines(result.touched):
             print(f"   {name}", file=sys.stderr)
         print("   `git diff` avant toute autre chose.", file=sys.stderr)
 
