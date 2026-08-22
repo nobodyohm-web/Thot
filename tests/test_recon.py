@@ -142,3 +142,51 @@ def test_the_scope_detection_survives_it_too(tmp_path):
     scope = detect_scope(_pathological_repo(tmp_path))
 
     assert len(scope.files) >= 2
+
+
+def test_a_symlink_cycle_does_not_trap_the_walk(tmp_path, monkeypatch):
+    """`src/loop -> ../src` is a loop a repository can hand the walker."""
+    import thot.recon as recon
+
+    source = tmp_path / "src"
+    source.mkdir()
+    (source / "a.py").write_text("x = 1\n", encoding="utf-8")
+    (source / "loop").symlink_to("../src")
+
+    monkeypatch.setattr(recon, "_remember", lambda findings, root=None: findings)
+    result = recon.sweep(tmp_path)
+
+    assert result.file_count == 1
+
+
+def test_a_file_that_cannot_be_masked_costs_only_itself(tmp_path, monkeypatch):
+    """1 500 nested template literals exhaust the masker's mutual recursion.
+
+    `read_masked` guards only OSError, and neither of its two callers catches
+    RecursionError. What holds today is `index_files`, which catches Exception
+    per file — "one unparseable file must not cost the map" — and the fact
+    that a file which fails to index never enters `by_file`, so the taint pass
+    never opens it either. The second half is a consequence, not a decision,
+    and this pins both so a refactor that separates masking from indexing
+    cannot quietly bring the crash back.
+    """
+    import thot.recon as recon
+
+    source = tmp_path / "src"
+    source.mkdir()
+    (source / "bad.ts").write_text(
+        "const x = " + "`${" * 1500 + "1" + "}`" * 1500 + ";", encoding="utf-8"
+    )
+    (source / "good.ts").write_text(
+        'import { exec } from "child_process";\n'
+        "export function run(q){ exec(q); }\n",
+        encoding="utf-8",
+    )
+
+    monkeypatch.setattr(recon, "_remember", lambda findings, root=None: findings)
+    result = recon.sweep(tmp_path)
+
+    assert result.file_count == 2
+    assert any(s.name.endswith("run") for s in result.symbols), (
+        "le fichier sain a été perdu avec le pathologique"
+    )
