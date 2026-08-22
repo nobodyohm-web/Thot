@@ -564,6 +564,25 @@ INVISIBLE_CHARS = {
 # Scanning functions
 # ---------------------------------------------------------------------------
 
+# `os.environ` handed to a child process is not an environment dump: it is how
+# every Python script that shells out inherits the environment it was started
+# with. Measured while scanning a shipped skill: `env = os.environ if env is
+# None else env` tripped `python_os_environ` (HIGH, "exfiltration") five times
+# across four files — and since the verdict is decided by the *presence* of a
+# HIGH finding rather than by their number, that one idiom was enough to put an
+# otherwise clean skill behind a confirmation prompt.
+#
+# Deliberately narrow: only an assignment whose target is named for what it is
+# (`env`, `child_env`, `new_environ`). `merged.update(os.environ)` stays
+# reported, because a dict that is *not* named as an environment may well be
+# going somewhere else. The forms that genuinely send the environment out —
+# curl/wget/fetch interpolating a secret, base64 next to env access, an
+# explicit dump — each have their own rule above and are untouched.
+INHERITED_ENVIRONMENT = re.compile(
+    r"^\s*\w*env\w*\s*=\s*os\.environ\s*(?:if\b|$)", re.IGNORECASE
+)
+
+
 def scan_file(file_path: Path, rel_path: str = "") -> List[Finding]:
     """
     Scan a single file for threat patterns and invisible unicode characters.
@@ -596,6 +615,8 @@ def scan_file(file_path: Path, rel_path: str = "") -> List[Finding]:
             if (pid, i) in seen:
                 continue
             if pattern.search(line):
+                if pid == "python_os_environ" and INHERITED_ENVIRONMENT.match(line):
+                    continue
                 seen.add((pid, i))
                 matched_text = line.strip()
                 if len(matched_text) > 120:

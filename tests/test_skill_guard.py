@@ -102,3 +102,57 @@ def test_trust_level_decides_what_a_dangerous_verdict_costs(tmp_path):
 
     assert should_allow_install(community)[0] is False
     assert should_allow_install(builtin)[0] is True
+
+
+# --- hériter de l'environnement n'est pas le divulguer ---------------------
+#
+# Mesuré en scannant un skill livré : `env = os.environ if env is None else
+# env` déclenchait `python_os_environ` (HIGH, « exfiltration ») cinq fois dans
+# quatre fichiers. C'est la ligne la plus ordinaire de tout script Python qui
+# lance un sous-processus. Et comme le verdict se décide sur la *présence*
+# d'un HIGH et non sur leur nombre, cet unique idiome suffisait à mettre un
+# skill par ailleurs propre derrière une demande de confirmation.
+#
+# L'exemption est étroite. Les formes qui envoient réellement l'environnement
+# quelque part — curl/wget/fetch interpolant un secret, base64 collé à un
+# accès env, un dump explicite — ont chacune leur propre règle et sont
+# intactes.
+
+
+def _environ_findings(tmp_path, source: str):
+    from thot.guard.skill_guard import scan_file
+
+    target = tmp_path / "script.py"
+    target.write_text(source, encoding="utf-8")
+    return [f for f in scan_file(target, "script.py")
+            if f.pattern_id == "python_os_environ"]
+
+
+def test_inheriting_the_environment_for_a_child_is_not_exfiltration(tmp_path):
+    assert _environ_findings(
+        tmp_path, "def run(cmd, env=None):\n"
+                  "    env = os.environ if env is None else env\n"
+    ) == []
+
+
+def test_a_plainly_named_child_environment_is_exempt_too(tmp_path):
+    assert _environ_findings(tmp_path, "child_env = os.environ\n") == []
+
+
+def test_a_bare_dump_is_still_reported(tmp_path):
+    assert _environ_findings(tmp_path, "print(os.environ)\n") != []
+
+
+def test_an_assignment_to_an_unrelated_name_is_still_reported(tmp_path):
+    """Only the idiom is exempt, not every assignment."""
+    assert _environ_findings(tmp_path, "data = os.environ\n") != []
+
+
+def test_a_secret_lookup_is_still_reported(tmp_path):
+    assert _environ_findings(
+        tmp_path, 'key = os.environ.get("OPENAI_API_KEY")\n') != []
+
+
+def test_a_config_lookup_stays_exempt(tmp_path):
+    assert _environ_findings(
+        tmp_path, 'level = os.environ.get("LOG_LEVEL")\n') == []
