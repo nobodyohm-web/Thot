@@ -561,8 +561,23 @@ def _apply_refutation(
         return replace(finding, provenance=provenance)
 
     survived = "confirmée (2 attaques)" if again else "confirmée"
-    provenance["phase"] = "réfutée" if result.data.get("refuted") else survived
     reason = str(result.data.get("raison") or "")
+
+    # A refutation with nothing behind it is not a refutation. It used to be
+    # accepted, turning the finding REFUTED/INFO with the text "Réfuté : " and
+    # nothing after it — then remembered, so a live defect stayed silent until
+    # the code changed, without any claim ever having been made.
+    #
+    # Not a length floor: Thot judges the length of a justification nowhere,
+    # and `suppressions` says why. Empty is not thin, it is the absence of a
+    # claim, and this takes the same safe direction `_verdict` already takes
+    # for an answer it cannot parse.
+    if result.data.get("refuted") and not reason.strip():
+        provenance["phase"] = survived
+        provenance["réfutation sans motif"] = "écartée"
+        return replace(finding, provenance=provenance)
+
+    provenance["phase"] = "réfutée" if result.data.get("refuted") else survived
     if result.data.get("refuted"):
         # Severity is impact × reach × confidence, and refuted confidence
         # scores zero. Leaving it where the probe put it made a refutation

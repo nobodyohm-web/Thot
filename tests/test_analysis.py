@@ -464,3 +464,71 @@ def test_every_task_names_the_file_by_its_absolute_path(tmp_path):
     ):
         assert expected in task.context
         assert "chemin ABSOLU" in task.context
+
+
+# --- une réfutation sans motif n'est pas une réfutation --------------------
+#
+# `refuted: true` avec une `raison` vide était accepté : le finding passait en
+# REFUTED/INFO avec le texte « Réfuté : » et rien après, puis la décision
+# était mémorisée. Un défaut vivant réduit au silence jusqu'à ce que le code
+# change, sans qu'aucune affirmation ne soit jamais faite.
+#
+# Ce n'est pas un plancher de longueur — Thot ne juge nulle part la longueur
+# d'une justification. Vide n'est pas mince : c'est l'absence de prétention.
+
+
+def _one_finding():
+    from thot.contracts import CodeRef, Confidence, Finding, Severity
+
+    return Finding(
+        id="f1", rule="sink.os.system", severity=Severity.HIGH,
+        confidence=Confidence.PLAUSIBLE,
+        location=CodeRef(path="app.py", line=2, symbol="m", ast_hash="h"),
+        failure_scenario="argv atteint os.system",
+    )
+
+
+def _judged(toy_repo, refute_answer):
+    from thot.analysis.probe import analyse
+
+    engine = ScriptedEngine({
+        "probe:": {"verdict": "confirmed", "scenario": "argv atteint os.system",
+                   "severity": "high"},
+        "refute:": refute_answer,
+    })
+    return analyse(toy_repo, [_one_finding()], engine, limit=1)[0]
+
+
+def test_a_refutation_without_a_reason_is_refused(toy_repo):
+    from thot.contracts import Confidence
+
+    judged = _judged(toy_repo, {"refuted": True, "raison": ""})
+
+    assert judged.confidence is not Confidence.REFUTED
+    assert "Réfuté : \n" not in judged.failure_scenario
+    assert (judged.provenance or {}).get("réfutation sans motif") == "écartée"
+
+
+def test_a_reason_of_whitespace_is_no_reason(toy_repo):
+    from thot.contracts import Confidence
+
+    judged = _judged(toy_repo, {"refuted": True, "raison": "   \n  "})
+
+    assert judged.confidence is not Confidence.REFUTED
+
+
+def test_a_refutation_with_a_reason_still_stands(toy_repo):
+    from thot.contracts import Confidence
+
+    judged = _judged(
+        toy_repo, {"refuted": True, "raison": "l'argument est une constante"}
+    )
+
+    assert judged.confidence is Confidence.REFUTED
+    assert "constante" in judged.failure_scenario
+
+
+def test_a_counter_argument_that_failed_is_still_recorded(toy_repo):
+    judged = _judged(toy_repo, {"refuted": False, "raison": "tentative ratée"})
+
+    assert (judged.provenance or {}).get("contre-argument écarté") == "tentative ratée"
