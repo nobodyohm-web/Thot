@@ -90,6 +90,8 @@ def launchd_plist(job: Job) -> str:
   <dict>
     <key>PATH</key><string>{agent_path()}</string>
     <key>HOME</key><string>{Path.home()}</string>
+    <key>PYTHONUNBUFFERED</key><string>1</string>
+    <key>PYTHONFAULTHANDLER</key><string>1</string>
   </dict>
   <key>StandardOutPath</key><string>{log_file(job.name)}</string>
   <key>StandardErrorPath</key><string>{log_file(job.name)}</string>
@@ -116,11 +118,31 @@ def install(job: Job) -> tuple[Path | None, str]:
         LAUNCH_AGENTS.mkdir(parents=True, exist_ok=True)
         target = LAUNCH_AGENTS / f"{label(job)}.plist"
         target.write_text(launchd_plist(job), encoding="utf-8")
-        return target, f"launchctl load {target}"
+        return target, f"launchctl load {target}" + _cannot_start(target)
 
     return None, (
         "Ajoute cette ligne à ta crontab (`crontab -e`) :\n"
         f"  {crontab_line(job)}"
+    )
+
+
+def _cannot_start(unit: Path) -> str:
+    """A warning when the job will block before running a line of Thot.
+
+    Deferred import: `thot.doctor` reads this module, so the dependency only
+    goes that way inside the call.
+    """
+    from thot.doctor import job_import_paths, unreachable_from_launchd
+
+    guarded = unreachable_from_launchd(job_import_paths(unit), home=Path.home())
+    if not guarded:
+        return ""
+    return (
+        f"\n\n⚠ Cette tâche ne démarrera pas : elle importe depuis "
+        f"{guarded[0]}, que macOS refuse à un agent launchd. Le job se bloque "
+        "au démarrage de l'interpréteur, sans écrire une ligne dans son "
+        "journal. Installe Thot hors de Desktop/Documents/Downloads, ou donne "
+        "l'accès complet au disque à l'interpréteur qui l'exécute."
     )
 
 

@@ -441,3 +441,36 @@ def test_a_shallow_job_without_an_agent_is_not_a_failure(tmp_path, monkeypatch):
     run_job(Job(name="jour", root=str(_toy(tmp_path))))
 
     assert MISSING_ENGINE == set()
+
+
+def test_the_unit_does_not_buffer_a_whole_night_of_output():
+    """A job that runs for minutes must not write its log only at the end.
+
+    Observed while diagnosing the loop: the process ran and its log stayed at
+    0 bytes throughout, because Python buffers stdout when it is a file. If
+    such a job hangs or is killed, nothing at all records how far it got.
+    """
+    from thot.schedule.install import launchd_plist
+    from thot.schedule.jobs import FUSION, Job
+
+    text = launchd_plist(Job(name="improve", root=FUSION, deep=True, budget=8))
+
+    assert "PYTHONUNBUFFERED" in text
+
+
+def test_installing_warns_when_the_job_could_never_start(tmp_path, monkeypatch):
+    from thot.schedule import install as installer
+    from thot.schedule.jobs import FUSION, Job
+
+    home = tmp_path / "home"
+    (home / "Desktop").mkdir(parents=True)
+    monkeypatch.setattr("thot.schedule.install.LAUNCH_AGENTS", tmp_path)
+    monkeypatch.setattr("pathlib.Path.home", classmethod(lambda cls: home))
+    monkeypatch.setattr("thot.doctor.job_import_paths",
+                        lambda unit: [str(home / "Desktop" / "Thot" / "src")])
+
+    _, step = installer.install(Job(name="improve", root=FUSION, deep=True,
+                                    budget=8))
+
+    assert "Desktop" in step, step
+    assert "launchd" in step, step
