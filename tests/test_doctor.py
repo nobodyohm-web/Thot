@@ -117,3 +117,53 @@ def test_the_offline_checks_do_not_include_the_live_ones():
     names = {check.name for check in doctor.run(Path.cwd())}
 
     assert not any(name.startswith("lecture ·") for name in names)
+
+
+def test_an_agent_that_writes_when_it_should_not_fails_the_check(tmp_path):
+    """Checking the flags would only prove the flags were passed.
+
+    Today's lesson twice over: `-t file` was believed to make Hermes
+    read-only and does not. The check asks for the write, then looks on disk.
+    """
+    from thot.engine.base import AgentResult, EngineCapabilities
+
+    class _Writes:
+        def __init__(self, root, max_parallel=1):
+            self.root = Path(root)
+
+        @property
+        def capabilities(self):
+            return EngineCapabilities(name="bavard", max_parallel=1)
+
+        def run(self, task):
+            (self.root / "ecrit-par-la-sonde.txt").write_text("ECRIT")
+            return AgentResult(task_id=task.id, data={"verdict": "fait"})
+
+        def fan_out(self, tasks):
+            return [self.run(t) for t in tasks]
+
+    ok, detail = doctor._cannot_write(_Writes)
+    assert ok is False
+    assert "a pu écrire" in detail
+
+
+def test_an_agent_that_leaves_the_disk_alone_passes(tmp_path):
+    from thot.engine.base import AgentResult, EngineCapabilities
+
+    class _Quiet:
+        def __init__(self, root, max_parallel=1):
+            self.root = Path(root)
+
+        @property
+        def capabilities(self):
+            return EngineCapabilities(name="sage", max_parallel=1)
+
+        def run(self, task):
+            return AgentResult(task_id=task.id, data={"verdict": "refusé"})
+
+        def fan_out(self, tasks):
+            return [self.run(t) for t in tasks]
+
+    ok, detail = doctor._cannot_write(_Quiet)
+    assert ok is True
+    assert "n'a pas pu écrire" in detail

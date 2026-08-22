@@ -224,9 +224,59 @@ def _can_read(cls) -> tuple[bool, str]:
     return False, f"n'a pas lu le fichier — a répondu {answer[:40]!r}"
 
 
-def run_agents() -> list[Check]:
+def _cannot_write(cls) -> tuple[bool, str]:
+    """Ask the agent to create a file, then look on disk.
+
+    Checking the flags would only prove that the flags were passed. Today's
+    lesson was precisely that a flag believed to be in force proves nothing:
+    the toolset restriction was blamed for a failure it had not caused, and
+    the real cause went unseen for hours. So this asks for the write and then
+    goes and looks.
+
+    Only Claude is asserted here. Hermes and Prime have no read-only mode at
+    all — measured, not assumed: Hermes writes with `-t file` and writes with
+    `--safe-mode`, whose "safe" is about customisations and not permissions;
+    Prime's only built-in tool is an IPython kernel. Reporting a permanent
+    red line for them would be a line nobody can act on, so their state is
+    reported as what it is.
+    """
+    import tempfile
+
+    from thot.engine.base import AgentTask
+
+    with tempfile.TemporaryDirectory() as directory:
+        root = Path(directory)
+        target = root / "ecrit-par-la-sonde.txt"
+        task = AgentTask(
+            id="probe:doctor-write",
+            instructions=(
+                f"Crée le fichier {target} contenant le mot ECRIT, puis "
+                'réponds {"verdict": "fait", "scenario": "x", '
+                '"severity": "info"}'
+            ),
+            schema={"type": "object",
+                    "properties": {"verdict": {"type": "string"}}},
+        )
+        cls(root=root, max_parallel=1).run(task)
+        wrote = target.exists()
+
+    if wrote:
+        return False, "a pu écrire — la restriction ne tient pas"
+    return True, "n'a pas pu écrire"
+
+
+def run_agents(*, writes: bool = True) -> list[Check]:
     """One real call per installed agent. Costs money; says something."""
     from thot.engine.factory import AGENT_ENGINES
+
+    # Neither of these can be made read-only, and a permanent red line is a
+    # line people stop reading. Their reach is stated instead, so a reader
+    # choosing `--engine hermes` knows what they are choosing.
+    UNRESTRICTABLE = {
+        "hermes": "peut écrire — aucun mode lecture seule (`-t file` et "
+                  "`--safe-mode` ne restreignent pas les permissions)",
+        "prime": "peut écrire — outil unique : un noyau IPython",
+    }
 
     checks: list[Check] = []
     for name, cls in AGENT_ENGINES.items():
@@ -234,4 +284,10 @@ def run_agents() -> list[Check]:
             checks.append(Check(f"lecture · {name}", False, "non installé"))
             continue
         checks.append(_safe(f"lecture · {name}", lambda c=cls: _can_read(c)))
+        if not writes:
+            continue
+        if name in UNRESTRICTABLE:
+            checks.append(Check(f"écriture · {name}", True, UNRESTRICTABLE[name]))
+            continue
+        checks.append(_safe(f"écriture · {name}", lambda c=cls: _cannot_write(c)))
     return checks

@@ -98,14 +98,23 @@ jusqu'à ce que quelqu'un tranche.
 Si un agent échoue sur une tâche, elle est reprise **une fois** par un autre.
 Pas plus : une tâche que tout le monde refuse a un problème à elle.
 
-**Un audit ne peut pas modifier ce qu'il audite.** Claude tourne sans `Write`,
-`Edit`, `MultiEdit`, `NotebookEdit` ni `Bash` ; Hermes avec le seul jeu
-d'outils `file`, au lieu de la douzaine activée par défaut — pas de terminal,
-pas de navigateur, pas d'interpréteur. La lecture reste, parce qu'une
-réfutation s'appuie presque toujours sur du code hors extrait et qu'aller le
-vérifier est tout le travail. Prime fait exception et c'est dit plutôt que
-caché : son unique outil intégré est un noyau IPython, donc une sonde qui
-tourne sur Prime a la portée de Prime.
+**Ce qu'une sonde peut faire, mesuré et non supposé.** Claude tourne sans
+`Write`, `Edit`, `MultiEdit`, `NotebookEdit` ni `Bash` — et `thot doctor
+--agents` le vérifie en lui demandant d'écrire un fichier, puis en allant
+regarder sur le disque.
+
+Hermes et Prime **n'ont pas de mode lecture seule**, et c'est dit plutôt que
+supposé : `-t file` désigne « File Operations », lecture et écriture
+comprises, et le `--safe-mode` de Hermes concerne les personnalisations, pas
+les permissions ; l'unique outil intégré de Prime est un noyau IPython. Thot
+réduit tout de même leur portée — Hermes tourne avec le seul jeu `file` au
+lieu de la douzaine par défaut : plus de terminal, de navigateur ni
+d'interpréteur. C'est un rayon d'action rétréci, pas fermé.
+
+La vraie réponse à ça est le bac à sable (`thot sandbox use docker`), qui
+n'est pas encore branché sur les moteurs. Tant qu'il ne l'est pas, choisir
+`--engine hermes` ou `--engine prime` revient à faire tourner cet agent, avec
+ses droits, dans le dépôt audité.
 
 Les chemins sont donnés **en absolu**. Mesuré sur les trois : Hermes n'ouvre
 pas un chemin relatif à son dossier de travail et répond « je ne peux pas lire

@@ -75,11 +75,17 @@ class HermesEngine:
             raise FileNotFoundError(
                 "Hermes est introuvable — `uv sync` à la racine du dépôt"
             )
-        # File operations only. An audit reads; it has no business holding a
-        # terminal, a browser, a code interpreter or an image generator, and
-        # every one of those is enabled by default. `file` keeps the one
-        # capability a refutation needs: going to look at the code it rests
-        # on, which is usually not in the excerpt.
+        # File operations only. An audit has no business holding a terminal,
+        # a browser, a code interpreter or an image generator, and every one
+        # of those is enabled by default. `file` keeps the capability a
+        # refutation needs: going to look at the code it rests on, which is
+        # usually not in the excerpt.
+        #
+        # What this does NOT do is make the probe read-only. Measured, after
+        # claiming otherwise: `file` is "File Operations", reads and writes
+        # alike, and `--safe-mode` turns off customisations rather than
+        # permissions. Hermes has no read-only mode. This narrows the blast
+        # radius; it does not close it, and `thot doctor --agents` says so.
         command = [*base, "-z", prompt, "--in", str(self.root), "-t", TOOLSETS]
         reasoning = TIER_REASONING.get(task.tier)
         if reasoning:

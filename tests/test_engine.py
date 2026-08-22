@@ -476,13 +476,15 @@ def test_a_stand_in_is_never_someone_who_already_spoke():
     assert not result.ok, "un échec vaut mieux qu'un second avis qui n'en est pas un"
 
 
-def test_the_audit_engines_cannot_write_where_they_read():
+def test_the_audit_engines_are_narrowed_to_what_an_audit_needs():
     """An audit has no business holding a terminal in the user's repository.
 
-    Reading stays — a refutation almost always rests on code outside the
-    excerpt and checking it is the entire job. Prime is the stated exception:
-    its only built-in tool is an IPython kernel, so a probe on Prime has
-    Prime's reach, and pretending otherwise would be worse than saying it.
+    Narrowed, not closed. Claude genuinely cannot write. Hermes and Prime
+    have no read-only mode at all — measured by asking them to write a file
+    and then looking: `-t file` is "File Operations", reads and writes alike,
+    and `--safe-mode` turns off customisations rather than permissions. What
+    `-t file` buys is the loss of the terminal, the browser and the code
+    interpreter, which is worth having and is not the same claim.
     """
     from pathlib import Path
 
