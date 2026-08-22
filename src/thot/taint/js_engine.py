@@ -148,13 +148,32 @@ def _sanitised(text: str) -> bool:
     return match.group(1).split(".")[-1] in active().sanitizers
 
 
+# Past this, it is not an argument list. Profiled on Prime: `_split_arguments`
+# took 130 of the pass's 144 seconds over 61 122 calls, and the distribution
+# says why — median 16 characters, p90 77, maximum 1 859 942. `_arguments`
+# used to return the rest of the file when the closing parenthesis was missing
+# or impossibly far, which happens in generated and minified code, and a
+# handful of those cost more than every other call together.
+#
+# The bound is generous by three orders of magnitude over p90. What it drops
+# is not analysed rather than analysed wrongly: splitting two megabytes on
+# commas yields thousands of "arguments" and an arbitrary answer, which is the
+# line this engine does not cross.
+ARGUMENT_LIMIT = 20_000
+
+
 def _arguments(text: str, start: int) -> str:
-    """The text between the parentheses opening at or after `start`."""
+    """The text between the parentheses opening at or after `start`.
+
+    Empty when the call does not close within `ARGUMENT_LIMIT`: that is not a
+    call whose arguments can be read.
+    """
     opening = text.find("(", start)
     if opening == -1:
         return ""
     depth = 0
-    for index in range(opening, len(text)):
+    stop = min(len(text), opening + ARGUMENT_LIMIT + 2)
+    for index in range(opening, stop):
         char = text[index]
         if char in OPENERS:
             depth += 1
@@ -162,7 +181,7 @@ def _arguments(text: str, start: int) -> str:
             depth -= 1
             if depth == 0:
                 return text[opening + 1 : index]
-    return text[opening + 1 :]
+    return ""
 
 
 def _split_arguments(text: str) -> list[str]:

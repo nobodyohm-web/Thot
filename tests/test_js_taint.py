@@ -517,3 +517,108 @@ def test_a_same_file_helper_keeps_its_two_step_path(tmp_path):
 
     assert len(found) == 1
     assert len(found[0].path) == 2
+
+
+# --- découper des arguments ne doit pas être quadratique -------------------
+#
+# Profilé sur Prime : `_split_arguments` pesait 130 des 144 secondes de la
+# passe entière, 61 122 appels. La cause n'était pas le nombre d'appels mais
+# `current += char` dans la boucle — Python réalloue et recopie la chaîne à
+# chaque caractère, donc O(n²) sur un argument long. Un appel dont les
+# arguments tiennent en 20 000 signes, chose ordinaire dans un fichier
+# généré, coûtait à lui seul plus que tout le reste du fichier.
+
+
+SPLIT_CASES = [
+    "",
+    "a",
+    "a, b",
+    "a, b, c",
+    "f(x, y), z",
+    "{a: 1, b: 2}, c",
+    "[1, 2], [3, 4]",
+    "f(g(h(1, 2), 3), 4), tail",
+    "a,,b",
+    ",leading",
+    "trailing,",
+    "deep(((1, 2))), after",
+]
+
+
+def test_the_split_agrees_with_the_straightforward_version():
+    from thot.taint.js_engine import CLOSERS, OPENERS, _split_arguments
+
+    def naive(text):
+        parts, depth, current = [], 0, ""
+        for char in text:
+            if char in OPENERS:
+                depth += 1
+            elif char in CLOSERS:
+                depth -= 1
+            if char == "," and depth == 0:
+                parts.append(current)
+                current = ""
+                continue
+            current += char
+        parts.append(current)
+        return parts
+
+    for case in SPLIT_CASES:
+        assert _split_arguments(case) == naive(case), case
+
+
+def test_a_long_argument_list_does_not_cost_quadratic_time():
+    import time
+
+    from thot.taint.js_engine import _split_arguments
+
+    small = "x" * 2_000 + ", y"
+    large = "x" * 40_000 + ", y"
+
+    start = time.perf_counter(); _split_arguments(small); small_time = time.perf_counter() - start
+    start = time.perf_counter(); _split_arguments(large); large_time = time.perf_counter() - start
+
+    # 20x the input. Linear stays near 20x; quadratic goes to ~400x.
+    assert large_time < max(small_time, 1e-4) * 80, (small_time, large_time)
+
+
+# --- un appel dont les arguments font deux méga-octets n'est pas un appel ---
+#
+# Profilé sur Prime : `_split_arguments` pesait 130 des 144 secondes de la
+# passe, sur 61 122 appels. La distribution dit pourquoi — médiane 16
+# caractères, p90 77, maximum 1 859 942. `_arguments` cherche la parenthèse
+# fermante correspondante et, quand elle manque, rend tout le reste du
+# fichier ; une poignée d'appels pathologiques dans du code généré coûtait
+# ainsi plus que l'ensemble des autres. Le résultat n'était pas seulement
+# lent, il n'avait aucun sens.
+
+
+def test_a_balanced_call_is_unchanged(tmp_path):
+    from thot.taint.js_engine import _arguments
+
+    assert _arguments("f(a, b)", 0) == "a, b"
+    assert _arguments("g(h(1), 2)", 0) == "h(1), 2"
+
+
+def test_an_unclosed_call_does_not_swallow_the_file(tmp_path):
+    from thot.taint.js_engine import ARGUMENT_LIMIT, _arguments
+
+    text = "f(" + "x" * (ARGUMENT_LIMIT + 5_000)
+
+    assert _arguments(text, 0) == ""
+
+
+def test_a_very_long_argument_list_is_left_unanalysed(tmp_path):
+    from thot.taint.js_engine import ARGUMENT_LIMIT, _arguments
+
+    text = "f(" + "x" * (ARGUMENT_LIMIT + 10) + ")"
+
+    assert _arguments(text, 0) == ""
+
+
+def test_a_long_but_reasonable_call_is_still_read(tmp_path):
+    from thot.taint.js_engine import ARGUMENT_LIMIT, _arguments
+
+    body = "x" * (ARGUMENT_LIMIT // 2)
+
+    assert _arguments(f"f({body})", 0) == body
