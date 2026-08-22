@@ -356,3 +356,46 @@ def test_a_real_sandbox_still_names_itself(tmp_path):
         pass
 
     assert "conteneur sans réseau" in shown[0][1]
+
+
+def test_the_python_prompt_names_the_kernel_posture():
+    """Arbitrary Python reaches the same credentials an arbitrary command does.
+
+    The kernel's warning is printed once, when `/py` opens it. Every cell
+    after that was confirmed on the code alone — and a session runs for hours.
+    `run_command` was fixed the same way an hour earlier; this is its twin.
+    """
+    from thot.agent_tools import ToolError, python
+
+    class _Kernel:
+        def describe(self):
+            return "aucune isolation — le code tourne sous ton compte"
+
+    context, shown = _asking()
+    context.kernel = _Kernel()
+    try:
+        python(context, code="import os; os.listdir('/')")
+    except ToolError:
+        pass
+
+    assert shown, "aucune confirmation demandée"
+    _, detail = shown[0]
+    assert "os.listdir" in detail
+    assert "aucune isolation" in detail, detail
+
+
+def test_a_contained_kernel_says_what_contains_it():
+    from thot.agent_tools import ToolError, python
+
+    class _Kernel:
+        def describe(self):
+            return "conteneur sans réseau"
+
+    context, shown = _asking()
+    context.kernel = _Kernel()
+    try:
+        python(context, code="1 + 1")
+    except ToolError:
+        pass
+
+    assert "conteneur sans réseau" in shown[0][1]

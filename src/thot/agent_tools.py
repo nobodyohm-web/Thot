@@ -150,7 +150,13 @@ def python(context: ToolContext, *, code: str) -> str:
         raise ToolError(
             "Aucun noyau Python dans cette session — `/py` pour l'ouvrir."
         )
-    if not context.confirm("Exécuter du Python", code):
+    # The kernel's posture, on every cell. Its full warning is printed once,
+    # when `/py` opens it, and a session runs for hours after that — leaving
+    # every later confirmation to show the code alone. Arbitrary Python
+    # reaches the same credentials an arbitrary command does, so it says the
+    # same thing `run_command` does.
+    detail = f"{code}\n\n[{context.kernel.describe()}]"
+    if not context.confirm("Exécuter du Python", detail):
         raise ToolError("L'utilisateur a refusé l'exécution.")
 
     outcome = context.kernel.execute(code)
