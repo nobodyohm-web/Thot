@@ -892,3 +892,50 @@ def test_a_wrapper_module_is_the_stated_price():
     source = ('import { exec } from "./shell";\n'
               "exec(command);\n")
     assert scan_text("run.ts", source) == []
+
+
+# -- a choice between literals is still a literal --------------------------
+#
+# The masked text cannot answer this: `os.system("cls" if os.name == "nt"
+# else "clear")` reads a name, so the whitespace test keeps it. For Python
+# the question has an exact answer — can this argument's value be anything
+# but a literal? — and `ast` gives it.
+
+
+def test_a_conditional_between_two_literals_is_constant():
+    source = ("import os\n"
+              'os.system("cls" if os.name == "nt" else "clear")\n')
+    assert scan_text("cli.py", source) == []
+
+
+def test_a_conditional_with_one_variable_branch_is_not():
+    source = ("import os\n"
+              'os.system(command if flag else "clear")\n')
+    assert [f.rule for f in scan_text("cli.py", source)] \
+        == ["pattern.os_system_injection"]
+
+
+def test_two_literals_concatenated_are_constant():
+    assert scan_text("cli.py", 'import os\nos.system("git " + "status")\n') == []
+
+
+def test_a_literal_concatenated_with_a_value_is_not():
+    findings = scan_text("cli.py", 'import os\nos.system("git " + branch)\n')
+    assert [f.rule for f in findings] == ["pattern.os_system_injection"]
+
+
+def test_percent_formatting_of_a_value_is_not_constant():
+    findings = scan_text("cli.py", 'import os\nos.system("echo %s" % name)\n')
+    assert [f.rule for f in findings] == ["pattern.os_system_injection"]
+
+
+def test_a_composed_literal_inside_a_conditional_is_constant():
+    """Any operator, not just `+`: two literals joined produce a literal.
+
+    Composed inside a conditional on purpose — a bare `"echo %s" % "hi"`
+    reads no name at all, so the masked text settles it before `ast` is
+    ever asked, and the branch would go untested.
+    """
+    source = ("import os\n"
+              'os.system(("echo %s" % "hi") if verbose else "clear")\n')
+    assert scan_text("cli.py", source) == []

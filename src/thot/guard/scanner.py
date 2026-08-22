@@ -12,6 +12,7 @@ usually are:
 
 from __future__ import annotations
 
+import ast
 import hashlib
 import io
 import re
@@ -194,7 +195,38 @@ def _first_argument(masked: str, opening: int) -> tuple[int, int] | None:
     return None  # unclosed: not something to draw a conclusion from
 
 
-def _constant_command(masked: str, source: str, span: tuple[int, int]) -> bool:
+def _only_literals(node: ast.AST) -> bool:
+    """Whether this expression's value can only ever be a literal.
+
+    A conditional's test is deliberately ignored: it chooses between the
+    branches, it cannot become one. `"cls" if os.name == "nt" else "clear"`
+    reads a name and is a constant command all the same, which is the case
+    the masked text cannot answer.
+    """
+    if isinstance(node, ast.Constant):
+        return True
+    if isinstance(node, ast.IfExp):
+        return _only_literals(node.body) and _only_literals(node.orelse)
+    if isinstance(node, ast.BinOp):
+        # Any operator: two literals joined by one produce a literal, and
+        # narrowing this to `+` was a restriction nothing justified —
+        # `"echo %s" % "hi"` is the string `echo hi` and nothing else.
+        return _only_literals(node.left) and _only_literals(node.right)
+    return False
+
+
+def _literal_python_argument(fragment: str) -> bool:
+    """The same question, answered exactly, for a file Python can parse."""
+    try:
+        tree = ast.parse(fragment.strip(), mode="eval")
+    except (SyntaxError, ValueError, MemoryError, RecursionError):
+        return False  # unparseable on its own: draw no conclusion from it
+    return _only_literals(tree.body)
+
+
+def _constant_command(
+    relative: str, masked: str, source: str, span: tuple[int, int]
+) -> bool:
     """Whether the call at this match is handed a literal command.
 
     Two texts, because neither answers alone. The masked one shows whether
@@ -214,7 +246,16 @@ def _constant_command(masked: str, source: str, span: tuple[int, int]) -> bool:
         return False
     left, right = argument
     if _IDENTIFIER.search(masked[left:right]):
-        return False
+        # A name is read — which does not settle it where the language can
+        # be parsed and the names might only pick between literals.
+        #
+        # The suffix says what this parser is for; no test can tell it from
+        # its absence, and the reason is worth writing down rather than
+        # deleting. Reaching here at all takes a name in the fragment, and
+        # no JavaScript expression that reads a name is a Python expression
+        # made only of literals — `a if b else c` is not JavaScript.
+        return (relative.endswith(_PY_SUFFIXES)
+                and _literal_python_argument(source[left:right]))
     return "{" not in source[left:right]
 
 
@@ -267,7 +308,9 @@ def _is_foreign_name(
     return not binds(source, module, called.group(0))
 
 
-def _fire_line(pattern: dict, name: str, masked: str, source: str) -> int | None:
+def _fire_line(
+    pattern: dict, name: str, relative: str, masked: str, source: str
+) -> int | None:
     """The line to report, or None when every match on the rule is inert."""
     module = _BOUND_FROM.get(name)
     judged = name in _INJECTION_RULES
@@ -279,7 +322,7 @@ def _fire_line(pattern: dict, name: str, masked: str, source: str) -> int | None
     for span in spans:
         if module and _is_foreign_name(source, masked, span, module):
             continue
-        if judged and _constant_command(masked, source, span):
+        if judged and _constant_command(relative, masked, source, span):
             continue
         if judged and _is_declaration(masked, span):
             continue
@@ -358,7 +401,7 @@ def scan_text(relative: str, text: str) -> list[Finding]:
             continue
 
         impact = _IMPACT.get(name, _DEFAULT_IMPACT)
-        line = _fire_line(pattern, name, scannable, text)
+        line = _fire_line(pattern, name, relative, scannable, text)
         if line is None:
             continue  # every match is a literal: nothing to inject into
         location = CodeRef(
