@@ -608,3 +608,67 @@ def test_the_display_floor_never_hides_a_failure(toy_repo, capsys):
 
     assert payload["summary"]["total"] == 0, "tout devait être masqué"
     assert code == 1, "le seuil d'affichage a caché un échec"
+
+
+# --- le même contrat, pour l'audit de dépendances --------------------------
+#
+# `thot deps --fail-on` calcule `max(...)` sur les findings : une liste vide
+# lèverait `ValueError`. Un retour anticipé protège l'appel — vérifié sur un
+# arbre sain, code 0 sans plantage — et rien ne le tenait. Les trois cas qui
+# décident d'un pipeline non plus.
+
+
+def _deps_result(findings, checked=True):
+    from thot.supply.audit import SupplyResult
+
+    return SupplyResult(findings, components=3, checked=checked)
+
+
+def _vulnerable(severity):
+    from thot.contracts import CodeRef, Confidence, Finding, Severity
+
+    return Finding(
+        id="v1", rule="supply.vulnerable", severity=Severity(severity),
+        confidence=Confidence.PLAUSIBLE,
+        location=CodeRef(path="requirements.txt", line=1, symbol="requests",
+                         ast_hash="h"),
+        failure_scenario="GHSA-xxxx — requests@2.19.1 est couvert",
+        provenance={"paquet": "requests@2.19.1", "avis": "GHSA-xxxx"},
+    )
+
+
+def test_deps_without_a_vulnerability_never_fails(toy_repo, capsys, monkeypatch):
+    from thot import supply
+
+    monkeypatch.setattr(supply, "audit_dependencies",
+                        lambda root, **kw: _deps_result([]))
+
+    code = cli.main(["deps", str(toy_repo), "--fail-on", "low"])
+    capsys.readouterr()
+
+    assert code == 0
+
+
+def test_deps_fails_when_something_reaches_the_threshold(toy_repo, capsys,
+                                                         monkeypatch):
+    from thot import supply
+
+    monkeypatch.setattr(supply, "audit_dependencies",
+                        lambda root, **kw: _deps_result([_vulnerable("high")]))
+
+    code = cli.main(["deps", str(toy_repo), "--fail-on", "high"])
+    capsys.readouterr()
+
+    assert code == 1
+
+
+def test_deps_does_not_fail_below_the_threshold(toy_repo, capsys, monkeypatch):
+    from thot import supply
+
+    monkeypatch.setattr(supply, "audit_dependencies",
+                        lambda root, **kw: _deps_result([_vulnerable("high")]))
+
+    code = cli.main(["deps", str(toy_repo), "--fail-on", "critical"])
+    capsys.readouterr()
+
+    assert code == 0
