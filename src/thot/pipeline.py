@@ -64,7 +64,17 @@ def findings_from_graph(root: Path, graph: CodeGraph) -> list[Finding]:
     interactive session, so both see exactly the same analysis."""
     findings: list[Finding] = []
     entrypoints_known = bool(graph.entrypoints)
-    for candidate in find_candidates(root, graph):
+
+    from thot.taint import js_engine
+
+    # Two engines, one contract. The Python one proves paths across returns
+    # and parameters; the JavaScript one proves them inside a body and says
+    # so. Both emit `TaintCandidate`, so scoring, roles, memory and the deep
+    # pass treat them identically — a proven path is a proven path.
+    candidates = list(find_candidates(root, graph))
+    candidates += js_engine.find_candidates(root, list(graph.symbols.values()))
+
+    for candidate in candidates:
         distance = graph.distance_from_entrypoints(candidate.sink.symbol or "")
         role = role_of(candidate.sink.path)
         severity = compute_severity(

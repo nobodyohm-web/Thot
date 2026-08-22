@@ -374,8 +374,21 @@ jusqu'à ce que plus personne ne lise le rapport.
 | | Python | TypeScript · JavaScript | le reste |
 |---|---|---|---|
 | symboles, graphe d'appels, `code_map` / `callers` | oui | oui | non |
-| moteur de teinte (chemin prouvé source → sink) | oui | non | non |
+| teinte **dans un corps de fonction** | oui | oui | non |
+| teinte **à travers retours et paramètres** | oui | non | non |
 | règles par motif | oui | oui | oui |
+
+La teinte JavaScript s'arrête au corps de fonction, et le dit. Les deux
+niveaux suivants reposent sur un graphe d'appels **résolu** — savoir que le
+`readInput` appelé ici est celui défini là-bas. Le système d'imports de
+Python répond à cette question ; celui de JavaScript non, pas sans résolveur
+de modules, `tsconfig` et vue du typeur sur `this`. Un second niveau bâti sur
+des suppositions transformerait un outil qui rapporte des chemins *prouvés*
+en un outil qui rapporte des chemins *plausibles*.
+
+Mesuré sur les deux corpus : **6 chemins sur Prime, 4 sur Hermes**, sur
+3 400 fichiers JS/TS. Dix, pas trois cents — c'est la forme qu'a un moteur de
+teinte, et pas celle d'un scanner de motifs.
 
 Le rapport le dit lui-même plutôt que de laisser croire à une couverture
 uniforme :
