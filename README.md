@@ -867,6 +867,12 @@ présent dans le rapport est exactement ce à quoi sert la boucle — et cela
 n'aurait été rapporté à personne. Les fichiers qu'un audit aurait modifiés
 sont signalés dans le même journal.
 
+Un arbre qui n'a plus rien à juger **passe sa part au suivant**. Mesuré sur le
+corpus réel : `thot` a un arriéré vide et `prime` un seul candidat, donc un
+budget de 20 par arbre en dépensait 40 sur des arbres incapables de les
+utiliser pendant que Hermes en attendait cent cinquante. Un tour de 20
+devient un tour de 20, 20 et 60.
+
 Une troisième la fait converger *vite* : les échecs sont comptés. Un candidat
 dont l'agent dépasse son délai, ou dont le modèle refuse de s'engager, garde
 sa sévérité — donc il est repris **en premier** au tour suivant, et au

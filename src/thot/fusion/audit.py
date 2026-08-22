@@ -85,6 +85,12 @@ def audit_all(*, deep: bool = False, engine_name: str = "",
     from thot.pipeline import run_audit
     from thot.errors import AuthorizationError
 
+    # A tree with nothing left to judge hands its share to the next one.
+    # Measured on the real corpus: thot has an empty backlog and prime has
+    # one candidate, so two thirds of every round's budget was spent on
+    # trees that could not use it while Hermes queued a hundred and fifty.
+    carried = 0
+
     done: list[Part] = []
     for name, root in parts():
         engine = None
@@ -99,15 +105,22 @@ def audit_all(*, deep: bool = False, engine_name: str = "",
         # The callback is told which tree the decision came from. Without it
         # a caller counting per part has no boundary to count against — the
         # first tree would be credited with every decision of the run.
-        per_part = (
-            (lambda finding, part=name: on_decided(part, finding))
-            if on_decided is not None else None
-        )
+        spent = {"n": 0}
+
+        def per_part(finding, part=name, spent=spent):
+            spent["n"] += 1
+            if on_decided is not None:
+                on_decided(part, finding)
+
+        allowance = budget + carried
         try:
-            result = run_audit(root, engine=engine, memory=memory, budget=budget,
+            result = run_audit(root, engine=engine, memory=memory,
+                               budget=allowance,
                                require_authorization=require_authorization,
-                               skip=skip, on_decided=per_part)
+                               skip=skip,
+                               on_decided=per_part if deep else None)
             done.append(Part(name, root, result=result))
+            carried = max(0, allowance - spent["n"])
         except AuthorizationError:
             done.append(
                 Part(name, root, error=f"non autorisé — `thot init {root.name}`")

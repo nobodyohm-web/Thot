@@ -687,3 +687,38 @@ def test_an_unauthorised_tree_says_how_to_authorise_it(
     done = audit.audit_all()
     assert not done[0].ok
     assert "thot init" in done[0].error
+
+
+def test_a_tree_with_nothing_to_judge_hands_its_share_to_the_next(monkeypatch,
+                                                                  tmp_path):
+    """Measured on the real corpus: two thirds of every round was wasted.
+
+    `thot` has an empty backlog and `prime` has one candidate, so a budget of
+    twenty per tree spent forty on trees that could not use it while Hermes
+    queued a hundred and fifty.
+    """
+    from thot.fusion.audit import audit_all
+
+    empty, busy = tmp_path / "vide", tmp_path / "charge"
+    for root in (empty, busy):
+        root.mkdir()
+    (empty / "clean.py").write_text("def add(a, b):\n    return a + b\n")
+    (busy / "app.py").write_text(
+        "import os, sys\n\ndef run():\n    os.system('ls ' + sys.argv[1])\n"
+    )
+    monkeypatch.setattr(
+        "thot.fusion.audit.parts", lambda: [("vide", empty), ("charge", busy)]
+    )
+
+    budgets: list[int] = []
+    real = __import__("thot.pipeline", fromlist=["run_audit"]).run_audit
+
+    def spy(root, **kwargs):
+        budgets.append(kwargs.get("budget"))
+        return real(root, **kwargs)
+
+    monkeypatch.setattr("thot.pipeline.run_audit", spy)
+    audit_all(deep=False, budget=5, require_authorization=False)
+
+    assert budgets[0] == 5
+    assert budgets[1] == 10, "l'arbre vide n'a rien dépensé, sa part doit suivre"
