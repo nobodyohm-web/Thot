@@ -456,3 +456,56 @@ def test_a_refutation_that_needed_no_review_is_still_remembered(tmp_path):
     )
 
     assert kept == 1
+
+
+# --- lire l'équipe, écrire chez soi ----------------------------------------
+#
+# Observé en montant un dépôt avec un `.thot/verdicts.json` : la chaîne
+# devient « json → sqlite (écriture : sqlite) ». C'est la bonne conception —
+# on lit les décisions de l'équipe et on écrit les siennes dans son magasin
+# privé. Si elle s'inversait, chaque réfutation locale atterrirait dans le
+# fichier versionné et serait committée par accident, sans que personne ne
+# l'ait décidé pour l'équipe.
+
+
+def test_a_local_verdict_never_lands_in_the_committed_file(tmp_path):
+    from thot.contracts import CodeRef, Confidence, Finding, Severity
+    from thot.memory import build_memory
+    from thot.memory.base import Decision, Verdict
+    from thot.memory.jsonfile import JsonMemory
+
+    shared = tmp_path / ".thot" / "verdicts.json"
+    shared.parent.mkdir(parents=True)
+
+    def finding(identifier, line):
+        location = CodeRef(path="app.py", line=line, symbol="run", ast_hash="h")
+        return Finding(
+            id=identifier, rule="sink.os.system", severity=Severity.HIGH,
+            confidence=Confidence.PLAUSIBLE, location=location,
+            failure_scenario="argv atteint os.system",
+        )
+
+    team = JsonMemory.open(shared)
+    team.remember(Verdict.of(finding("equipe", 2), Decision.REFUTED,
+                             "décidé ensemble", "équipe"))
+    team.close()
+    before = shared.read_text(encoding="utf-8")
+
+    memory = build_memory(tmp_path)
+    try:
+        assert "json" in memory.describe(), memory.describe()
+        assert memory.recall("equipe") is not None, "la décision d'équipe est lue"
+        memory.remember(Verdict.of(finding("perso", 9), Decision.REFUTED,
+                                   "mon avis à moi", "dev"))
+    finally:
+        getattr(memory, "close", lambda: None)()
+
+    assert shared.read_text(encoding="utf-8") == before, (
+        "un verdict local a été écrit dans le fichier de l'équipe"
+    )
+
+    reread = build_memory(tmp_path)
+    try:
+        assert reread.recall("perso") is not None, "le verdict local est perdu"
+    finally:
+        getattr(reread, "close", lambda: None)()
