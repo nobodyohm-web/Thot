@@ -488,6 +488,13 @@ class Session:
                 f"   [dim]{progress['done']}/{len(selected)} jugé(s) · {who}[/dim]"
             )
 
+        # The same tripwire `thot audit --deep` carries. A safety property
+        # that holds on one path and not another is not a property: two of
+        # the three agents can write, and this path runs them too.
+        from thot.analysis import tripwire
+
+        before = tripwire.snapshot(self.root, self.recon.manifest.files)
+
         try:
             with theme.console.status(
                 f"   [dim]{label}[/dim]", spinner="dots"
@@ -499,6 +506,18 @@ class Session:
         finally:
             if memory is not None:
                 getattr(memory, "close", lambda: None)()
+
+        touched = tripwire.touched(
+            before, tripwire.snapshot(self.root, self.recon.manifest.files)
+        )
+        if touched:
+            theme.console.print()
+            theme.warn(
+                f"L'analyse a modifié {len(touched)} fichier(s) du dépôt — "
+                f"ce n'est pas normal. `git diff` avant toute autre chose."
+            )
+            for name in touched[:10]:
+                theme.console.print(theme.entry(name, "modifié", width=40))
 
         confirmed = sum(1 for f in analysed if f.confidence is Confidence.CONFIRMED)
         refuted = sum(1 for f in analysed if f.confidence is Confidence.REFUTED)

@@ -99,3 +99,18 @@ def test_the_audit_reports_what_an_engine_changed(tmp_path):
     result = run_audit(tmp_path, engine=_Meddles(), budget=2)
 
     assert "app.py" in result.touched
+
+
+def test_the_interactive_pass_carries_the_same_tripwire():
+    """A safety property that holds on one path and not another is not one.
+
+    `thot audit --deep` stamps the scope; the session's own deep pass ran the
+    same agents through a different call and did not.
+    """
+    source = (Path(__file__).parent.parent / "src" / "thot" / "session.py")
+    text = source.read_text(encoding="utf-8")
+    deep = text.split("def _deep_analyse")[1].split("\n    def ")[0]
+
+    assert "tripwire.snapshot" in deep
+    assert "tripwire.touched" in deep
+    assert "n'est pas normal" in deep
