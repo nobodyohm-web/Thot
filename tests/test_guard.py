@@ -330,3 +330,72 @@ def test_a2a_discover_refuses_a_model_supplied_internal_url(monkeypatch):
     assert "security.guarded_opener()" in (
         (root / "plugins" / "platforms" / "a2a" / "tools.py").read_text(encoding="utf-8")
     ), "les aides HTTP doivent contrôler les redirections"
+
+
+def _hermes_utils():
+    import importlib.util
+    import sys
+
+    from thot.fusion.locate import hermes_root
+
+    root = hermes_root()
+    if root is None:
+        pytest.skip("Hermes n'est pas installé ici")
+    path = root / "utils.py"
+    if not path.is_file():
+        pytest.skip("cette version de Hermes n'a pas utils.py")
+    if str(root) not in sys.path:
+        sys.path.insert(0, str(root))
+    spec = importlib.util.spec_from_file_location("hermes_utils_under_test", path)
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+def test_the_shared_guard_refuses_every_way_in(monkeypatch):
+    """One guard, because it was needed in four places.
+
+    The cron monitor's URL, the A2A callback, the A2A peer fetch and the
+    image plugin's source images — every one of them takes its URL from
+    something a model or a peer supplies.
+    """
+    import socket
+
+    utils = _hermes_utils()
+
+    assert utils.refuse_internal_url("file:///etc/passwd")
+    assert utils.refuse_internal_url("http://127.0.0.1/x")
+
+    monkeypatch.setattr(
+        socket, "getaddrinfo", lambda *a, **kw: [(2, 1, 6, "", ("10.0.0.5", 0))]
+    )
+    assert utils.refuse_internal_url("http://interne.example/x")
+
+    monkeypatch.setattr(
+        socket, "getaddrinfo",
+        lambda *a, **kw: (_ for _ in ()).throw(OSError("nope")),
+    )
+    assert utils.refuse_internal_url("http://absent.invalid/x")
+
+    monkeypatch.setattr(
+        socket, "getaddrinfo",
+        lambda *a, **kw: [(2, 1, 6, "", ("93.184.216.34", 0))],
+    )
+    assert utils.refuse_internal_url("http://public.example/x") is None
+
+
+def test_the_image_plugin_checks_its_model_supplied_sources():
+    """`image_url` is a tool argument, so it comes from the model."""
+    from thot.fusion.locate import hermes_root
+
+    root = hermes_root()
+    if root is None:
+        pytest.skip("Hermes n'est pas installé ici")
+    plugin = root / "plugins" / "image_gen" / "openai" / "__init__.py"
+    if not plugin.is_file():
+        pytest.skip("cette version de Hermes n'a pas ce plugin")
+
+    source = plugin.read_text(encoding="utf-8")
+    assert "refuse_internal_url" in source
+    assert "refused image source" in source

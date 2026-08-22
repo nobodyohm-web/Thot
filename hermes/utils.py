@@ -922,3 +922,59 @@ def base_url_host_matches(base_url: str, domain: str) -> bool:
     if not domain:
         return False
     return hostname == domain or hostname.endswith("." + domain)
+
+
+# --------------------------------------------------------------------------
+# Outbound requests
+# --------------------------------------------------------------------------
+
+
+def refuse_internal_url(url: str, *, allow_loopback: bool = False) -> str | None:
+    """Refuse a URL that reaches an address only this host can reach.
+
+    Returns a reason to refuse, or None when the destination is public.
+
+    The name is resolved here rather than left to the HTTP client, because
+    the name is what a caller controls: a host they own answers 127.0.0.1 or
+    169.254.169.254 as readily as a public address, and a check on the
+    spelling of the address sees none of that. Every answer is checked, not
+    the first — one private record among several is enough to reach what it
+    points at — and a name that does not resolve is refused, since there is
+    nothing to reach.
+
+    Written once and shared because it was needed in four places: the cron
+    monitor's URL, the A2A callback, the A2A peer fetch, and the image
+    plugin's source images. Every one of them takes its URL from something a
+    model or a peer supplies.
+    """
+    import ipaddress
+    import socket
+
+    parsed = urlparse(url)
+    if parsed.scheme not in ("http", "https"):
+        return f"scheme must be http(s): {url!r}"
+    hostname = parsed.hostname
+    if not hostname:
+        return f"no host in {url!r}"
+
+    try:
+        resolved = socket.getaddrinfo(hostname, None)
+    except OSError as exc:
+        return f"{hostname} does not resolve ({exc})"
+
+    seen = False
+    for entry in resolved:
+        try:
+            address = ipaddress.ip_address(entry[4][0])
+        except (ValueError, IndexError):
+            continue
+        seen = True
+        if address.is_loopback and allow_loopback:
+            continue
+        if (address.is_loopback or address.is_link_local or address.is_private
+                or address.is_reserved or address.is_multicast
+                or address.is_unspecified):
+            return f"{hostname} resolves to a non-public address ({address})"
+    if not seen:
+        return f"{hostname} resolves to nothing usable"
+    return None

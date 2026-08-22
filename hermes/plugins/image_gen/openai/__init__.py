@@ -135,6 +135,17 @@ def _load_image_bytes(ref: str) -> Tuple[bytes, str]:
     if lower.startswith(("http://", "https://")):
         import requests
 
+        from utils import refuse_internal_url
+
+        # `image_url` and `reference_image_urls` are tool arguments, so this
+        # URL comes from the model. Fetching it blind lets a prompt-injected
+        # model reach anything this host can reach — and the failure text is
+        # handed back, so even a request whose body it never sees answers
+        # "is there something on that port".
+        refusal = refuse_internal_url(ref)
+        if refusal:
+            raise ValueError(f"refused image source — {refusal}")
+
         resp = requests.get(ref, timeout=60)
         resp.raise_for_status()
         name = ref.split("?", 1)[0].rsplit("/", 1)[-1] or "image.png"
