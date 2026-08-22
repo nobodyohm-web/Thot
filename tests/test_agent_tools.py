@@ -399,3 +399,49 @@ def test_a_contained_kernel_says_what_contains_it():
         pass
 
     assert "conteneur sans réseau" in shown[0][1]
+
+
+# --- l'avertissement doit survivre à la troncature -------------------------
+#
+# `Session._confirm` coupe le détail à 1500 signes. La posture ajoutée en fin
+# de détail disparaissait donc dès que le code dépassait ~1450 caractères —
+# une cellule Python ordinaire. L'avertissement s'effaçait exactement quand
+# le code était trop long pour être relu d'un coup d'œil, c'est-à-dire quand
+# il comptait le plus. Défaut introduit en ajoutant la posture, trouvé en
+# lisant la troncature.
+
+CONFIRM_LIMIT = 1500
+
+
+def _visible(detail: str) -> str:
+    """What `Session._confirm` actually shows."""
+    return detail if len(detail) < CONFIRM_LIMIT else detail[:CONFIRM_LIMIT]
+
+
+def test_a_long_python_cell_still_shows_the_kernel_posture():
+    from thot.agent_tools import ToolError, python
+
+    class _Kernel:
+        def describe(self):
+            return "aucune isolation — le code tourne sous ton compte"
+
+    context, shown = _asking()
+    context.kernel = _Kernel()
+    try:
+        python(context, code="# " + "x" * 4000 + "\nprint(1)\n")
+    except ToolError:
+        pass
+
+    assert "aucune isolation" in _visible(shown[0][1])
+
+
+def test_a_long_command_still_shows_the_sandbox_posture():
+    from thot.agent_tools import ToolError, run_command
+
+    context, shown = _asking()
+    try:
+        run_command(context, command="echo " + "y" * 4000)
+    except ToolError:
+        pass
+
+    assert "aucune isolation" in _visible(shown[0][1])

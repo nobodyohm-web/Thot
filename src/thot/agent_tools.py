@@ -155,7 +155,11 @@ def python(context: ToolContext, *, code: str) -> str:
     # every later confirmation to show the code alone. Arbitrary Python
     # reaches the same credentials an arbitrary command does, so it says the
     # same thing `run_command` does.
-    detail = f"{code}\n\n[{context.kernel.describe()}]"
+    # Posture first: `Session._confirm` truncates the detail at 1500 characters,
+    # and a Python cell reaches that without being unusual. Placed last, the
+    # warning vanished exactly when the code was too long to take in at a
+    # glance — which is when it mattered most.
+    detail = f"[{context.kernel.describe()}]\n\n{code}"
     if not context.confirm("Exécuter du Python", detail):
         raise ToolError("L'utilisateur a refusé l'exécution.")
 
@@ -239,7 +243,7 @@ def run_command(context: ToolContext, *, command: str) -> str:
     # command runs under your account". Showing it only for the other
     # sandboxes reassured when it could and went quiet when it mattered, in
     # the one text a human reads before allowing an arbitrary command.
-    detail = f"{command}\n\n[{sandbox.describe()}]"
+    detail = f"[{sandbox.describe()}]\n\n{command}"
     if not context.confirm("Exécuter une commande", detail):
         raise ToolError("L'utilisateur a refusé l'exécution.")
 
