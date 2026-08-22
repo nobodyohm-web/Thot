@@ -458,3 +458,45 @@ def test_an_allowlist_of_nothing_is_not_a_channel_that_listens(isolated_home):
     config.upsert("telegram", {"token": "t", "chat_id": "1"}, ("", "  "))
 
     assert config.load()[0].two_way is False
+
+
+# --- le message poussé la nuit doit dire qu'un panel a jugé ----------------
+#
+# Ce que la boucle nocturne envoie est exactement le produit de la cascade :
+# des confirmations et des réfutations contestées, `_is_news` ne retenant
+# rien d'autre. Le message annonçait pourtant des sévérités seules — « 3
+# finding(s) — 2 high · 1 medium » — sans un mot sur le fait que des agents
+# avaient argumenté. C'est le seul endroit où l'utilisateur voit le travail
+# du panel quand il ne regarde pas le terminal.
+
+
+def _news(confidence):
+    from thot.contracts import CodeRef, Confidence, Finding, Severity
+
+    return Finding(
+        id="n1", rule="sink.os.system", severity=Severity.HIGH,
+        confidence=confidence,
+        location=CodeRef(path="app.py", line=9, symbol="handle", ast_hash="h"),
+        failure_scenario="argv atteint os.system",
+    )
+
+
+def test_the_pushed_message_names_the_engine_that_judged():
+    from thot.contracts import Confidence
+    from thot.gateway.render import report
+
+    text = report([_news(Confidence.CONFIRMED)], root="/tmp/app",
+                  title="Nouveau", engine="panel")
+
+    assert "panel" in text
+    assert "confirmé" in text
+
+
+def test_a_deterministic_push_says_nothing_about_a_panel():
+    from thot.contracts import Confidence
+    from thot.gateway.render import report
+
+    text = report([_news(Confidence.PLAUSIBLE)], root="/tmp/app",
+                  title="Nouveau")
+
+    assert "jugé par" not in text.lower(), text

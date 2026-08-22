@@ -19,7 +19,8 @@ def post_audit(*, result=None, root=None, new_findings=None, **_: object) -> Non
     from thot.gateway.render import report
     from thot.gateway.server import broadcast
 
-    text = report(list(new_findings), root=str(root or ""), title="Nouveau")
+    text = report(list(new_findings), root=str(root or ""), title="Nouveau",
+                  engine=getattr(result, "engine", None))
     for delivery in broadcast(text):
         if not delivery.ok:
             import sys

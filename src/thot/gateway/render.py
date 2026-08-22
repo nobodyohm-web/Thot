@@ -38,15 +38,34 @@ def counts(findings: list[Finding]) -> str:
 
 
 def report(findings: list[Finding], *, root: str = "", title: str = "Audit",
-           shown: int = SHOWN) -> str:
-    """The message a scheduled audit pushes."""
+           shown: int = SHOWN, engine: str | None = None) -> str:
+    """The message a scheduled audit pushes.
+
+    `engine` names what argued. What the nightly loop sends is exactly the
+    cascade's product — `_is_news` keeps confirmations and contested
+    refutations and nothing else — and the message used to carry severity
+    counts alone. This is the only place the panel's work reaches someone who
+    is not watching the terminal.
+    """
     name = root.rstrip("/").rsplit("/", 1)[-1] if root else ""
     header = f"{title} — {name}" if name else title
 
     if not findings:
         return f"{header}\nRien de nouveau."
 
-    body = [f"{header}\n{len(findings)} finding(s) — {counts(findings)}", ""]
+    said = {"confirmed": "confirmé", "refuted": "réfuté"}
+    decided: dict[str, int] = {}
+    for finding in findings:
+        label = said.get(finding.confidence.value)
+        if label:
+            decided[label] = decided.get(label, 0) + 1
+    judged = (
+        "\njugé par " + str(engine) + " : "
+        + " · ".join(f"{n} {k}(s)" for k, n in sorted(decided.items()))
+        if engine and decided else ""
+    )
+
+    body = [f"{header}\n{len(findings)} finding(s) — {counts(findings)}{judged}", ""]
     body += [line(index, finding)
              for index, finding in enumerate(findings[:shown], start=1)]
     if len(findings) > shown:

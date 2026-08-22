@@ -368,3 +368,41 @@ def test_moving_a_file_lapses_the_approval_even_with_identical_bytes(tmp_path):
     (folder / "helper.py").rename(folder / "inner" / "helper.py")
 
     assert trust.status(folder) == "changed"
+
+
+def test_the_nightly_push_names_the_engine_that_judged(tmp_path, monkeypatch):
+    """The plugin has the whole result; it was passing only the findings.
+
+    What the loop pushes is the cascade's product — confirmations and
+    contested refutations — and the message said nothing about a panel having
+    argued. This is the only place that work reaches someone away from the
+    terminal.
+    """
+    from types import SimpleNamespace
+
+    from thot.contracts import CodeRef, Confidence, Finding, Severity
+    from thot.gateway import server
+    from thot.plugins import discover, forget_plugins
+
+    sent: list[str] = []
+    monkeypatch.setattr(
+        server, "broadcast",
+        lambda text: sent.append(text) or [],
+    )
+
+    forget_plugins()
+    notify = next(p for p in discover(tmp_path) if p.name == "gateway-notify")
+    finding = Finding(
+        id="n1", rule="sink.os.system", severity=Severity.HIGH,
+        confidence=Confidence.CONFIRMED,
+        location=CodeRef(path="app.py", line=9, symbol="handle", ast_hash="h"),
+        failure_scenario="argv atteint os.system",
+    )
+
+    notify.callbacks["post_audit"](
+        result=SimpleNamespace(engine="panel", findings=[finding]),
+        root=tmp_path, new_findings=[finding],
+    )
+
+    assert sent, "aucun message poussé"
+    assert "panel" in sent[0], sent[0]
