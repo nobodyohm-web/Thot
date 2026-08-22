@@ -186,6 +186,8 @@ def run_audit(
     if engine is not None and findings:
         engine_name = engine.capabilities.name
 
+        from thot.analysis import attempts
+
         def settled(finding: Finding) -> None:
             # Written the moment it is decided, not at the end. A deep pass
             # over a large repository runs for hours; persisting only on the
@@ -195,11 +197,20 @@ def run_audit(
             # interrupted pass resume where it stopped rather than restart.
             if memory is not None:
                 record_verdicts([finding], memory, author=engine_name or "thot")
+            # A failure is not a decision, so it is counted rather than
+            # remembered: nothing was judged, and the finding must keep
+            # coming back — just not ahead of everything else for ever.
+            provenance = finding.provenance or {}
+            if provenance.get("erreur") or provenance.get("réfutation"):
+                attempts.record_failure(finding.id)
+            else:
+                attempts.clear(finding.id)
             if on_decided is not None:
                 on_decided(finding)
 
         findings = analyse(
-            root, findings, engine, limit=budget, on_decided=settled, skip=skip
+            root, findings, engine, limit=budget, on_decided=settled, skip=skip,
+            demote=attempts.demoted(),
         )
 
     # Plugins see the finished findings, before anything is written down.

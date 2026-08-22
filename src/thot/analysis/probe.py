@@ -77,8 +77,13 @@ def select_for_analysis(
     findings: list[Finding],
     limit: int = DEFAULT_LIMIT,
     skip: set[str] | None = None,
+    demote: set[str] | None = None,
 ) -> list[Finding]:
     """The candidates worth a model, worst first.
+
+    `demote` holds the ones that have already failed twice. They stay
+    eligible — a wall can be a busy afternoon — but they go last, so a small
+    budget spends itself on candidates that can actually be judged.
 
     `skip` is for a caller running several rounds against the same tree. A
     confirmed finding is deliberately never written to memory — it must keep
@@ -102,7 +107,11 @@ def select_for_analysis(
         and not carries_decision(f)
         and f.id not in skip
     ]
-    ranked = sorted(live, key=lambda f: SEVERITY_ORDER.get(f.severity, 9))
+    demote = demote or set()
+    ranked = sorted(
+        live,
+        key=lambda f: (f.id in demote, SEVERITY_ORDER.get(f.severity, 9)),
+    )
     return ranked[:limit]
 
 
@@ -325,6 +334,7 @@ def analyse(
     limit: int = DEFAULT_LIMIT,
     on_decided: Callable[[Finding], None] | None = None,
     skip: set[str] | None = None,
+    demote: set[str] | None = None,
 ) -> list[Finding]:
     """Probe, attack, and attack again what survived — in batches.
 
@@ -347,7 +357,7 @@ def analyse(
     started: what an interruption costs is one batch, not the run.
     """
     root = Path(root)
-    selected = select_for_analysis(findings, limit, skip)
+    selected = select_for_analysis(findings, limit, skip, demote)
     if not selected:
         return list(findings)
 

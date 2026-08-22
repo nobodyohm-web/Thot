@@ -835,6 +835,15 @@ thot improve --rounds 5           # jusqu'à ce qu'un tour ne juge plus rien
 thot improve --every daily        # la boucle devient permanente
 ```
 
+Une troisième la fait converger *vite* : les échecs sont comptés. Un candidat
+dont l'agent dépasse son délai, ou dont le modèle refuse de s'engager, garde
+sa sévérité — donc il est repris **en premier** au tour suivant, et au
+suivant. Mesuré sur un finding dans un fichier de 1 660 lignes : quatre
+tentatives sur trois passes, trois d'entre elles payant le même mur. Après
+deux échecs, il passe en fin de file : toujours éligible, jamais prioritaire.
+Un succès efface le compte — un mur qui était un après-midi chargé ou un
+abonnement épuisé ne doit pas suivre un finding pour toujours.
+
 Deux propriétés la font converger au lieu de tourner en rond : une réfutation
 est mémorisée, donc la sélection suivante la saute ; une confirmation ne l'est
 délibérément **pas** — un vrai défaut doit continuer à apparaître jusqu'à ce
