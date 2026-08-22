@@ -774,3 +774,75 @@ def test_a_matched_substring_that_calls_nothing_is_not_judged_constant():
               'print("ready")\n')
     assert [f.rule for f in scan_text("cli.py", source)] \
         == ["pattern.os_system_injection"]
+
+
+# -- declaring a function is not calling one ------------------------------
+#
+# The last shape the sweep could not tell apart: a method named `exec` in a
+# file that genuinely does import `child_process`. An SSH connection class
+# is exactly that, and it passed the import gate and the literal test both.
+
+
+def test_a_method_named_exec_beside_a_real_import_is_not_a_finding():
+    source = ('import { spawn } from "child_process";\n'
+              "export class Connection {\n"
+              "  async exec(remoteCommand, { timeoutMs }: any = {}) {\n"
+              "    return this.send(remoteCommand);\n"
+              "  }\n"
+              "}\n")
+    assert scan_text("ssh.ts", source) == []
+
+
+def test_an_interface_declaring_exec_is_not_a_finding():
+    source = ('import type { ExecOptions } from "child_process";\n'
+              "export interface Runtime {\n"
+              "  /** Execute a shell command. */\n"
+              "  exec(command: string, args: string[],"
+              " options?: ExecOptions): Promise<ExecResult>;\n"
+              "}\n")
+    assert scan_text("types.ts", source) == []
+
+
+def test_a_plain_function_declaration_is_not_a_finding():
+    source = ('import { spawn } from "child_process";\n'
+              "export function exec(command) {\n"
+              "  return spawn(command);\n"
+              "}\n")
+    assert scan_text("shell.ts", source) == []
+
+
+def test_a_call_taking_a_callback_is_still_a_finding():
+    """The closing paren is the call's own, not the callback's."""
+    source = ('import { exec } from "child_process";\n'
+              "exec(command, (error, stdout) => { done(stdout); });\n")
+    assert [f.rule for f in scan_text("run.ts", source)] \
+        == ["pattern.child_process_exec"]
+
+
+def test_a_call_used_as_a_property_value_is_still_a_finding():
+    source = ('import { exec } from "child_process";\n'
+              "const table = { output: exec(command) };\n")
+    assert [f.rule for f in scan_text("run.ts", source)] \
+        == ["pattern.child_process_exec"]
+
+
+def test_a_class_method_carries_no_keyword_at_all():
+    """The shape `loader.ts:266` has: no `function`, no `async`, just a body."""
+    source = ('import { spawn } from "child_process";\n'
+              "export const runtime = {\n"
+              "  exec(command: string, args: string[]) {\n"
+              "    return spawn(command, args);\n"
+              "  },\n"
+              "};\n")
+    assert scan_text("loader.ts", source) == []
+
+
+def test_a_default_parameter_holding_a_function_ends_no_list():
+    """The parameter list closes by balance, not at the first `)`."""
+    source = ('import { spawn } from "child_process";\n'
+              "export class Runner {\n"
+              "  exec(onData = () => {}, options = {}) {\n"
+              "    return spawn(this.command, options);\n"
+              "  }\n"
+              "}\n")
+    assert scan_text("runner.ts", source) == []

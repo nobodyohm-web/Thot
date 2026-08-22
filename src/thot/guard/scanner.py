@@ -19,6 +19,7 @@ import tokenize
 from pathlib import Path
 
 from thot.contracts import CodeRef, Confidence, Finding, Severity
+from thot.codemap.ts_indexer import _skip_balanced
 from thot.taint.js_catalog import imports
 from thot.guard.patterns import _JS_EXTS as _JS_SUFFIXES
 from thot.guard.patterns import SECURITY_PATTERNS
@@ -215,6 +216,36 @@ def _constant_command(masked: str, source: str, span: tuple[int, int]) -> bool:
     return "{" not in source[left:right]
 
 
+def _is_declaration(masked: str, span: tuple[int, int]) -> bool:
+    """Whether this match declares a function rather than calling one.
+
+    The last shape the sweep could not tell apart: a method named `exec` in
+    a file that genuinely imports `child_process` — an SSH connection class
+    is exactly that — passes the import gate and reads a name, so nothing
+    else separates it from a call but its shape.
+
+    What follows the parameter list answers for all of them: a body opens
+    with `{`, a signature annotates its return with `:`, and a call is
+    followed by whatever the surrounding expression wants. Looking for
+    `function` or `async` before the name was tried and dropped — it decides
+    nothing this does not, and it cannot read a class method, which carries
+    no keyword at all.
+
+    The closing paren is found by balance, or a default parameter holding a
+    function — `exec(onData = () => {}, options)` — would end the list at
+    the wrong place and the declaration would read as a call.
+    """
+    start, end = span
+    opening = masked.find("(", start)
+    if opening == -1 or opening > end + 2:
+        return False
+    after = _skip_balanced(masked, opening, "(", ")")
+    if after == opening:
+        return False  # unclosed: not something to draw a conclusion from
+    tail = masked[after:after + 200].lstrip()
+    return tail.startswith("{") or tail.startswith(":")
+
+
 def _fire_line(pattern: dict, name: str, masked: str, source: str) -> int | None:
     """The line to report, or None when every match on the rule is inert."""
     if name not in _INJECTION_RULES:
@@ -223,8 +254,11 @@ def _fire_line(pattern: dict, name: str, masked: str, source: str) -> int | None
     if not spans:
         return _first_line(masked, pattern)
     for span in spans:
-        if not _constant_command(masked, source, span):
-            return masked.count("\n", 0, span[0]) + 1
+        if _constant_command(masked, source, span):
+            continue
+        if _is_declaration(masked, span):
+            continue
+        return masked.count("\n", 0, span[0]) + 1
     return None
 
 
