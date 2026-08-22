@@ -124,3 +124,78 @@ def test_a_safe_write_says_nothing_extra(context):
         context, path="safe.py", content="import json\njson.loads(blob)\n"
     )
     assert "⚠" not in out
+
+
+# -- one tool call must not cost half a context window -----------------------
+
+
+def _many_findings(count: int):
+    from thot.contracts import CodeRef, Confidence, Finding, Severity
+
+    severities = [Severity.INFO] * count
+    severities[0] = Severity.CRITICAL
+    severities[1] = Severity.HIGH
+    out = []
+    for index, severity in enumerate(severities):
+        location = CodeRef(path=f"f{index}.py", line=1, symbol="s",
+                           ast_hash=f"h{index}")
+        out.append(
+            Finding(
+                id=Finding.compute_id("r", location), rule="sink.os.system",
+                severity=severity, confidence=Confidence.PLAUSIBLE,
+                location=location,
+                failure_scenario="détail " * 200,
+            )
+        )
+    return out
+
+
+def _context_with(findings, tmp_path):
+    from thot.agent_tools import ToolContext
+
+    class _Recon:
+        pass
+
+    recon = _Recon()
+    recon.findings = findings
+    return ToolContext(root=tmp_path, recon=recon,
+                       confirm=lambda a, d: False, refresh=lambda: None)
+
+
+def test_the_audit_tool_bounds_what_it_hands_back(tmp_path):
+    """Measured on Hermes before this: 372 findings, some 94 000 tokens in a
+    single answer — and this tool is exposed over MCP to the user's own
+    sessions, where a smaller window would simply fail."""
+    from thot.agent_tools import MAX_LISTED, audit
+
+    answer = audit(_context_with(_many_findings(300), tmp_path))
+
+    assert answer.count("sink.os.system") <= MAX_LISTED + 1
+    assert len(answer) < 40_000
+
+
+def test_what_is_not_listed_is_counted_not_dropped(tmp_path):
+    """"40 findings" where there are 300 is a lie a reader cannot detect."""
+    from thot.agent_tools import MAX_LISTED, audit
+
+    answer = audit(_context_with(_many_findings(300), tmp_path))
+
+    assert f"{300 - MAX_LISTED} autre(s) finding(s)" in answer
+    assert "info" in answer
+
+
+def test_the_worst_come_first(tmp_path):
+    from thot.agent_tools import audit
+
+    answer = audit(_context_with(_many_findings(300), tmp_path))
+    head = answer.splitlines()[0]
+
+    assert "CRITICAL" in head
+
+
+def test_a_short_report_is_left_whole(tmp_path):
+    from thot.agent_tools import audit
+
+    answer = audit(_context_with(_many_findings(3), tmp_path))
+
+    assert "autre(s) finding(s)" not in answer

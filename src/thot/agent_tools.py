@@ -18,6 +18,7 @@ from fnmatch import fnmatch
 from pathlib import Path, PurePosixPath
 from typing import Any
 
+from thot.contracts import Severity
 from thot.llm.base import ToolSpec
 
 MAX_READ_BYTES = 200_000
@@ -425,6 +426,19 @@ def _resolve_symbol(graph, name: str) -> str | None:
     return matches[0] if len(matches) == 1 else None
 
 
+# One tool call must not cost half a context window. Measured on Hermes
+# before this: 372 findings, 375 000 characters, some 94 000 tokens handed
+# back in a single answer — and this tool is exposed over MCP to the user's
+# own sessions, where a model with a smaller window would simply fail.
+MAX_LISTED = 40
+MAX_SCENARIO = 400
+
+_SEVERITY_RANK = {
+    Severity.CRITICAL: 0, Severity.HIGH: 1, Severity.MEDIUM: 2,
+    Severity.LOW: 3, Severity.INFO: 4,
+}
+
+
 def audit(context: ToolContext) -> str:
     findings = context.recon.findings
     if not findings:
@@ -432,14 +446,41 @@ def audit(context: ToolContext) -> str:
             "Aucun chemin de teinte détecté. Analyse déterministe uniquement : "
             "ce n'est pas une preuve d'absence de défaut."
         )
+
+    ranked = sorted(findings, key=lambda f: _SEVERITY_RANK.get(f.severity, 9))
+    shown, rest = ranked[:MAX_LISTED], ranked[MAX_LISTED:]
+
     lines = []
-    for finding in findings:
+    for finding in shown:
         path = " → ".join(str(step) for step in finding.taint_path)
+        scenario = (finding.failure_scenario or "").strip()
+        if len(scenario) > MAX_SCENARIO:
+            scenario = scenario[:MAX_SCENARIO].rsplit(" ", 1)[0] + " […]"
         lines.append(
             f"[{finding.severity.value.upper()}] {finding.rule} — {finding.location} "
-            f"({finding.location.symbol})\n    {finding.failure_scenario}\n"
+            f"({finding.location.symbol})\n    {scenario}\n"
             f"    chemin : {path}"
         )
+
+    if rest:
+        # Counted by severity rather than dropped in silence: "40 findings"
+        # where there are 372 is a lie a reader cannot detect.
+        tally: dict[str, int] = {}
+        for finding in rest:
+            tally[finding.severity.value] = tally.get(finding.severity.value, 0) + 1
+        breakdown = " · ".join(
+            f"{count} {name}" for name, count in sorted(
+                tally.items(), key=lambda pair: _SEVERITY_RANK.get(
+                    Severity(pair[0]), 9
+                )
+            )
+        )
+        lines.append(
+            f"\n… et {len(rest)} autre(s) finding(s) non listés ici — "
+            f"{breakdown}. Les plus graves sont ci-dessus ; "
+            f"`thot audit --all` pour la liste entière."
+        )
+
     return "\n".join(lines)
 
 
