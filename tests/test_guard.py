@@ -419,9 +419,18 @@ def test_a2a_call_refuses_a_raw_internal_url_from_the_model():
 
     source = tools.read_text(encoding="utf-8")
     resolve = source.split("def _resolve_peer")[1].split("\ndef ")[0]
-    assert "is_safe_callback_url" in resolve, (
-        "l'URL brute passée comme nom d'agent doit être contrôlée"
+    # The strict guard, not the callback one: `is_safe_callback_url` allows
+    # loopback while no token is configured — right for a callback someone
+    # sets up locally, wrong for a URL that arrives as a tool argument.
+    # Code lines only. Three times today a test matched the comment
+    # explaining a fix and failed on the explanation of its own fix; the
+    # prose here names the guard it rejects, on purpose.
+    code = "\n".join(
+        line for line in resolve.splitlines()
+        if not line.strip().startswith("#")
     )
+    assert "refuse_internal_url" in code
+    assert "is_safe_callback_url" not in code
 
 
 def test_the_template_catalog_checks_the_address_it_was_handed():

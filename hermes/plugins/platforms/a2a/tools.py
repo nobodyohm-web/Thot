@@ -60,7 +60,15 @@ def _resolve_peer(agent: str) -> Optional[dict]:
     card. Refused here, at the single point both doors pass through.
     """
     if agent.startswith("http://") or agent.startswith("https://"):
-        if not security.is_safe_callback_url(agent):
+        # The strict guard, not `is_safe_callback_url`. That one allows
+        # loopback while no token is configured — the right rule for a
+        # *callback* someone sets up for local development, and the wrong one
+        # here: this URL arrives as a tool argument, so on the default
+        # machine, with no token, a prompt-injected model could post to
+        # anything listening on localhost. Verified before believing it.
+        from utils import refuse_internal_url
+
+        if refuse_internal_url(agent):
             return None
         return {"url": agent, "auth": {}, "timeout": _DEFAULT_TIMEOUT, "capabilities": []}
     cfg = _load_config()
