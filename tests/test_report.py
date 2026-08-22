@@ -293,3 +293,48 @@ def test_a_location_without_a_site_says_nothing_extra():
     # Absente, pas présente à None : sinon la clé apparaît dans tous les
     # emplacements et la mutation qui l'exporte inconditionnellement passe.
     assert "site" not in body["findings"][0]["location"]
+
+
+# --- le JSON doit dire si un panel a tourné --------------------------------
+#
+# Le résumé compte `total`, `by_severity` et `hidden_below_threshold` — rien
+# sur la confiance ni sur le moteur. Après une passe `--deep`, un
+# consommateur en intégration continue ne peut donc pas distinguer un audit
+# déterministe d'un audit argumenté, ni savoir ce que le panel a décidé.
+# `AuditResult` porte les deux informations ; elles n'étaient pas exportées.
+
+
+def test_a_deterministic_run_says_no_engine_argued():
+    body = _rendered([_sited(None)])
+
+    assert body["summary"]["engine"] is None
+    assert body["summary"]["by_confidence"] == {"plausible": 1}
+
+
+def test_an_argued_run_reports_what_the_panel_decided():
+    import json
+
+    from thot.contracts import CodeRef, Confidence, Finding, Severity
+    from thot.report.json_report import render_json
+    from thot.scope.detect import ScopeManifest
+
+    def one(identifier, severity, confidence):
+        return Finding(
+            id=identifier, rule="sink.js.exec", severity=severity,
+            confidence=confidence,
+            location=CodeRef(path="a.ts", line=1, symbol="s", ast_hash="h"),
+            failure_scenario="x",
+        )
+
+    kept = [one("k", Severity.HIGH, Confidence.PLAUSIBLE)]
+    judged = kept + [one("r", Severity.INFO, Confidence.REFUTED)]
+    manifest = ScopeManifest(root=".", files=["a.ts"],
+                             languages={"typescript": 1},
+                             entrypoints=(), test_command="")
+
+    body = json.loads(render_json(kept, manifest, 0.1, hidden=1,
+                                  judged=judged, engine="panel"))
+
+    assert body["summary"]["engine"] == "panel"
+    assert body["summary"]["by_confidence"]["refuted"] == 1
+    assert body["summary"]["by_confidence"]["plausible"] == 1

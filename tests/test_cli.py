@@ -301,3 +301,22 @@ def test_the_report_is_handed_the_whole_pass_not_only_what_is_shown(
     capsys.readouterr()
 
     assert seen.get("judged") is not None, "le CLI n'a pas transmis la passe entière"
+
+
+def test_the_json_summary_counts_findings_the_threshold_hid(toy_repo, capsys):
+    """`total` follows the display floor; `by_confidence` must not.
+
+    With everything hidden, a consumer still has to be able to see that the
+    run found — and judged — something. Passing only the kept findings made
+    the two agree by accident on any run where nothing was filtered, which is
+    why this test raises the floor.
+    """
+    write_authorization(toy_repo, owner="tester")
+    cli.main(["audit", str(toy_repo), "--json", "--no-store",
+              "--min-severity", "critical"])
+    payload = json.loads(capsys.readouterr().out)
+
+    assert payload["summary"]["total"] == 0
+    assert payload["summary"]["hidden_below_threshold"] >= 1
+    assert sum(payload["summary"]["by_confidence"].values()) >= 1, payload["summary"]
+    assert "engine" in payload["summary"]

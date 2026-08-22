@@ -11,19 +11,39 @@ SEVERITY_ORDER = [
 ]
 
 
-def summarise(findings: list[Finding], hidden: int = 0) -> dict:
+def summarise(findings: list[Finding], hidden: int = 0, judged=None,
+              engine: str | None = None) -> dict:
+    """What the run found, and — when a panel argued — what it decided.
+
+    `judged` is the whole pass, before the display threshold: a refutation
+    lands on INFO by construction, so counting confidences over the kept
+    findings alone would report none of them. `engine` is None for a
+    deterministic run, which is how a consumer tells the two apart at all;
+    without it, a CI job could not distinguish an audit nobody argued from
+    one a panel went through.
+    """
     by_severity = {s.value: 0 for s in SEVERITY_ORDER}
     for finding in findings:
         by_severity[finding.severity.value] += 1
+
+    counted = list(judged) if judged is not None else list(findings)
+    by_confidence: dict[str, int] = {}
+    for finding in counted:
+        key = finding.confidence.value
+        by_confidence[key] = by_confidence.get(key, 0) + 1
+
     return {
         "total": len(findings),
         "by_severity": by_severity,
+        "by_confidence": by_confidence,
         "hidden_below_threshold": hidden,
+        "engine": engine,
     }
 
 
 def render_json(
-    findings: list[Finding], manifest, elapsed: float, hidden: int = 0
+    findings: list[Finding], manifest, elapsed: float, hidden: int = 0,
+    judged=None, engine: str | None = None,
 ) -> str:
     payload = {
         "schema_version": 1,
@@ -33,7 +53,7 @@ def render_json(
             "entrypoints": list(manifest.entrypoints),
             "test_command": manifest.test_command,
         },
-        "summary": summarise(findings, hidden),
+        "summary": summarise(findings, hidden, judged, engine),
         "elapsed_seconds": round(elapsed, 3),
         "findings": [
             {

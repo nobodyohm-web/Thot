@@ -593,7 +593,8 @@ def _cmd_audit(args) -> int:
 
     if args.json:
         rendered = render_json(
-            shown.findings, shown.manifest, shown.elapsed, hidden=hidden
+            shown.findings, shown.manifest, shown.elapsed, hidden=hidden,
+            judged=result.findings, engine=result.engine,
         )
     elif args.markdown:
         rendered = render_markdown(
