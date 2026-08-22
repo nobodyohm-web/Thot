@@ -90,3 +90,50 @@ def test_two_calls_on_one_line_reach_the_agent_as_two_different_tasks(tmp_path):
 
     assert "join#0" in first and "join#1" in second
     assert first != second, "deux appels, un seul énoncé"
+
+
+def test_the_agent_is_told_what_the_rule_holds_against_the_code(tmp_path):
+    """A judge that does not know the charge cannot test it either.
+
+    The probe task carried the rule's *name*, the location, the severity and
+    the excerpt — never the finding's own failure_scenario. On a pattern
+    finding the taint path is empty by construction, so the agent was left to
+    infer the concern from an identifier like `pattern.new_function_injection`
+    and guess what it was meant to refute.
+
+    Withholding the claim does not buy independence; it buys guessing. The
+    instructions already forbid restating it — "pas de généralités sur la
+    classe de vulnérabilité" — and ask for a concrete input instead.
+    """
+    from thot.analysis.probe import _probe_task
+    from thot.contracts import CodeRef, Confidence, Finding, Severity
+
+    (tmp_path / "calculate.ts").write_text("const f = new Function(x)\n",
+                                           encoding="utf-8")
+    finding = Finding(
+        id="f1", rule="pattern.new_function_injection", severity=Severity.MEDIUM,
+        confidence=Confidence.PLAUSIBLE,
+        location=CodeRef(path="calculate.ts", line=1, symbol=None, ast_hash="h"),
+        failure_scenario="new Function() compile une chaîne : toute entrée "
+                         "interpolée devient du code exécuté.",
+    )
+
+    context = _probe_task(tmp_path, finding).context
+
+    assert "new Function() compile une chaîne" in context, context
+
+
+def test_a_finding_without_a_scenario_adds_no_empty_heading(tmp_path):
+    from thot.analysis.probe import _probe_task
+    from thot.contracts import CodeRef, Confidence, Finding, Severity
+
+    finding = Finding(
+        id="f2", rule="sink.js.path", severity=Severity.LOW,
+        confidence=Confidence.PLAUSIBLE,
+        location=CodeRef(path="a.ts", line=1, symbol=None, ast_hash="h"),
+        failure_scenario="",
+    )
+
+    context = _probe_task(tmp_path, finding).context
+
+    assert "reproche" not in context.lower(), context

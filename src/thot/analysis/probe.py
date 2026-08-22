@@ -184,8 +184,18 @@ def _probe_task(root: Path, finding: Finding) -> AgentTask:
         f"Règle déclenchée : {finding.rule}\n"
         f"Emplacement : {finding.location.pinpoint()}\n"
         f"Sévérité calculée (accessibilité × impact) : {finding.severity.value}\n"
-        f"Chemin de teinte reconstruit :\n{_path_summary(finding)}\n\n"
-        f"Code autour de l'emplacement :\n{excerpt(root, finding.location)}"
+        f"Chemin de teinte reconstruit :\n{_path_summary(finding)}\n"
+        # What the rule holds against this code. It used to be withheld: the
+        # task carried the rule's *name* and nothing else, and on a pattern
+        # finding the taint path is empty by construction, so the agent had to
+        # infer the charge from an identifier like
+        # `pattern.new_function_injection` and guess what it was meant to
+        # refute. Withholding the claim does not buy independence, it buys
+        # guessing — and the instructions already forbid restating it.
+        + (f"\nCe que l'analyse reproche (à vérifier, pas à reprendre) :\n"
+           f"{finding.failure_scenario.strip()}\n"
+           if finding.failure_scenario.strip() else "")
+        + f"\nCode autour de l'emplacement :\n{excerpt(root, finding.location)}"
     )
     instructions = (
         "Une analyse statique signale ce candidat. Détermine s'il est "
