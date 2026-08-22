@@ -711,3 +711,78 @@ def test_the_doctor_says_nothing_is_wrong_by_exiting_zero(capsys, monkeypatch):
     capsys.readouterr()
 
     assert code == 0
+
+
+# --- nommer une condition sans donner de moyen d'agir ----------------------
+#
+# `thot sessions` annonce « N session(s) vide(s) non listée(s) — un processus
+# tué ne peut pas se ranger », et rien ne permettait de les retirer : leurs
+# identifiants sont précisément ce que la liste masque, et `--forget` en
+# demande un. Le remède est ajouté d'abord, cité ensuite.
+
+
+def _empty_session(root):
+    from thot.state.store import SessionStore
+
+    store = SessionStore.open()
+    try:
+        return store.start(str(root), title="tuée en route")
+    finally:
+        store.close()
+
+
+def test_empty_sessions_can_be_forgotten(toy_repo, capsys, monkeypatch):
+    from thot.state.store import SessionStore
+
+    _empty_session(toy_repo)
+    monkeypatch.chdir(toy_repo)
+
+    assert cli.main(["sessions", "--forget-empty"]) == 0
+    out = capsys.readouterr().out
+
+    assert "1" in out
+    store = SessionStore.open()
+    try:
+        assert [i for i in store.sessions(str(toy_repo), limit=50)
+                if not i.message_count] == []
+    finally:
+        store.close()
+
+
+def test_the_notice_points_at_the_remedy(toy_repo, capsys, monkeypatch):
+    _empty_session(toy_repo)
+    _empty_session(toy_repo)
+    monkeypatch.chdir(toy_repo)
+
+    cli.main(["sessions"])
+    out = capsys.readouterr().out
+
+    assert "vide" in out
+    assert "--forget-empty" in out, out
+
+
+def test_the_notice_below_a_real_listing_points_at_the_remedy(
+    toy_repo, capsys, monkeypatch
+):
+    """Two notices say this; the earlier test only reached one of them.
+
+    With every session empty the listing stops before the table and prints the
+    short form. The long one, below a real listing, is the case a user
+    actually meets — and the mutation showed it was uncovered.
+    """
+    from thot.state.store import SessionStore
+
+    store = SessionStore.open()
+    try:
+        real = store.start(str(toy_repo), title="vraie")
+        store.append(real, "user", "bonjour")
+    finally:
+        store.close()
+    _empty_session(toy_repo)
+    monkeypatch.chdir(toy_repo)
+
+    cli.main(["sessions"])
+    out = capsys.readouterr().out
+
+    assert "vraie" in out, out
+    assert "--forget-empty" in out, out

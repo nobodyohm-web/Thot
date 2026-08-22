@@ -319,6 +319,11 @@ def build_parser() -> argparse.ArgumentParser:
                           help="Toutes les sessions, tous dépôts confondus")
     sessions.add_argument("--show", metavar="ID", help="Afficher une session entière")
     sessions.add_argument("--forget", metavar="ID", help="Supprimer une session")
+    sessions.add_argument(
+        "--forget-empty", action="store_true",
+        help="Supprimer les sessions où rien n'a été dit — celles qu'un "
+             "processus tué n'a pas pu ranger",
+    )
 
     search = subparsers.add_parser(
         "search", help="Chercher dans tout ce que Thot a déjà dit ou trouvé"
@@ -1519,6 +1524,18 @@ def _cmd_sessions(args) -> int:
 
     store = SessionStore.open()
     try:
+        if getattr(args, "forget_empty", False):
+            # Their ids are exactly what the listing hides, so `--forget` —
+            # which needs one — could never reach them. Naming a condition
+            # without a way to act on it is the defect this closes.
+            root = None if args.all else str(Path(args.path).resolve())
+            empty = [info for info in store.sessions(root, limit=500)
+                     if not info.message_count]
+            for info in empty:
+                store.forget(info.id)
+            print(f"{len(empty)} session(s) vide(s) supprimée(s).")
+            return EXIT_OK
+
         if args.forget:
             resolved = store.resolve(args.forget)
             if resolved is None:
@@ -1552,8 +1569,13 @@ def _cmd_sessions(args) -> int:
         silent = [info for info in found if not info.message_count]
         found = [info for info in found if info.message_count]
         if not found:
+            # Two paths say this, and only one of them used to name the
+            # remedy: when *every* session is empty the listing never reaches
+            # the notice below.
             print("Aucune session enregistrée."
-                  + (f" ({len(silent)} vide(s) ignorée(s))" if silent else ""))
+                  + (f" ({len(silent)} vide(s) ignorée(s) — "
+                     f"`thot sessions --forget-empty` pour les retirer)"
+                     if silent else ""))
             return 0
         for info in found:
             title = info.title or "(sans titre)"
@@ -1562,7 +1584,8 @@ def _cmd_sessions(args) -> int:
                   f"{info.started_at[:16]}  {title[:60]}")
         if silent:
             print(f"\n{len(silent)} session(s) vide(s) non listée(s) — "
-                  f"un processus tué ne peut pas se ranger.")
+                  f"un processus tué ne peut pas se ranger. "
+                  f"`thot sessions --forget-empty` pour les retirer.")
         return 0
     finally:
         store.close()
