@@ -552,3 +552,59 @@ def test_every_slash_command_the_readme_documents_exists():
 
     assert documented, "aucune commande de session citée dans le README"
     assert documented - builtin - shipped == set(), documented - builtin - shipped
+
+
+# --- le code de sortie est le contrat avec une chaîne d'intégration --------
+#
+# Un seul test le couvrait : `--fail-on low` sort en 1. Les deux propriétés
+# qui décident d'un pipeline ne l'étaient pas — ne pas échouer à tort, et ne
+# pas laisser le seuil d'affichage masquer un échec. La seconde porte un
+# commentaire explicite dans `cli.py` (« the floor never hides a CI
+# failure ») et rien ne la tenait.
+
+
+def _severities(toy_repo) -> set[str]:
+    import json as _json
+
+    from thot.paths import run_store
+    from thot.pipeline import run_audit
+    from thot.store.db import Store
+
+    store = Store.open(run_store())
+    try:
+        result = run_audit(toy_repo, store, require_authorization=False)
+    finally:
+        store.close()
+    del _json
+    return {f.severity.value for f in result.findings}
+
+
+def test_a_threshold_above_everything_found_does_not_fail(toy_repo, capsys):
+    write_authorization(toy_repo, owner="tester")
+    found = _severities(toy_repo)
+    capsys.readouterr()
+    assert "critical" not in found, "le dépôt témoin a changé : plus de repère"
+
+    code = cli.main(
+        ["audit", str(toy_repo), "--json", "--no-store", "--fail-on", "critical"]
+    )
+    capsys.readouterr()
+
+    assert code == 0
+
+
+def test_the_display_floor_never_hides_a_failure(toy_repo, capsys):
+    """`--min-severity` is a reading convenience, not a way to pass CI."""
+    write_authorization(toy_repo, owner="tester")
+    found = _severities(toy_repo)
+    capsys.readouterr()
+    assert "high" in found, "le dépôt témoin a changé : plus de repère"
+
+    code = cli.main([
+        "audit", str(toy_repo), "--json", "--no-store",
+        "--fail-on", "high", "--min-severity", "critical",
+    ])
+    payload = json.loads(capsys.readouterr().out)
+
+    assert payload["summary"]["total"] == 0, "tout devait être masqué"
+    assert code == 1, "le seuil d'affichage a caché un échec"
