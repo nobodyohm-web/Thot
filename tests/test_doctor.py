@@ -166,7 +166,7 @@ def test_an_agent_that_leaves_the_disk_alone_passes(tmp_path):
 
     ok, detail = doctor._cannot_write(_Quiet)
     assert ok is True
-    assert "n'a pas pu écrire" in detail
+    assert "n'a pas écrit" in detail
 
 
 def test_the_wiring_check_notices_a_plugin_that_was_disabled(monkeypatch):

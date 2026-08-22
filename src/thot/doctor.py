@@ -292,7 +292,11 @@ def _cannot_write(cls) -> tuple[bool, str]:
 
     if wrote:
         return False, "a pu écrire — la restriction ne tient pas"
-    return True, "n'a pas pu écrire"
+    # One run, and a posture is not proved by one run: the same probe was
+    # refused five times and then succeeded once, which is what a single open
+    # door looks like from outside. A green line here means "not this time",
+    # and the wording says so rather than promising more.
+    return True, "n'a pas écrit cette fois"
 
 
 def run_agents(*, writes: bool = True) -> list[Check]:

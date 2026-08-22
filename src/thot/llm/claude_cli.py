@@ -35,7 +35,12 @@ ALLOWED_TOOLS = tuple(f"mcp__thot__{name}" for name in EXPOSED)
 # filtered Thot's tools would be a lie: the CLI could still write. These are
 # the names to hand to --disallowed-tools so the posture means the same
 # thing in both modes.
-WRITING_TOOLS = ("Write", "Edit", "MultiEdit", "NotebookEdit", "Bash")
+# `Task` is here because a subagent is a way to write: it runs with its own
+# toolset and does not inherit this list, so leaving it open leaves a door
+# open. Observed once in about six runs of `thot doctor --agents`, where the
+# probe was refused five times and then quietly succeeded — which is what a
+# posture with one door left open looks like from the outside.
+WRITING_TOOLS = ("Write", "Edit", "MultiEdit", "NotebookEdit", "Bash", "Task")
 READING_TOOLS = ("Read", "Glob", "Grep", "WebFetch", "WebSearch")
 
 

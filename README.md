@@ -99,9 +99,15 @@ Si un agent échoue sur une tâche, elle est reprise **une fois** par un autre.
 Pas plus : une tâche que tout le monde refuse a un problème à elle.
 
 **Ce qu'une sonde peut faire, mesuré et non supposé.** Claude tourne sans
-`Write`, `Edit`, `MultiEdit`, `NotebookEdit` ni `Bash` — et `thot doctor
---agents` le vérifie en lui demandant d'écrire un fichier, puis en allant
-regarder sur le disque.
+`Write`, `Edit`, `MultiEdit`, `NotebookEdit`, `Bash` ni `Task` — et `thot
+doctor --agents` le vérifie en lui demandant d'écrire un fichier, puis en
+allant regarder sur le disque.
+
+`Task` a été ajouté après coup : la sonde a été refusée cinq fois puis a
+réussi une fois. Un sous-agent tourne avec son propre jeu d'outils et
+n'hérite pas de la liste — c'est à ça que ressemble, vu du dehors, une
+posture à laquelle il reste une porte. Et une ligne verte ici veut dire
+« pas cette fois », pas « impossible » : elle est formulée ainsi.
 
 Hermes et Prime **n'ont pas de mode lecture seule**, et c'est dit plutôt que
 supposé : `-t file` désigne « File Operations », lecture et écriture
