@@ -434,8 +434,8 @@ ordinaire d'un handler web est une flèche anonyme passée à une route —
 **24 454** fonctions de cette forme sur les deux arbres, toutes invisibles à
 un moteur qui suivrait les symboles.
 
-Mesuré sur les deux corpus : **7 chemins sur Prime, 12 sur Hermes**, sur
-3 400 fichiers JS/TS. Dix-neuf, pas trois cents — c'est la forme qu'a un
+Mesuré sur les deux corpus : **8 chemins sur Prime, 13 sur Hermes**, sur
+3 400 fichiers JS/TS. Vingt et un, pas trois cents — c'est la forme qu'a un
 moteur de teinte, et pas celle d'un scanner de motifs.
 
 Le rapport le dit lui-même plutôt que de laisser croire à une couverture
@@ -450,7 +450,7 @@ littéraux puis lit les déclarations par appariement d'accolades. Sortir vers
 `tsc` aurait rendu la carte dépendante d'une chaîne node installée,
 résoluble et à la bonne version — une carte qui marche sur certaines
 machines vaut moins qu'une carte dont les limites sont écrites. Mesuré :
-**8 777 symboles sur Prime en 2,9 s**, 11 189 de plus sur Hermes.
+**8 568 symboles sur Prime en 1,7 s**, 11 138 de plus sur Hermes.
 
 ### Ce qu'un fichier est *pour*
 
@@ -1214,7 +1214,7 @@ module en cite deux.
 Une suppression posée sur une ligne que **cet audit signale** n'est pas le
 même objet : c'est une affirmation qui contredit un finding vivant, écrite
 par quelqu'un qui a lu la même ligne et conclu autrement. Elle est remontée
-d'un cran et le dit. Mesuré sur Hermes : **8 sur 45** — et trois des
+d'un cran et le dit. Mesuré sur Hermes : **7 sur 45** — et trois des
 suppressions lues ce jour-là étaient fausses.
 
 Mesuré : **0 sur Thot, 0 sur Prime, 45 sur Hermes.**
