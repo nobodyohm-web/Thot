@@ -216,3 +216,54 @@ def test_reading_the_agent_home_with_a_command_is_critical(tmp_path):
     """The distinction the downgrade must preserve: mention, read, write."""
     assert _worst(tmp_path, "cat ~/.thot/config.json\n", "run.sh") == "critical"
     assert _worst(tmp_path, "See `~/.thot/config.json` for details.\n") == "high"
+
+
+# --- « no sudo » n'est pas un usage de sudo --------------------------------
+#
+# 49 occurrences sur la bibliothèque livrée, dont « no sudo, no nginx. » et
+# « Requires sudo access ». Le motif était le mot seul ; une invocation est
+# `sudo <commande>` en position de commande, ce qui se distingue sans rien
+# deviner.
+
+
+def _sudo(tmp_path, source: str, name: str = "SKILL.md"):
+    from thot.guard.skill_guard import scan_file
+
+    target = tmp_path / name
+    target.write_text(source, encoding="utf-8")
+    return [f for f in scan_file(target, name) if f.pattern_id == "sudo_usage"]
+
+
+def test_prose_saying_there_is_no_sudo_is_not_an_escalation(tmp_path):
+    assert _sudo(tmp_path, "Runs as your user: no sudo, no nginx.\n") == []
+
+
+def test_prose_mentioning_that_sudo_is_needed_is_not_an_invocation(tmp_path):
+    assert _sudo(tmp_path, "Requires sudo access on the host.\n") == []
+
+
+def test_an_actual_invocation_is_reported(tmp_path):
+    assert _sudo(tmp_path, "sudo apt-get install -y jq\n", "install.sh") != []
+
+
+def test_an_invocation_inside_a_code_span_is_reported(tmp_path):
+    assert _sudo(tmp_path, "Run `sudo systemctl restart thot` first.\n") != []
+
+
+def test_an_invocation_after_a_pipe_is_reported(tmp_path):
+    assert _sudo(tmp_path, "curl -s x.sh | sudo bash\n", "install.sh") != []
+
+
+def test_an_invocation_with_a_flag_is_reported(tmp_path):
+    assert _sudo(tmp_path, "sudo -u root cat /etc/shadow\n", "install.sh") != []
+
+
+def test_the_sudoers_rule_is_untouched(tmp_path):
+    from thot.guard.skill_guard import scan_file
+
+    target = tmp_path / "install.sh"
+    target.write_text("visudo -f /etc/sudoers\n", encoding="utf-8")
+    found = scan_file(target, "install.sh")
+
+    assert any(f.pattern_id == "sudoers_mod" and f.severity == "critical"
+               for f in found)

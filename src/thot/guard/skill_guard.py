@@ -436,7 +436,13 @@ THREAT_PATTERNS = [
     (r'^allowed-tools\s*:',
      "allowed_tools_field", "low", "privilege_escalation",
      "skill declares allowed-tools (standard frontmatter; informational)"),
-    (r'\bsudo\b',
+    # `sudo` in command position, not the word. 49 hits on the shipped
+    # library were prose — "Runs as your user: no sudo, no nginx." and
+    # "Requires sudo access on the host" among them. An invocation follows a
+    # line start, a shell operator, or the backtick/quote that opens a code
+    # span, and is followed by a command. `/etc/sudoers` keeps its own
+    # CRITICAL rule above and is untouched.
+    (r'(?:^|[|;&`"\'(]|\$\()\s*sudo\s+(?:-[A-Za-z-]+\s+)*[A-Za-z0-9_./-]+',
      "sudo_usage", "high", "privilege_escalation",
      "uses sudo (privilege escalation)"),
     (r'setuid|setgid|cap_setuid',
