@@ -103,7 +103,7 @@ class PythonIndexer:
         try:
             source = source_path.read_text(encoding="utf-8", errors="replace")
             tree = ast.parse(source)
-        except (SyntaxError, ValueError, OSError):
+        except (SyntaxError, ValueError, OSError, RecursionError):
             return []
 
         module = module_name(relative)

@@ -82,3 +82,63 @@ def test_the_entrypoints_line_names_the_remainder():
             if l.startswith("Points d'entrée")][0]
 
     assert "12" in line and "30" in line, line
+
+
+# --- un fichier pathologique ne doit pas coûter l'audit ---------------------
+#
+# Mesuré : un seul fichier contenant `x = (((…200 fois…)))` fait tomber
+# `sweep()` entier sur `RecursionError: maximum recursion depth exceeded
+# during ast construction`. Pas « saute le fichier » — s'arrête. Un
+# générateur de code en produit, un dépôt hostile aussi, et lire du code
+# auquel on ne fait pas confiance est exactement le métier de cet outil.
+#
+# `taint/engine.py` attrapait déjà `RecursionError` ; `python_indexer` et
+# `scope/detect` ne le faisaient pas. Le remède était connu et appliqué à un
+# endroit sur trois.
+
+
+def _pathological_repo(tmp_path):
+    source = tmp_path / "src"
+    source.mkdir()
+    # Une longue chaîne d'additions, pas une imbrication de parenthèses :
+    # `0 + 1 + … + 4999` construit un arbre BinOp de 5 000 niveaux, et c'est
+    # lui qui épuise la pile. Deux cents parenthèses passent sans broncher —
+    # la première version de ce test les utilisait et passait déjà.
+    (source / "chain.py").write_text(
+        "y = " + " + ".join(str(i) for i in range(5000)) + "\n", encoding="utf-8"
+    )
+    (source / "ordinary.py").write_text(
+        "import os\nimport sys\n\n\ndef run():\n    os.system(sys.argv[1])\n",
+        encoding="utf-8",
+    )
+    return tmp_path
+
+
+def test_a_pathological_expression_does_not_stop_the_sweep(tmp_path, monkeypatch):
+    import thot.recon as recon
+
+    # monkeypatch, pas une affectation : remplacer l'attribut du module fuit
+    # dans les autres tests, et la suite me l'a dit.
+    monkeypatch.setattr(recon, "_remember", lambda findings, root=None: findings)
+    result = recon.sweep(_pathological_repo(tmp_path))
+
+    assert result.file_count >= 2
+
+
+def test_the_other_files_are_still_indexed(tmp_path, monkeypatch):
+    import thot.recon as recon
+
+    monkeypatch.setattr(recon, "_remember", lambda findings, root=None: findings)
+    result = recon.sweep(_pathological_repo(tmp_path))
+
+    assert any(s.name.endswith("run") for s in result.symbols), (
+        "le fichier sain a été perdu avec le fichier pathologique"
+    )
+
+
+def test_the_scope_detection_survives_it_too(tmp_path):
+    from thot.scope.detect import detect_scope
+
+    scope = detect_scope(_pathological_repo(tmp_path))
+
+    assert len(scope.files) >= 2

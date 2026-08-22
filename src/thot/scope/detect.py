@@ -109,7 +109,13 @@ def _python_entrypoints(root: Path, relative: str) -> list[str]:
     """Top-level functions carrying an entry-point name."""
     try:
         tree = ast.parse((root / relative).read_text(encoding="utf-8", errors="replace"))
-    except (SyntaxError, ValueError, OSError):
+    except (SyntaxError, ValueError, OSError, RecursionError):
+        # RecursionError is the one that was missing, and it costs the whole
+        # audit rather than one file: `y = 0 + 1 + … + 4999` builds a BinOp
+        # tree five thousand deep and the parser gives out. A code generator
+        # produces that, and so does a repository that would rather not be
+        # read. `taint/engine` already caught it here; this site and the
+        # indexer did not.
         return []
 
     found = []
