@@ -51,8 +51,17 @@ def _load_config() -> dict:
 
 
 def _resolve_peer(agent: str) -> Optional[dict]:
-    """Resolve a peer name to {url, auth, timeout, capabilities}, or treat ``agent`` as a URL."""
+    """Resolve a peer name to {url, auth, timeout, capabilities}, or treat ``agent`` as a URL.
+
+    The URL branch is the one that matters here: `agent` arrives as a tool
+    argument, so a peer name comes from configuration and a raw URL comes
+    from the model. Guarding `a2a_discover` alone left this second door open
+    — and it is the one that POSTs a message rather than merely reading a
+    card. Refused here, at the single point both doors pass through.
+    """
     if agent.startswith("http://") or agent.startswith("https://"):
+        if not security.is_safe_callback_url(agent):
+            return None
         return {"url": agent, "auth": {}, "timeout": _DEFAULT_TIMEOUT, "capabilities": []}
     cfg = _load_config()
     peers = cfg.get("a2a_agents") or {}

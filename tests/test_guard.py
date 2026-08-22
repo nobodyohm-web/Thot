@@ -399,3 +399,26 @@ def test_the_image_plugin_checks_its_model_supplied_sources():
     source = plugin.read_text(encoding="utf-8")
     assert "refuse_internal_url" in source
     assert "refused image source" in source
+
+
+def test_a2a_call_refuses_a_raw_internal_url_from_the_model():
+    """`agent` is a tool argument, and it accepts a URL as well as a name.
+
+    Guarding `a2a_discover` alone left the door that POSTs a message wide
+    open. The panel confirmed the same two lines a second time, on the code
+    as it stood after the first fix.
+    """
+    from thot.fusion.locate import hermes_root
+
+    root = hermes_root()
+    if root is None:
+        pytest.skip("Hermes n'est pas installé ici")
+    tools = root / "plugins" / "platforms" / "a2a" / "tools.py"
+    if not tools.is_file():
+        pytest.skip("cette version de Hermes n'a pas l'adaptateur A2A")
+
+    source = tools.read_text(encoding="utf-8")
+    resolve = source.split("def _resolve_peer")[1].split("\ndef ")[0]
+    assert "is_safe_callback_url" in resolve, (
+        "l'URL brute passée comme nom d'agent doit être contrôlée"
+    )
