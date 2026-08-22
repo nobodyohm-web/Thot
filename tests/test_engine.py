@@ -474,3 +474,38 @@ def test_a_stand_in_is_never_someone_who_already_spoke():
 
     assert panel.who("refute2:f1") not in spoken
     assert not result.ok, "un échec vaut mieux qu'un second avis qui n'en est pas un"
+
+
+def test_the_audit_engines_cannot_write_where_they_read():
+    """An audit has no business holding a terminal in the user's repository.
+
+    Reading stays — a refutation almost always rests on code outside the
+    excerpt and checking it is the entire job. Prime is the stated exception:
+    its only built-in tool is an IPython kernel, so a probe on Prime has
+    Prime's reach, and pretending otherwise would be worse than saying it.
+    """
+    from pathlib import Path
+
+    from thot.engine.claude_cli_engine import ClaudeCliEngine
+    from thot.engine.hermes_engine import HermesEngine
+    from thot.llm.claude_cli import WRITING_TOOLS
+
+    if ClaudeCliEngine.available():
+        command = ClaudeCliEngine(root=Path("."))._command(
+            __import__("thot.engine.base", fromlist=["AgentTask"]).AgentTask(
+                id="probe:x", instructions="x"
+            )
+        )
+        assert "--disallowed-tools" in command
+        for tool in WRITING_TOOLS:
+            assert tool in command
+
+    if HermesEngine.available():
+        from thot.engine.base import AgentTask
+        from thot.engine.hermes_engine import TOOLSETS
+
+        command = HermesEngine(root=Path("."))._command(
+            AgentTask(id="probe:x", instructions="x"), "prompt"
+        )
+        assert "-t" in command and TOOLSETS in command
+        assert "terminal" not in TOOLSETS and "code_execution" not in TOOLSETS
