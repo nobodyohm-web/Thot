@@ -978,3 +978,55 @@ def refuse_internal_url(url: str, *, allow_loopback: bool = False) -> str | None
     if not seen:
         return f"{hostname} resolves to nothing usable"
     return None
+
+
+def guarded_urlopen(request, *, timeout: float, allow_loopback: bool = False):
+    """`urlopen`, refusing every hop that reaches a private address.
+
+    Validating the URL handed in protects the first hop and nothing else:
+    `urlopen` follows redirects through the global opener, so a public host
+    answering `302 Location: http://127.0.0.1/` walks straight past the
+    check. Written after making that exact mistake three times in one day —
+    the third and fourth times in code that had just been fixed for it.
+    """
+    import urllib.request
+
+    target = request if isinstance(request, str) else request.full_url
+    refusal = refuse_internal_url(target, allow_loopback=allow_loopback)
+    if refusal:
+        raise ValueError(refusal)
+
+    class _CheckEachHop(urllib.request.HTTPRedirectHandler):
+        def redirect_request(self, req, fp, code, msg, headers, newurl):
+            hop = refuse_internal_url(newurl, allow_loopback=allow_loopback)
+            if hop:
+                raise OSError(f"refused redirect — {hop}")
+            return super().redirect_request(req, fp, code, msg, headers, newurl)
+
+    return urllib.request.build_opener(_CheckEachHop).open(request, timeout=timeout)
+
+
+def guarded_requests_get(url: str, *, timeout, max_hops: int = 5, **kwargs):
+    """`requests.get`, following redirects by hand so each hop is checked.
+
+    `requests` follows them itself unless told not to, and its own
+    `allow_redirects=False` would break every CDN that answers with one. So
+    the hops are walked here, each destination checked before it is fetched,
+    and the chain bounded.
+    """
+    import requests
+
+    kwargs.pop("allow_redirects", None)
+    for _ in range(max_hops):
+        refusal = refuse_internal_url(url)
+        if refusal:
+            raise ValueError(refusal)
+        response = requests.get(url, timeout=timeout, allow_redirects=False,
+                                **kwargs)
+        if response.status_code not in (301, 302, 303, 307, 308):
+            return response
+        location = response.headers.get("Location")
+        if not location:
+            return response
+        url = requests.compat.urljoin(url, location)
+    raise ValueError(f"too many redirects, stopped at {url!r}")

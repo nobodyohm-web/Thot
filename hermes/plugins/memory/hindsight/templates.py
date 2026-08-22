@@ -53,15 +53,17 @@ def _get_json(url: str) -> dict:
     #
     # Guarded here rather than at the two callers, because guarding callers
     # one at a time is how the second one gets missed.
-    from utils import refuse_internal_url
-
-    refusal = refuse_internal_url(url)
-    if refusal:
-        raise ValueError(f"refused template catalog — {refusal}")
+    from utils import guarded_urlopen
 
     req = urllib.request.Request(url, headers={"Accept": "application/json"})
-    with urllib.request.urlopen(req, timeout=_HTTP_TIMEOUT) as resp:  # noqa: S310 - address checked above
-        return json.loads(resp.read().decode("utf-8"))
+    # Every hop, not the first: `urlopen` follows redirects through the
+    # global opener, and checking only the URL handed in let a public host
+    # answer `302 Location: http://127.0.0.1/` and walk past the guard.
+    try:
+        with guarded_urlopen(req, timeout=_HTTP_TIMEOUT) as resp:  # noqa: S310 - every hop checked
+            return json.loads(resp.read().decode("utf-8"))
+    except ValueError as exc:
+        raise ValueError(f"refused template catalog — {exc}") from None
 
 
 def fetch_hermes_templates(url: str | None = None) -> list[dict]:

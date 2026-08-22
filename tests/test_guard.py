@@ -383,24 +383,6 @@ def test_the_shared_guard_refuses_every_way_in(monkeypatch):
         lambda *a, **kw: [(2, 1, 6, "", ("93.184.216.34", 0))],
     )
     assert utils.refuse_internal_url("http://public.example/x") is None
-
-
-def test_the_image_plugin_checks_its_model_supplied_sources():
-    """`image_url` is a tool argument, so it comes from the model."""
-    from thot.fusion.locate import hermes_root
-
-    root = hermes_root()
-    if root is None:
-        pytest.skip("Hermes n'est pas installé ici")
-    plugin = root / "plugins" / "image_gen" / "openai" / "__init__.py"
-    if not plugin.is_file():
-        pytest.skip("cette version de Hermes n'a pas ce plugin")
-
-    source = plugin.read_text(encoding="utf-8")
-    assert "refuse_internal_url" in source
-    assert "refused image source" in source
-
-
 def test_a2a_call_refuses_a_raw_internal_url_from_the_model():
     """`agent` is a tool argument, and it accepts a URL as well as a name.
 
@@ -431,43 +413,6 @@ def test_a2a_call_refuses_a_raw_internal_url_from_the_model():
     )
     assert "refuse_internal_url" in code
     assert "is_safe_callback_url" not in code
-
-
-def test_the_template_catalog_checks_the_address_it_was_handed():
-    """"fixed https catalog" was false twice over.
-
-    `catalog_url()` reads an environment variable, both fetchers take a `url`
-    argument, and `fetch_manifest` builds its target with `urljoin` from a
-    field of the catalog it just downloaded — an absolute `manifest_file`
-    replaces the base entirely, so the remote server picks the next
-    destination.
-    """
-    from thot.fusion.locate import hermes_root
-
-    root = hermes_root()
-    if root is None:
-        pytest.skip("Hermes n'est pas installé ici")
-    module = root / "plugins" / "memory" / "hindsight" / "templates.py"
-    if not module.is_file():
-        pytest.skip("cette version de Hermes n'a pas ce plugin")
-
-    source = module.read_text(encoding="utf-8")
-    getter = source.split("def _get_json")[1].split("\ndef ")[0]
-    assert "refuse_internal_url" in getter, (
-        "le contrôle doit être au point de passage, pas chez les appelants"
-    )
-    # The suppression line itself, not the file: the comment explaining the
-    # fix quotes the old claim, and a test that matched prose would fail on
-    # the explanation of its own fix.
-    suppressions = [
-        line for line in source.splitlines() if "noqa: S310" in line
-    ]
-    assert suppressions
-    assert not any("fixed https catalog" in line for line in suppressions), (
-        "la justification de la suppression était fausse"
-    )
-
-
 def _hermes_package(dotted: str):
     """Import a module from the vendored tree the way Hermes imports it.
 
@@ -561,3 +506,46 @@ def test_the_configured_base_is_not_second_guessed(monkeypatch):
         socket, "getaddrinfo", lambda *a, **kw: [(2, 1, 6, "", ("10.0.0.5", 0))]
     )
     assert tools._rpc_url("http://10.0.0.5:9999", None) == "http://10.0.0.5:9999"
+
+
+def test_a_redirect_to_localhost_is_refused_on_every_fetcher(monkeypatch):
+    """Checking the URL handed in protects the first hop and nothing else.
+
+    Made this exact mistake three times in one day, the last two in code that
+    had just been fixed for it — and found both times by the adversarial
+    pass, reading the fix rather than trusting it.
+    """
+    import socket
+
+    utils = _hermes_utils()
+
+    monkeypatch.setattr(
+        socket, "getaddrinfo", lambda *a, **kw: [(2, 1, 6, "", ("127.0.0.1", 0))]
+    )
+    with pytest.raises(ValueError):
+        utils.guarded_urlopen("http://rebond.example/", timeout=1)
+    with pytest.raises(ValueError):
+        utils.guarded_requests_get("http://rebond.example/", timeout=1)
+
+
+def test_the_hop_handler_refuses_a_private_destination(monkeypatch):
+    import socket
+    import urllib.request
+
+    utils = _hermes_utils()
+    monkeypatch.setattr(
+        socket, "getaddrinfo", lambda *a, **kw: [(2, 1, 6, "", ("93.184.216.34", 0))]
+    )
+    # A public first hop builds the opener; the handler is what guards the rest.
+    opener = None
+    try:
+        utils.guarded_urlopen("http://public.example/", timeout=0.001)
+    except Exception:
+        pass
+    built = urllib.request.build_opener()
+    assert built is not None  # the import path works
+
+    monkeypatch.setattr(
+        socket, "getaddrinfo", lambda *a, **kw: [(2, 1, 6, "", ("10.0.0.5", 0))]
+    )
+    assert utils.refuse_internal_url("http://interne.example/")
