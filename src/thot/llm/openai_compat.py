@@ -19,6 +19,12 @@ OLLAMA_BASE_URL = "http://localhost:11434/v1"
 LMSTUDIO_BASE_URL = "http://localhost:1234/v1"
 TIMEOUT = httpx.Timeout(180.0, connect=10.0)
 
+# `httpx` does not follow redirects unless asked, and this file relies
+# on that. `requests` and `urllib` do follow by default — reaching for
+# either here means checking every hop, which is what seven fixes in
+# the vendored tree next door were about. `tests/test_network_posture.py`
+# holds the line.
+
 
 class OpenAICompatProvider:
     def __init__(
