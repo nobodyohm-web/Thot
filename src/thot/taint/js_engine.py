@@ -28,8 +28,9 @@ literal is not a brace, and a `//` inside a URL is not a comment.
 
 from __future__ import annotations
 
+import os
 import re
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 from thot.codemap.ts_indexer import EXTENSIONS, _line_of, read_masked
 from thot.contracts import CodeRef, Symbol
@@ -220,6 +221,7 @@ def _scan_body(
     call_sinks: list,
     assign_sinks: list,
     seeded: dict[str, str] | None = None,
+    entered: CodeRef | None = None,
     locals_by_name: dict[str, Symbol] | None = None,
     handed: list | None = None,
 ) -> list:
@@ -280,12 +282,16 @@ def _scan_body(
                         origin.get(culprit, call_line) if culprit else call_line
                     )
                     source_ref = ref(source_line)
+                    # A crossing reported only inside the callee is unreadable:
+                    # the file that touches the request never appears, and the
+                    # reader sees a helper handling a value from nowhere.
+                    steps = ((entered,) if entered else ()) + (source_ref, sink_ref)
                     found.append(
                         TaintCandidate(
                             rule=rule.id,
-                            source=source_ref,
+                            source=entered or source_ref,
                             sink=sink_ref,
-                            path=(source_ref, sink_ref),
+                            path=steps,
                             impact=rule.impact,
                             description=rule.description,
                         )
@@ -319,8 +325,11 @@ def _scan_body(
         # -- a tainted value handed to a function defined in this file -------
         if locals_by_name is not None and handed is not None:
             for match in re.finditer(rf"\b({_IDENT})\s*\(", statement):
-                callee = locals_by_name.get(match.group(1))
-                if callee is None or not callee.params:
+                entry = locals_by_name.get(match.group(1))
+                if entry is None:
+                    continue
+                where, callee = entry
+                if not callee.params:
                     continue
                 arguments = _split_arguments(
                     _arguments(statement, match.start())
@@ -334,7 +343,9 @@ def _scan_body(
                         else _source_in(fragment)
                     )
                     if mark and not _sanitised(fragment):
-                        handed.append((callee, callee.params[index], mark))
+                        handed.append((where, callee, callee.params[index],
+                                       mark, ref(_line_of(starts, position
+                                                          + match.start()))))
 
         # -- then propagation ------------------------------------------------
         destructured = _DESTRUCTURE.search(statement)
@@ -402,6 +413,91 @@ def find_candidates(root: Path, symbols: list[Symbol]) -> list:
         return _find_candidates(root, symbols)
 
 
+# `import { ping } from "./helpers"` and `const { ping } = require("./x")`.
+# Named bindings only: a default import does not say which function it is
+# without reading the target's export table, and a namespace import
+# (`import * as h`) needs member resolution. Both are refused rather than
+# guessed, which is the same rule the rest of this engine follows.
+_NAMED_IMPORT = re.compile(
+    r"""import\s*\{(?P<clause>[^}]*)\}\s*from\s*['"](?P<spec>\.[^'"]*)['"]"""
+    r"""|(?:const|let|var)\s*\{(?P<clause2>[^}]*)\}\s*=\s*require\s*\(\s*"""
+    r"""['"](?P<spec2>\.[^'"]*)['"]\s*\)"""
+)
+
+
+def _bindings(clause: str) -> list[tuple[str, str]]:
+    """`{ a, b as c }` -> [("a", "a"), ("b", "c")] — (exported, local)."""
+    pairs = []
+    for piece in clause.split(","):
+        piece = piece.strip()
+        if not piece or piece.startswith("type "):
+            continue
+        if " as " in piece:
+            exported, _, local = piece.partition(" as ")
+            pairs.append((exported.strip(), local.strip()))
+        else:
+            pairs.append((piece, piece))
+    return [(a, b) for a, b in pairs if a.isidentifier() and b.isidentifier()]
+
+
+def _resolve(source_file: str, specifier: str, known: dict) -> str | None:
+    """A relative specifier to a file this index already holds.
+
+    A rule about files, not an inference: `./helpers` from `src/app.ts` names
+    one path, and either it is in the index or the crossing does not happen.
+    Bare specifiers and tsconfig aliases stay refused — those genuinely need
+    a resolver.
+    """
+    base = PurePosixPath(source_file).parent / specifier
+    flat = PurePosixPath(os.path.normpath(str(base)))
+    for candidate in (
+        *(f"{flat}{extension}" for extension in EXTENSIONS),
+        str(flat),
+        *(f"{flat}/index{extension}" for extension in EXTENSIONS),
+    ):
+        if candidate in known:
+            return candidate
+    return None
+
+
+def _exported_functions(target: str, by_file: dict, cache: dict) -> dict:
+    """The callable functions of one file, by bare name — built once.
+
+    A popular module is imported by dozens of files. Measured: this is *not*
+    where the crossing spends its time — caching it left the pass at +21% on a
+    1 686-file tree, unchanged. Kept because it is correct and free, not
+    because it bought anything.
+    """
+    known = cache.get(target)
+    if known is None:
+        known = {
+            symbol.name.rsplit(".", 1)[-1]: symbol
+            for symbol in by_file[target]
+            if symbol.kind in ("function", "method") and symbol.params
+        }
+        cache[target] = known
+    return known
+
+
+def _imported_callables(source: str, relative: str, by_file: dict,
+                        cache: dict | None = None) -> dict:
+    """Local name -> (file, symbol) for functions pulled in relatively."""
+    cache = {} if cache is None else cache
+    found: dict = {}
+    for match in _NAMED_IMPORT.finditer(source):
+        clause = match.group("clause") or match.group("clause2") or ""
+        specifier = match.group("spec") or match.group("spec2") or ""
+        target = _resolve(relative, specifier, by_file)
+        if target is None:
+            continue
+        defined = _exported_functions(target, by_file, cache)
+        for exported, local in _bindings(clause):
+            symbol = defined.get(exported)
+            if symbol is not None:
+                found[local] = (target, symbol)
+    return found
+
+
 def _find_candidates(root: Path, symbols: list[Symbol]) -> list:
     by_file: dict[str, list[Symbol]] = {}
     for symbol in symbols:
@@ -409,6 +505,7 @@ def _find_candidates(root: Path, symbols: list[Symbol]) -> list:
             by_file.setdefault(symbol.path, []).append(symbol)
 
     found: list = []
+    exported_cache: dict = {}
     for relative in sorted(by_file):
         # Read and masked once per version of the file: the indexer has
         # already paid for this, and paying twice showed up as nine seconds
@@ -433,10 +530,16 @@ def _find_candidates(root: Path, symbols: list[Symbol]) -> list:
         # module graph, and JavaScript does not offer one without a tsconfig
         # and a type checker. Within a file the question has an answer.
         locals_by_name = {
-            symbol.name.rsplit(".", 1)[-1]: symbol
+            symbol.name.rsplit(".", 1)[-1]: (relative, symbol)
             for symbol in ordered
             if symbol.kind in ("function", "method") and symbol.params
         }
+        # A relative import resolves to one file by a rule about files. Local
+        # definitions win: a name defined here is that one, whatever a module
+        # of the same name exports.
+        for name, target in _imported_callables(
+                source, relative, by_file, exported_cache).items():
+            locals_by_name.setdefault(name, target)
 
         handed: list = []
         found.extend(
@@ -457,27 +560,49 @@ def _find_candidates(root: Path, symbols: list[Symbol]) -> list:
         # value and reaches a sink is the ordinary shape of a handler that
         # delegates; chasing further would need the call graph this engine
         # deliberately does not claim to have.
-        seen: set[tuple[str, str]] = set()
-        for callee, parameter, mark in handed:
-            key = (callee.name, parameter)
+        seen: set[tuple[str, str, str]] = set()
+        for where, callee, parameter, mark, entered in handed:
+            key = (where, callee.name, parameter)
             if key in seen:
                 continue
             seen.add(key)
-            begin = starts[min(callee.lineno - 1, len(starts) - 1)]
+
+            if where == relative:
+                body_source, body_masked, body_starts = source, masked, starts
+                body_symbols = ordered
+                body_call, body_assign = call_sinks, assign_sinks
+            else:
+                # The callee lives in the resolved module: its own text, its
+                # own line table, and its own module gate — `exec` is only a
+                # sink in a file that imports `child_process`, and that file
+                # is this one, not the caller.
+                body_source, body_masked = read_masked(root / where)
+                if not body_source:
+                    continue
+                body_starts = [0] + [
+                    i + 1 for i, c in enumerate(body_masked) if c == "\n"
+                ]
+                body_symbols = _enclosing(by_file[where])
+                body_call, body_assign = _applicable(body_source)
+                if not body_call and not body_assign:
+                    continue
+
+            begin = body_starts[min(callee.lineno - 1, len(body_starts) - 1)]
             end = (
-                starts[callee.end_lineno] if callee.end_lineno < len(starts)
-                else len(masked)
+                body_starts[callee.end_lineno]
+                if callee.end_lineno < len(body_starts) else len(body_masked)
             )
             found.extend(
                 _scan_body(
-                    relative=relative,
-                    symbols=ordered,
-                    body=masked[begin:end],
+                    relative=where,
+                    symbols=body_symbols,
+                    body=body_masked[begin:end],
                     offset=begin,
-                    starts=starts,
-                    call_sinks=call_sinks,
-                    assign_sinks=assign_sinks,
+                    starts=body_starts,
+                    call_sinks=body_call,
+                    assign_sinks=body_assign,
                     seeded={parameter: mark},
+                    entered=entered if where != relative else None,
                 )
             )
     return found

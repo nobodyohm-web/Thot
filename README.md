@@ -492,6 +492,16 @@ uniforme :
 
 ```
 teinte au fichier près, pas au-delà : javascript 3 · typescript 912
+
+Une exception, et une seule : un import **relatif** se résout par une règle de
+fichiers, pas par une inférence. `./helpers` depuis `src/app.ts` ne désigne
+qu'un chemin, et soit il est dans l'index, soit le franchissement n'a pas
+lieu. Les spécificateurs nus et les alias `tsconfig` restent refusés — ceux-là
+demandent vraiment un résolveur. Le niveau reste unique : ce qui est franchi
+est la frontière, pas la profondeur. Mesuré sur les deux arbres livrés :
+1 514 appelables importés résolus, **zéro chemin nouveau**, et +21 % sur la
+passe JS de Prime (7,7 s → 9,3 s). La capacité est prouvée par les tests, son
+rendement ici est nul — les deux se disent.
 ```
 
 L'indexeur TypeScript est un scanner, pas `tsc` : il masque commentaires et

@@ -350,3 +350,170 @@ def test_the_tainted_argument_seeds_the_right_parameter(tmp_path):
         }
         """)
     assert found == [], "seul `target` est teinté, et il n'atteint pas le sink"
+
+
+# --- un import relatif se résout sans deviner -------------------------------
+#
+# Le moteur s'arrêtait au fichier parce que suivre un appel demande un graphe
+# de modules, que JavaScript n'offre pas sans tsconfig ni vérificateur de
+# types. C'est vrai des spécificateurs nus (`from "lodash"`) et des alias.
+# Ça ne l'est pas d'un chemin relatif : `./helpers` depuis `src/app.ts` ne
+# désigne qu'un seul fichier, et la règle qui le dit est une règle de
+# fichiers, pas une inférence. Le niveau reste unique — ce qui est franchi,
+# c'est la frontière, pas la profondeur.
+
+
+def scan_tree(tmp_path: Path, files: dict) -> list:
+    for name, source in files.items():
+        target = tmp_path / name
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(source, encoding="utf-8")
+    symbols = index_files(tmp_path, list(files))
+    return js_engine.find_candidates(tmp_path, symbols)
+
+
+def test_a_helper_in_a_relative_module_carries_the_taint(tmp_path):
+    found = scan_tree(tmp_path, {
+        "app.ts": 'import { ping } from "./helpers";\n'
+                  "function handler(req, res) {\n"
+                  "  ping(req.query.host);\n"
+                  "}\n",
+        "helpers.ts": REQUIRE + "export function ping(target) {\n"
+                                '  exec("ping -c1 " + target);\n'
+                                "}\n",
+    })
+
+    assert [c.rule for c in found] == ["sink.js.exec"]
+    assert found[0].sink.path == "helpers.ts"
+
+
+def test_a_constant_handed_across_a_module_is_not_a_path(tmp_path):
+    found = scan_tree(tmp_path, {
+        "app.ts": 'import { ping } from "./helpers";\n'
+                  "function handler(req, res) {\n"
+                  '  ping("localhost");\n'
+                  "}\n",
+        "helpers.ts": REQUIRE + "export function ping(target) {\n"
+                                '  exec("ping -c1 " + target);\n'
+                                "}\n",
+    })
+
+    assert found == []
+
+
+def test_a_sanitised_argument_does_not_cross_the_module_either(tmp_path):
+    found = scan_tree(tmp_path, {
+        "app.ts": 'import { ping } from "./helpers";\n'
+                  "function handler(req, res) {\n"
+                  "  ping(encodeURIComponent(req.query.host));\n"
+                  "}\n",
+        "helpers.ts": REQUIRE + "export function ping(target) {\n"
+                                '  exec("ping -c1 " + target);\n'
+                                "}\n",
+    })
+
+    assert found == []
+
+
+def test_a_bare_package_specifier_is_still_refused(tmp_path):
+    """`from "some-lib"` needs a resolver Thot does not have. Unchanged."""
+    found = scan_tree(tmp_path, {
+        "app.ts": 'import { ping } from "some-lib";\n'
+                  "function handler(req, res) {\n"
+                  "  ping(req.query.host);\n"
+                  "}\n",
+        "node_modules/some-lib/index.ts": REQUIRE + "export function ping(t) {\n"
+                                                    '  exec("ping " + t);\n'
+                                                    "}\n",
+    })
+
+    assert found == []
+
+
+def test_a_directory_import_resolves_to_its_index(tmp_path):
+    found = scan_tree(tmp_path, {
+        "app.ts": 'import { ping } from "./util";\n'
+                  "function handler(req, res) {\n"
+                  "  ping(req.query.host);\n"
+                  "}\n",
+        "util/index.ts": REQUIRE + "export function ping(target) {\n"
+                                   '  exec("ping -c1 " + target);\n'
+                                   "}\n",
+    })
+
+    assert [c.rule for c in found] == ["sink.js.exec"]
+    assert found[0].sink.path == "util/index.ts"
+
+
+def test_a_parent_relative_import_resolves(tmp_path):
+    found = scan_tree(tmp_path, {
+        "src/app.ts": 'import { ping } from "../lib/run";\n'
+                      "function handler(req, res) {\n"
+                      "  ping(req.query.host);\n"
+                      "}\n",
+        "lib/run.ts": REQUIRE + "export function ping(target) {\n"
+                                '  exec("ping -c1 " + target);\n'
+                                "}\n",
+    })
+
+    assert [c.rule for c in found] == ["sink.js.exec"]
+
+
+def test_the_crossing_does_not_add_a_second_level(tmp_path):
+    """One level, still. A helper calling another helper is not followed."""
+    found = scan_tree(tmp_path, {
+        "app.ts": 'import { first } from "./a";\n'
+                  "function handler(req, res) {\n"
+                  "  first(req.query.host);\n"
+                  "}\n",
+        "a.ts": 'import { second } from "./b";\n'
+                "export function first(value) {\n"
+                "  second(value);\n"
+                "}\n",
+        "b.ts": REQUIRE + "export function second(cmd) {\n"
+                          '  exec("ping " + cmd);\n'
+                          "}\n",
+    })
+
+    assert found == []
+
+
+def test_a_crossing_shows_where_the_untrusted_value_entered(tmp_path):
+    """A proven path must show the whole path.
+
+    Reported only inside the callee, a crossing is unreadable: the reader
+    sees `exec(cmd)` in a helper with no idea what `cmd` ever was, and the
+    file that actually touches the request never appears.
+    """
+    found = scan_tree(tmp_path, {
+        "app.ts": 'import { ping } from "./helpers";\n'
+                  "function handler(req, res) {\n"
+                  "  ping(req.query.host);\n"
+                  "}\n",
+        "helpers.ts": REQUIRE + "export function ping(target) {\n"
+                                '  exec("ping -c1 " + target);\n'
+                                "}\n",
+    })
+
+    assert len(found) == 1
+    candidate = found[0]
+    assert candidate.source.path == "app.ts", candidate.source
+    assert candidate.sink.path == "helpers.ts"
+    assert [step.path for step in candidate.path] == [
+        "app.ts", "helpers.ts", "helpers.ts"
+    ]
+
+
+def test_a_same_file_helper_keeps_its_two_step_path(tmp_path):
+    found = scan(tmp_path, REQUIRE + """
+        function ping(target) {
+          exec("ping -c1 " + target);
+        }
+
+        function handler(req, res) {
+          ping(req.query.host);
+        }
+        """)
+
+    assert len(found) == 1
+    assert len(found[0].path) == 2
