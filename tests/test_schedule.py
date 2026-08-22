@@ -321,3 +321,62 @@ def test_a_nightly_deep_job_reports_what_it_confirmed(tmp_path, monkeypatch):
     assert total > 0
     assert fresh, "une confirmation doit remonter même sous le seuil"
     assert any("app.py" in f.location.path for f in fresh)
+
+
+def test_a_whole_program_job_uses_each_tree_s_own_memory(tmp_path, monkeypatch):
+    """Committed verdicts are not interchangeable between repositories.
+
+    The caller builds one memory from `job.root` — which for this job is the
+    word "fusion", not a path — so the verdicts a team committed under
+    `hermes/.thot/` were never read.
+    """
+    from thot.schedule.jobs import FUSION, Job
+    from thot.schedule.runner import run_job
+
+    first, second = tmp_path / "un", tmp_path / "deux"
+    for root in (first, second):
+        root.mkdir()
+        _toy(root)
+    monkeypatch.setattr(
+        "thot.fusion.audit.parts", lambda: [("un", first), ("deux", second)]
+    )
+
+    asked: list[str] = []
+    real = __import__("thot.memory", fromlist=["build_memory"]).build_memory
+
+    def spy(root=None, **kwargs):
+        asked.append(str(root))
+        return real(root, **kwargs)
+
+    monkeypatch.setattr("thot.memory.build_memory", spy)
+    run_job(Job(name="tout", root=FUSION, threshold="info"))
+
+    assert str(first) in asked and str(second) in asked
+
+
+def test_a_night_where_everything_failed_says_so(tmp_path, monkeypatch, capsys):
+    """A loop that fails every night and says nothing looks like one that runs."""
+    from thot.schedule.jobs import Job
+    from thot.schedule.runner import run_job
+
+    class _Fails:
+        @property
+        def capabilities(self):
+            from thot.engine.base import EngineCapabilities
+
+            return EngineCapabilities(name="scripted", max_parallel=1)
+
+        def run(self, task):
+            from thot.engine.base import AgentResult
+
+            return AgentResult(task_id=task.id, error="limite d'usage atteinte")
+
+        def fan_out(self, tasks):
+            return [self.run(t) for t in tasks]
+
+    monkeypatch.setattr(
+        "thot.engine.factory.build_engine", lambda *a, **kw: _Fails()
+    )
+    run_job(Job(name="nuit", root=str(_toy(tmp_path)), deep=True, budget=2))
+
+    assert "aucun verdict" in capsys.readouterr().err

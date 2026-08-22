@@ -67,6 +67,18 @@ def _engine_for(job, root: Path):
         return None
 
 
+def _watch(judged: list, is_news, counter: dict):
+    """Collect the news, and count what never got a verdict at all."""
+    def seen(finding) -> None:
+        provenance = finding.provenance or {}
+        if provenance.get("erreur") or provenance.get("réfutation"):
+            counter["failed"] += 1
+        if is_news(finding):
+            judged.append(finding)
+
+    return seen
+
+
 def run_job(job, *, store=None, memory=None) -> tuple[list[Finding], int]:
     """Audit what the job targets. Returns (what is new, how many in total)."""
     from thot.pipeline import run_audit
@@ -76,9 +88,21 @@ def run_job(job, *, store=None, memory=None) -> tuple[list[Finding], int]:
 
     fresh: list[Finding] = []
     judged: list[Finding] = []
+    counter = {"failed": 0}
     total = 0
 
     for root in roots_for(job):
+        # "Each repository may carry its own committed verdicts, and they are
+        # not interchangeable" — true, and contradicted by a job that spans
+        # three repositories with one memory built from the word "fusion".
+        # The caller's memory is right for a single-directory job and wrong
+        # for this one, so this one builds its own, per tree.
+        own_memory = None
+        if getattr(job, "whole_program", False):
+            from thot.memory import build_memory
+
+            own_memory = build_memory(root)
+        active_memory = own_memory if own_memory is not None else memory
         previous = (
             store.previous_finding_ids(str(root)) if store is not None else set()
         )
@@ -94,14 +118,17 @@ def run_job(job, *, store=None, memory=None) -> tuple[list[Finding], int]:
                 root,
                 store=store,
                 require_authorization=False,
-                memory=memory,
+                memory=active_memory,
                 engine=engine,
                 budget=getattr(job, "budget", 20),
-                on_decided=lambda f: judged.append(f) if _is_news(f) else None,
+                on_decided=_watch(judged, _is_news, counter),
             )
         except Exception as exc:  # one tree must never cost the others
             print(f"[thot] {job.name} : {root} — {exc}", file=sys.stderr)
             continue
+        finally:
+            if own_memory is not None:
+                getattr(own_memory, "close", lambda: None)()
 
         new = new_since_last_run(
             result.findings, previous, Severity(job.threshold)
@@ -121,6 +148,16 @@ def run_job(job, *, store=None, memory=None) -> tuple[list[Finding], int]:
                 discover(root), "post_audit",
                 result=result, root=root, new_findings=new,
             )
+
+    failures = counter["failed"]
+    if failures and not judged:
+        # A loop that fails every night and says nothing is indistinguishable
+        # from a loop that runs. Named, on stderr, where cron mails it.
+        print(
+            f"[thot] {job.name} : {failures} tâche(s) en échec et aucun "
+            f"verdict — quota épuisé ou agent absent ?",
+            file=sys.stderr,
+        )
 
     for finding in judged:
         provenance = finding.provenance or {}
