@@ -193,7 +193,17 @@ THREAT_PATTERNS = [
      "reads secret via Ruby ENV[]"),
 
     # ── Exfiltration: DNS and staging ──
-    (r'\b(dig|nslookup|host)\s+[^\n]*\$',
+    # In command position, not as English. `host` is an ordinary word, and
+    # the bare pattern read "Could not parse host from URL: $TARGET_URL" and
+    # even "Host '$HOST' is NOT in $SCOPE_FILE. Refusing to scan." as DNS
+    # exfiltration — CRITICAL, which --force cannot override. Quotes are not
+    # command position here: a quote opens a string, and every false positive
+    # measured began with one.
+    # `| xargs -I{} host $x.evil` is command position too, and a real
+    # exfiltration idiom; the optional prefix covers it without loosening
+    # anything else.
+    (r'(?:^|[|;&`]|\$\()\s*(?:xargs(?:\s+-\S+)*\s+)?'
+     r'(?:dig|nslookup|host)\s+[^\n]*\$',
      "dns_exfil", "critical", "exfiltration",
      "DNS lookup with variable interpolation (possible DNS exfiltration)"),
     (r'>\s*/tmp/[^\s]*\s*&&\s*(curl|wget|nc|python)',
@@ -472,7 +482,10 @@ THREAT_PATTERNS = [
     (r'(?:^|[|;&`"\'(]|\$\()\s*sudo\s+(?:-[A-Za-z-]+\s+)*[A-Za-z0-9_./-]+',
      "sudo_usage", "high", "privilege_escalation",
      "uses sudo (privilege escalation)"),
-    (r'setuid|setgid|cap_setuid',
+    # Whole words: `setuid` inside `s6-setuidgid` is the container init tool
+    # that *drops* privileges, and it was every hit this rule had on the
+    # shipped library.
+    (r'\bsetuid\b|\bsetgid\b|\bcap_setuid\b',
      "setuid_setgid", "critical", "privilege_escalation",
      "setuid/setgid (privilege escalation mechanism)"),
     (r'NOPASSWD',
