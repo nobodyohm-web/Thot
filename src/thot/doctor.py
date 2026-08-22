@@ -9,6 +9,13 @@ is worse than a red one.
 
 Nothing here touches the network or a model. `thot doctor` on a plane must
 give the same answer as `thot doctor` at a desk.
+
+`--agents` is the exception, and it is opt-in because it spends three model
+calls. It exists because of a defect no static inspection could have found:
+Hermes could not open a file by a path relative to its working directory, so
+a third of the panel was silently unable to check any claim resting on a
+second file — and it said so in words that read like a refusal rather than a
+gap. The only way to know was to plant a file and ask.
 """
 
 from __future__ import annotations
@@ -175,3 +182,56 @@ def run(root: Path) -> list[Check]:
         _safe("mcp", lambda: _mcp(root)),
         _safe("amélioration", _loop),
     ]
+
+
+# -- the live check: what the agents can actually do --------------------------
+
+CANARY = "MOT-DE-PASSE-FICTIF-4711"
+
+
+def _can_read(cls) -> tuple[bool, str]:
+    """Plant a file, ask the agent for its contents, believe only the answer.
+
+    Absolute path on purpose: that is the shape every audit task uses, and
+    the shape that made the difference. An agent that cannot do this cannot
+    verify a refutation, which is most of what the panel is for.
+    """
+    import tempfile
+
+    from thot.engine.base import AgentTask
+
+    with tempfile.TemporaryDirectory() as directory:
+        root = Path(directory)
+        planted = root / "canary.txt"
+        planted.write_text(CANARY + "\n", encoding="utf-8")
+        task = AgentTask(
+            id="probe:doctor",
+            instructions=(
+                f"Lis le fichier {planted} et réponds uniquement par "
+                '{"verdict": "<son contenu exact>", "scenario": "lu", '
+                '"severity": "info"}'
+            ),
+            schema={"type": "object",
+                    "properties": {"verdict": {"type": "string"}}},
+        )
+        result = cls(root=root, max_parallel=1).run(task)
+
+    if not result.ok:
+        return False, result.error or "réponse vide"
+    answer = str((result.data or {}).get("verdict", ""))
+    if CANARY in answer:
+        return True, "lit un fichier par chemin absolu"
+    return False, f"n'a pas lu le fichier — a répondu {answer[:40]!r}"
+
+
+def run_agents() -> list[Check]:
+    """One real call per installed agent. Costs money; says something."""
+    from thot.engine.factory import AGENT_ENGINES
+
+    checks: list[Check] = []
+    for name, cls in AGENT_ENGINES.items():
+        if not cls.available():
+            checks.append(Check(f"lecture · {name}", False, "non installé"))
+            continue
+        checks.append(_safe(f"lecture · {name}", lambda c=cls: _can_read(c)))
+    return checks

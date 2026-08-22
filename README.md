@@ -795,6 +795,24 @@ thot doctor
 11/11 vérification(s) passées en 0.87 s
 ```
 
+Et une vérification qu'aucune inspection statique n'aurait pu faire :
+
+```bash
+thot doctor --agents        # un appel modèle par agent installé
+```
+
+```
+✓ lecture · claude       lit un fichier par chemin absolu
+✓ lecture · hermes       lit un fichier par chemin absolu
+✓ lecture · prime        lit un fichier par chemin absolu
+```
+
+Elle plante un fichier dans un dossier temporaire et demande son contenu.
+Elle existe à cause d'un défaut réel : Hermes n'ouvrait pas un chemin relatif
+à son dossier de travail et répondait par une phrase qui se lisait comme un
+refus. Un tiers du panel ne pouvait vérifier aucune affirmation reposant sur
+un second fichier, et rien d'autre que planter un fichier ne l'aurait montré.
+
 Chaque ligne exécute une vraie opération et rapporte ce qu'elle a **mesuré** :
 pas « skills : configuré » mais « 91 chargées, 8 refusées ». Le moteur de
 teinte cherche un chemin dans un échantillon des deux langages, le serveur MCP

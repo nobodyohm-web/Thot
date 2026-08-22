@@ -263,8 +263,13 @@ def build_parser() -> argparse.ArgumentParser:
     skills_scan.add_argument("--source", default="community",
                              choices=["builtin", "trusted", "community"])
 
-    subparsers.add_parser(
+    doctor_cmd = subparsers.add_parser(
         "doctor", help="Vérifier que l'installation est entière, hors ligne"
+    )
+    doctor_cmd.add_argument(
+        "--agents", action="store_true",
+        help="Vérifier en plus ce que chaque agent sait faire — un appel "
+             "modèle par agent installé",
     )
 
     improve = subparsers.add_parser(
@@ -1238,6 +1243,10 @@ def _cmd_doctor(args) -> int:
 
     started = time.monotonic()
     checks = run_checks(Path.cwd().resolve())
+    if getattr(args, "agents", False):
+        from thot.doctor import run_agents
+
+        checks += run_agents()
     for check in checks:
         print(check.line())
 
