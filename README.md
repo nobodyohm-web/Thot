@@ -414,10 +414,13 @@ jusqu'à ce que plus personne ne lise le rapport.
 |---|---|---|---|
 | symboles, graphe d'appels, `code_map` / `callers` | oui | oui | non |
 | teinte **dans un corps de fonction** | oui | oui | non |
-| teinte **à travers retours et paramètres** | oui | non | non |
+| teinte **vers un helper du même fichier** | oui | oui | non |
+| teinte **à travers les fichiers** | oui | non | non |
 | règles par motif | oui | oui | oui |
 
-La teinte JavaScript s'arrête au corps de fonction, et le dit. Les deux
+La teinte JavaScript suit un appel vers une fonction **définie dans le même
+fichier** — la forme ordinaire d'un handler qui délègue — et s'arrête là, ce
+qu'elle dit. Les deux
 niveaux suivants reposent sur un graphe d'appels **résolu** — savoir que le
 `readInput` appelé ici est celui défini là-bas. Le système d'imports de
 Python répond à cette question ; celui de JavaScript non, pas sans résolveur

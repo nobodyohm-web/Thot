@@ -288,3 +288,65 @@ def test_a_broken_rules_file_names_itself(tmp_path):
         assert "maison.yaml" in str(exc)
     else:
         raise AssertionError("un sink sans `id` doit être refusé")
+
+
+# -- one level in, inside a single file ---------------------------------------
+
+
+def test_a_helper_in_the_same_file_carries_the_taint(tmp_path):
+    """The ordinary shape of a handler that delegates.
+
+    Following a call across files would need a resolved module graph, which
+    JavaScript does not offer without a tsconfig and a type checker. Within
+    one file the question has an answer.
+    """
+    found = scan(tmp_path, REQUIRE + """
+        function ping(target) {
+          exec("ping -c1 " + target);
+        }
+
+        function handler(req, res) {
+          ping(req.query.host);
+        }
+        """)
+    assert [c.rule for c in found] == ["sink.js.exec"]
+
+
+def test_a_helper_given_a_constant_is_not_a_path(tmp_path):
+    found = scan(tmp_path, REQUIRE + """
+        function ping(target) {
+          exec("ping -c1 " + target);
+        }
+
+        function handler(req, res) {
+          ping("localhost");
+        }
+        """)
+    assert found == []
+
+
+def test_a_sanitised_argument_does_not_seed_the_helper(tmp_path):
+    found = scan(tmp_path, REQUIRE + """
+        function ping(target) {
+          exec("ping -c1 " + target);
+        }
+
+        function handler(req, res) {
+          ping(encodeURIComponent(req.query.host));
+        }
+        """)
+    assert found == []
+
+
+def test_the_tainted_argument_seeds_the_right_parameter(tmp_path):
+    """Position matters: the second argument taints the second parameter."""
+    found = scan(tmp_path, REQUIRE + """
+        function ping(flag, target) {
+          exec("ping " + flag);
+        }
+
+        function handler(req, res) {
+          ping("-c1", req.query.host);
+        }
+        """)
+    assert found == [], "seul `target` est teinté, et il n'atteint pas le sink"

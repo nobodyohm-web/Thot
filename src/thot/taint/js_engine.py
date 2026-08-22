@@ -219,11 +219,19 @@ def _scan_body(
     starts: list[int],
     call_sinks: list,
     assign_sinks: list,
+    seeded: dict[str, str] | None = None,
+    locals_by_name: dict[str, Symbol] | None = None,
+    handed: list | None = None,
 ) -> list:
-    """Every proven path in one file, attributed to the function it sits in."""
+    """Every proven path in one file, attributed to the function it sits in.
+
+    `seeded` pre-taints names — a parameter that a caller handed a tainted
+    value. `handed` collects the reverse: local functions this pass called
+    with tainted arguments, so a second pass can follow the value in.
+    """
     from thot.taint.engine import TaintCandidate
 
-    tainted: dict[str, str] = {}   # variable -> the source that tainted it
+    tainted: dict[str, str] = dict(seeded or {})
     origin: dict[str, int] = {}    # variable -> line where it became tainted
     found = []
     seen_sites: dict[str, int] = {}
@@ -307,6 +315,26 @@ def _scan_body(
                         description=rule.description,
                     )
                 )
+
+        # -- a tainted value handed to a function defined in this file -------
+        if locals_by_name is not None and handed is not None:
+            for match in re.finditer(rf"\b({_IDENT})\s*\(", statement):
+                callee = locals_by_name.get(match.group(1))
+                if callee is None or not callee.params:
+                    continue
+                arguments = _split_arguments(
+                    _arguments(statement, match.start())
+                )
+                for index, fragment in enumerate(arguments):
+                    if index >= len(callee.params):
+                        break
+                    culprit = _reads_tainted(fragment, tainted)
+                    mark = (
+                        tainted.get(culprit) if culprit
+                        else _source_in(fragment)
+                    )
+                    if mark and not _sanitised(fragment):
+                        handed.append((callee, callee.params[index], mark))
 
         # -- then propagation ------------------------------------------------
         destructured = _DESTRUCTURE.search(statement)
@@ -399,15 +427,57 @@ def _find_candidates(root: Path, symbols: list[Symbol]) -> list:
         if not call_sinks and not assign_sinks:
             continue
         starts = [0] + [i + 1 for i, c in enumerate(masked) if c == "\n"]
+        ordered = _enclosing(by_file[relative])
+        # Functions this file defines, by the bare name a caller would use.
+        # Same file only: following a call across files needs a resolved
+        # module graph, and JavaScript does not offer one without a tsconfig
+        # and a type checker. Within a file the question has an answer.
+        locals_by_name = {
+            symbol.name.rsplit(".", 1)[-1]: symbol
+            for symbol in ordered
+            if symbol.kind in ("function", "method") and symbol.params
+        }
+
+        handed: list = []
         found.extend(
             _scan_body(
                 relative=relative,
-                symbols=_enclosing(by_file[relative]),
+                symbols=ordered,
                 body=masked,
                 offset=0,
                 starts=starts,
                 call_sinks=call_sinks,
                 assign_sinks=assign_sinks,
+                locals_by_name=locals_by_name,
+                handed=handed,
             )
         )
+
+        # One more level, and one only. A helper that takes an untrusted
+        # value and reaches a sink is the ordinary shape of a handler that
+        # delegates; chasing further would need the call graph this engine
+        # deliberately does not claim to have.
+        seen: set[tuple[str, str]] = set()
+        for callee, parameter, mark in handed:
+            key = (callee.name, parameter)
+            if key in seen:
+                continue
+            seen.add(key)
+            begin = starts[min(callee.lineno - 1, len(starts) - 1)]
+            end = (
+                starts[callee.end_lineno] if callee.end_lineno < len(starts)
+                else len(masked)
+            )
+            found.extend(
+                _scan_body(
+                    relative=relative,
+                    symbols=ordered,
+                    body=masked[begin:end],
+                    offset=begin,
+                    starts=starts,
+                    call_sinks=call_sinks,
+                    assign_sinks=assign_sinks,
+                    seeded={parameter: mark},
+                )
+            )
     return found
