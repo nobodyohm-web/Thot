@@ -789,6 +789,7 @@ class Session:
                 ("/search", "chercher dans tout ce que Thot a déjà dit ou trouvé"),
                 ("/compact", "résumer la session et repartir avec le contexte vidé"),
                 ("/export", "écrire la session en JSON : /export chemin.json"),
+                ("/import", "recharger une session exportée : /import chemin.json"),
                 ("/scan", "recalculer la carte du dépôt"),
                 ("/model", "changer de modèle"),
                 ("/clear", "oublier la conversation en cours"),

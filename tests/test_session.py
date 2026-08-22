@@ -462,3 +462,72 @@ def test_a_refused_skill_is_attributed_to_whoever_offered_it(tmp_path, capsys):
     printed = capsys.readouterr().out
     assert "1 skill(s) fourni(s) par ce dépôt" in printed
     assert "1 skill(s) installés sur cette machine" in printed
+
+
+# --- ce que /help annonce, et ce qu'il oublie ------------------------------
+#
+# `/export` figure dans l'aide, `/import` non — alors qu'elle est traitée par
+# la session et documentée dans le README. Qui exporte une session ne pouvait
+# donc pas découvrir comment la ramener depuis l'endroit où il se trouve.
+# Les dix-neuf autres commandes non annoncées sont des alias français
+# (`/acquis`, `/cherche`, `/coût`, `/noyau`…) et leur absence est un bon
+# choix : elles n'apprennent rien de plus.
+
+
+def _session_source() -> str:
+    from pathlib import Path
+
+    return (Path(__file__).resolve().parents[1] / "src" / "thot"
+            / "session.py").read_text(encoding="utf-8")
+
+
+def _helped() -> set[str]:
+    import re
+
+    return set(re.findall(r'\("/([a-z-]+)[^"]*",\s*"', _session_source()))
+
+
+def _dispatched() -> set[str]:
+    import re
+
+    source = _session_source()
+    names = set(re.findall(r'command == "([a-z-]+)"', source))
+    for group in re.findall(r"command in \{([^}]*)\}", source):
+        names |= {w.strip().strip("\"'") for w in group.split(",") if w.strip()}
+    return names
+
+
+def test_a_command_the_readme_documents_is_discoverable_in_the_session():
+    """The README is not open while you are typing in the session.
+
+    A command that exists, is documented, and is not in `/help` can only be
+    found by leaving the tool — which is exactly when a session command is
+    least useful.
+    """
+    import re
+    from pathlib import Path
+
+    readme = {
+        name.strip("`/")
+        for name in re.findall(
+            r"`(/[a-z-]+)`",
+            (Path(__file__).resolve().parents[1] / "README.md").read_text(
+                encoding="utf-8"
+            ),
+        )
+    }
+
+    hidden = sorted(readme & _dispatched() - _helped())
+
+    assert hidden == [], hidden
+
+
+def test_the_help_still_announces_nothing_it_cannot_run():
+    from pathlib import Path
+
+    from thot.commands import discover
+
+    shipped = {getattr(item, "name", "") for item in discover(
+        Path(__file__).resolve().parents[1])}
+
+    assert _helped() - _dispatched() - shipped == set()
