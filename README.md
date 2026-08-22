@@ -498,10 +498,20 @@ fichiers, pas par une inférence. `./helpers` depuis `src/app.ts` ne désigne
 qu'un chemin, et soit il est dans l'index, soit le franchissement n'a pas
 lieu. Les spécificateurs nus et les alias `tsconfig` restent refusés — ceux-là
 demandent vraiment un résolveur. Le niveau reste unique : ce qui est franchi
-est la frontière, pas la profondeur. Mesuré sur les deux arbres livrés :
-1 514 appelables importés résolus, **zéro chemin nouveau**, et +21 % sur la
-passe JS de Prime (7,7 s → 9,3 s). La capacité est prouvée par les tests, son
-rendement ici est nul — les deux se disent.
+est la frontière, pas la profondeur.
+
+Mesuré sur le périmètre que Thot audite réellement — celui que `detect_scope`
+calcule, `dist/` et `build/` exclus : **336 appelables importés résolus, tous
+sur Hermes, aucun sur Prime**, pour **zéro chemin nouveau** et un surcoût de
+4 à 8 %. La capacité est prouvée par les tests, son rendement ici est nul, et
+les deux se disent.
+
+Une première version de ce paragraphe annonçait 1 514 appelables et +21 %.
+Ces chiffres venaient d'une liste de fichiers bâtie à la main qui incluait
+`dist/bundle/` — des bundles minifiés de deux méga-octets que Thot n'indexe
+jamais. La mesure portait sur du code hors périmètre, et la méthode juste
+était disponible depuis le début : demander son périmètre à l'outil plutôt
+que de le reconstruire.
 ```
 
 L'indexeur TypeScript est un scanner, pas `tsc` : il masque commentaires et
