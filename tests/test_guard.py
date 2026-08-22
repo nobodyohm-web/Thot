@@ -706,3 +706,71 @@ def test_every_import_spelling_opens_the_gate():
 def test_a_rule_that_needs_no_module_is_unaffected():
     findings = scan_text("ui.jsx", "el.innerHTML = userInput;\n")
     assert [f.rule for f in findings] == ["pattern.innerHTML_xss"]
+
+
+# -- a constant command has nothing to inject -----------------------------
+#
+# These three rules describe an injection: untrusted input reaching a
+# command. `execSync("xclip -selection clipboard")` and `os.system("clear")`
+# take no input at all, and both were HIGH findings on the shipped trees.
+
+
+def test_a_constant_command_is_not_an_injection():
+    source = ('import { execSync } from "child_process";\n'
+              'execSync("xclip -selection clipboard", options);\n')
+    assert scan_text("clip.ts", source) == []
+
+
+def test_a_command_built_from_a_value_still_is():
+    source = ('import { execSync } from "child_process";\n'
+              "execSync(command, options);\n")
+    assert [f.rule for f in scan_text("clip.ts", source)] \
+        == ["pattern.child_process_exec"]
+
+
+def test_an_interpolated_template_is_not_constant():
+    source = ('import { exec } from "child_process";\n'
+              "exec(`ping ${host}`);\n")
+    assert [f.rule for f in scan_text("net.ts", source)] \
+        == ["pattern.child_process_exec"]
+
+
+def test_an_f_string_is_not_constant():
+    """Python 3.11 masks an f-string to whitespace — the raw text still shows
+    the interpolation, and that is what keeps this a finding."""
+    source = ("import subprocess\n"
+              'subprocess.call(f"{editor} {path}", shell=True)\n')
+    assert [f.rule for f in scan_text("edit.py", source)] \
+        == ["pattern.python_subprocess_shell"]
+
+
+def test_a_constant_os_system_is_not_a_finding():
+    assert scan_text("cli.py", 'import os\nos.system("clear")\n') == []
+
+
+def test_os_system_on_a_value_is_a_finding():
+    findings = scan_text("cli.py", "import os\nos.system(user_input)\n")
+    assert [f.rule for f in findings] == ["pattern.os_system_injection"]
+
+
+def test_a_constant_call_does_not_hide_a_real_one():
+    """A rule fires once per file, so the inert match must not claim the slot."""
+    source = ('import { execSync } from "child_process";\n'
+              'execSync("xclip -selection clipboard");\n'
+              "execSync(command);\n")
+    findings = scan_text("clip.ts", source)
+    assert [(f.rule, f.location.line) for f in findings] \
+        == [("pattern.child_process_exec", 3)]
+
+
+def test_a_matched_substring_that_calls_nothing_is_not_judged_constant():
+    """`from os import system` is one of the rule's own substrings.
+
+    It calls nothing, so the next `(` in the file belongs to something
+    else — reading that call's argument and calling the import inert would
+    drop the finding for a reason that has nothing to do with it.
+    """
+    source = ("from os import system\n"
+              'print("ready")\n')
+    assert [f.rule for f in scan_text("cli.py", source)] \
+        == ["pattern.os_system_injection"]

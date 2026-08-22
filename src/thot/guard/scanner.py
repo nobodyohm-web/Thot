@@ -146,6 +146,88 @@ def code_only(relative: str, text: str) -> str:
     return "".join(out)
 
 
+# Rules that describe an injection: untrusted input reaching a command. A
+# call handed a literal has no input to inject, and the sweep reported
+# `execSync("xclip -selection clipboard")` and `os.system("clear")` at the
+# same rank as a command read from configuration. Only these three — a
+# constant argument says nothing about an unsafe deserialiser.
+_INJECTION_RULES = frozenset({
+    "child_process_exec",
+    "os_system_injection",
+    "python_subprocess_shell",
+})
+
+_IDENTIFIER = re.compile(r"[A-Za-z_]")
+
+
+def _spans(text: str, pattern: dict) -> list[tuple[int, int]]:
+    """Every place a rule's own matcher fires, as (start, end), in order."""
+    found: list[tuple[int, int]] = []
+    regex = pattern.get("regex")
+    if regex:
+        found += [(m.start(), m.end()) for m in re.finditer(regex, text)]
+    for needle in pattern.get("substrings") or ():
+        start = text.find(needle)
+        while start != -1:
+            found.append((start, start + len(needle)))
+            start = text.find(needle, start + 1)
+    return sorted(found)
+
+
+def _first_argument(masked: str, opening: int) -> tuple[int, int] | None:
+    """The span of the first argument of the call whose `(` is at `opening`."""
+    depth = 0
+    start = opening + 1
+    for index in range(start, len(masked)):
+        char = masked[index]
+        if char in "([{":
+            depth += 1
+        elif char in ")]}":
+            if depth == 0:
+                return start, index
+            depth -= 1
+        elif char == "," and depth == 0:
+            return start, index
+    return None  # unclosed: not something to draw a conclusion from
+
+
+def _constant_command(masked: str, source: str, span: tuple[int, int]) -> bool:
+    """Whether the call at this match is handed a literal command.
+
+    Two texts, because neither answers alone. The masked one shows whether
+    any name is read — a literal is blanked, a `${…}` interpolation is not.
+    The raw one shows an f-string's braces, which Python 3.11 hides by
+    tokenising the whole thing as one string: without it, the editor command
+    at `cli_commands_mixin.py:3198` would read as constant.
+    """
+    start, end = span
+    opening = masked.find("(", start)
+    if opening == -1 or opening > end + 2:
+        # The match is not a call — `from os import system` is the rule's own
+        # substring, and the next `(` in the file belongs to something else.
+        return False
+    argument = _first_argument(masked, opening)
+    if argument is None:
+        return False
+    left, right = argument
+    if _IDENTIFIER.search(masked[left:right]):
+        return False
+    return "{" not in source[left:right]
+
+
+def _fire_line(pattern: dict, name: str, masked: str, source: str) -> int | None:
+    """The line to report, or None when every match on the rule is inert."""
+    if name not in _INJECTION_RULES:
+        return _first_line(masked, pattern)
+    spans = _spans(masked, pattern)
+    if not spans:
+        return _first_line(masked, pattern)
+    for span in spans:
+        if not _constant_command(masked, source, span):
+            return masked.count("\n", 0, span[0]) + 1
+    return None
+
+
 def _first_line(text: str, pattern: dict) -> int:
     """Where the rule fires, so the finding points at code and not at line 1."""
     regex = pattern.get("regex")
@@ -222,7 +304,9 @@ def scan_text(relative: str, text: str) -> list[Finding]:
             continue
 
         impact = _IMPACT.get(name, _DEFAULT_IMPACT)
-        line = _first_line(scannable, pattern)
+        line = _fire_line(pattern, name, scannable, text)
+        if line is None:
+            continue  # every match is a literal: nothing to inject into
         location = CodeRef(
             path=relative,
             line=line,
