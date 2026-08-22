@@ -353,3 +353,89 @@ def test_unpinned_servers_are_named_rather_than_silently_skipped(monkeypatch,
     printed = capsys.readouterr().out
     assert "flou" in printed
     assert "épingler" in printed
+
+
+# --- un manifeste imbriqué compte autant que celui de la racine ------------
+#
+# `discover` ne lisait que `root / nom`. Mesuré sur l'arbre livré : la racine
+# de Thot annonçait « 254 dépendance(s), aucune vulnérabilité connue » tandis
+# que `hermes/website/`, `hermes/scripts/whatsapp-bridge/` et
+# `hermes/plugins/platforms/photon/sidecar/` portaient chacun leur propre
+# `package-lock.json`, jamais lu. Dans un dépôt en monorepo — la forme
+# ordinaire d'un projet JavaScript — la quasi-totalité des dépendances
+# échappait à l'audit, sous un rapport qui sonnait complet.
+
+
+def _lock(path: Path, packages: dict) -> None:
+    import json
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps({
+        "lockfileVersion": 3,
+        "packages": {
+            f"node_modules/{name}": {"version": version}
+            for name, version in packages.items()
+        },
+    }), encoding="utf-8")
+
+
+def test_a_nested_lockfile_is_discovered(tmp_path):
+    from thot.supply.discover import discover
+
+    _lock(tmp_path / "package-lock.json", {"root-dep": "1.0.0"})
+    _lock(tmp_path / "apps" / "desktop" / "package-lock.json",
+          {"desktop-dep": "2.0.0"})
+
+    names = {c.name for c in discover(tmp_path)}
+
+    assert "root-dep" in names
+    assert "desktop-dep" in names, "le manifeste imbriqué a été ignoré"
+
+
+def test_a_vendored_tree_is_not_walked(tmp_path):
+    from thot.supply.discover import discover
+
+    _lock(tmp_path / "package-lock.json", {"root-dep": "1.0.0"})
+    _lock(tmp_path / "node_modules" / "x" / "package-lock.json",
+          {"vendored-dep": "9.9.9"})
+    _lock(tmp_path / ".venv" / "package-lock.json", {"venv-dep": "9.9.9"})
+
+    names = {c.name for c in discover(tmp_path)}
+
+    assert "vendored-dep" not in names
+    assert "venv-dep" not in names
+
+
+def test_an_ignored_directory_is_left_out(tmp_path):
+    from thot.supply.discover import discover
+
+    # Un nom que la liste intégrée ne couvre pas. Avec `vendor/`, ce test
+    # passait sans que `.thotignore` soit lu une seule fois — la mutation qui
+    # neutralise la règle restait verte.
+    (tmp_path / ".thotignore").write_text("legacy/\n", encoding="utf-8")
+    _lock(tmp_path / "package-lock.json", {"root-dep": "1.0.0"})
+    _lock(tmp_path / "legacy" / "package-lock.json", {"legacy-dep": "9.9.9"})
+
+    names = {c.name for c in discover(tmp_path)}
+
+    assert "root-dep" in names
+    assert "legacy-dep" not in names
+
+
+def test_the_same_package_pinned_twice_is_reported_once(tmp_path):
+    from thot.supply.discover import discover
+
+    _lock(tmp_path / "package-lock.json", {"shared": "1.0.0"})
+    _lock(tmp_path / "apps" / "web" / "package-lock.json", {"shared": "1.0.0"})
+
+    assert [c.name for c in discover(tmp_path)] == ["shared"]
+
+
+def test_two_versions_of_one_package_are_both_kept(tmp_path):
+    from thot.supply.discover import discover
+
+    _lock(tmp_path / "package-lock.json", {"shared": "1.0.0"})
+    _lock(tmp_path / "apps" / "web" / "package-lock.json", {"shared": "2.0.0"})
+
+    versions = sorted(c.version for c in discover(tmp_path) if c.name == "shared")
+    assert versions == ["1.0.0", "2.0.0"]

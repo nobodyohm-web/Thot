@@ -242,6 +242,71 @@ def from_mcp_command(server: str, command: str, args) -> Component | None:
     return None
 
 
+# Trees that hold somebody else's dependencies, not this repository's. Walking
+# them turns a 254-package answer into a 40 000-package one and says nothing
+# true: a lockfile inside `node_modules` describes a package already pinned by
+# the lockfile above it.
+VENDORED = frozenset({
+    "node_modules", ".venv", "venv", ".git", "dist", "build", "out",
+    "site-packages", "vendor", "__pycache__", ".tox", "target", ".next",
+    ".cache", "coverage",
+})
+
+# A bound, so a pathological tree cannot turn one command into an hour. High
+# enough that no real repository reaches it, and named out loud if it does —
+# a silent cap reads as "we looked at everything".
+MAX_MANIFESTS = 400
+
+
+def _label(root: Path, path: Path) -> str:
+    """What the report calls this file: its path from the root, not its name.
+
+    Three `package-lock.json` in one tree are three different files, and a
+    finding that names only the basename cannot be acted on.
+    """
+    try:
+        return str(path.relative_to(root))
+    except ValueError:
+        return path.name
+
+
+def _manifests_in(root: Path, names: set[str]) -> dict[str, list[Path]]:
+    """Every manifest in the tree, by filename, nearest the root first.
+
+    Reading only `root / name` was the whole bug: a monorepo — the ordinary
+    shape of a JavaScript project — keeps its dependencies in
+    `apps/*/package-lock.json`, and an audit that never opened them still
+    printed "no known vulnerability".
+    """
+    from thot.scope.detect import is_ignored, load_ignore
+
+    patterns = load_ignore(root)
+    found: dict[str, list[Path]] = {}
+    seen = 0
+
+    stack = [root]
+    while stack:
+        directory = stack.pop(0)
+        try:
+            entries = sorted(directory.iterdir())
+        except OSError:
+            continue
+        for entry in entries:
+            relative = _label(root, entry)
+            if entry.is_dir():
+                if entry.name in VENDORED or entry.name.startswith("."):
+                    continue
+                if patterns and is_ignored(relative, patterns):
+                    continue
+                stack.append(entry)
+            elif entry.name in names:
+                if seen >= MAX_MANIFESTS:
+                    continue
+                seen += 1
+                found.setdefault(entry.name, []).append(entry)
+    return found
+
+
 def discover(root: Path | str) -> list[Component]:
     """Every pinned dependency this repository declares, deduplicated.
 
@@ -253,25 +318,29 @@ def discover(root: Path | str) -> list[Component]:
     found: dict[tuple[str, str, str], Component] = {}
     from_lock: set[tuple[str, str]] = set()
 
-    for filename, ecosystem in LOCKFILES:
-        path = root / filename
-        if not path.is_file():
-            continue
-        for component in PARSERS[filename](_read(path), filename):
-            found.setdefault(
-                (component.ecosystem, component.name, component.version), component
-            )
-            from_lock.add((component.ecosystem, component.name))
+    lock_names = {name for name, _ in LOCKFILES}
+    manifest_names = {name for name, _ in MANIFESTS}
+    everywhere = _manifests_in(root, lock_names | manifest_names)
 
-    for filename, ecosystem in MANIFESTS:
-        path = root / filename
-        if not path.is_file():
-            continue
-        for component in PARSERS[filename](_read(path), filename):
-            if (component.ecosystem, component.name) in from_lock:
-                continue
-            found.setdefault(
-                (component.ecosystem, component.name, component.version), component
-            )
+    for filename in (name for name, _ in LOCKFILES):
+        for path in everywhere.get(filename, ()):
+            source = _label(root, path)
+            for component in PARSERS[filename](_read(path), source):
+                found.setdefault(
+                    (component.ecosystem, component.name, component.version),
+                    component,
+                )
+                from_lock.add((component.ecosystem, component.name))
+
+    for filename in (name for name, _ in MANIFESTS):
+        for path in everywhere.get(filename, ()):
+            source = _label(root, path)
+            for component in PARSERS[filename](_read(path), source):
+                if (component.ecosystem, component.name) in from_lock:
+                    continue
+                found.setdefault(
+                    (component.ecosystem, component.name, component.version),
+                    component,
+                )
 
     return sorted(found.values(), key=lambda c: (c.ecosystem, c.name, c.version))
