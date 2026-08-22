@@ -143,6 +143,41 @@ def _mask(source: str) -> str:
     return "".join(out)
 
 
+# Masking a file is the expensive half of reading it, and two passes want the
+# same answer: the indexer, then the taint engine. Keyed by size and
+# modification time, so an edit invalidates the entry rather than serving a
+# stale map — and bounded, because an audit of twelve thousand files must not
+# hold all of them in memory for the sake of a second read.
+_MASK_CACHE: dict[tuple[str, int, int], tuple[str, str]] = {}
+MASK_CACHE_LIMIT = 4096
+
+
+def read_masked(path: Path) -> tuple[str, str]:
+    """`(source, masked)` for a file, computed once per version of it."""
+    try:
+        stat = path.stat()
+        key = (str(path), stat.st_size, stat.st_mtime_ns)
+    except OSError:
+        return "", ""
+    hit = _MASK_CACHE.get(key)
+    if hit is not None:
+        return hit
+    try:
+        source = path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return "", ""
+    if len(_MASK_CACHE) >= MASK_CACHE_LIMIT:
+        _MASK_CACHE.clear()
+    pair = (source, _mask(source))
+    _MASK_CACHE[key] = pair
+    return pair
+
+
+def forget_masks() -> None:
+    """Drop the cache — for tests, and for a long-lived process."""
+    _MASK_CACHE.clear()
+
+
 def _line_of(offsets: list[int], position: int) -> int:
     """1-based line for an offset, by binary search over line starts."""
     import bisect
@@ -277,16 +312,15 @@ class TypeScriptIndexer:
     language = "typescript"
 
     def index_file(self, root: Path, relative: str) -> list[Symbol]:
-        try:
-            source = (Path(root) / relative).read_text(
-                encoding="utf-8", errors="replace"
-            )
-        except OSError:
+        source, masked = read_masked(Path(root) / relative)
+        if not source:
             return []
-        return self.index_source(source, relative)
+        return self.index_source(source, relative, masked=masked)
 
-    def index_source(self, source: str, relative: str) -> list[Symbol]:
-        masked = _mask(source)
+    def index_source(
+        self, source: str, relative: str, *, masked: str | None = None
+    ) -> list[Symbol]:
+        masked = _mask(source) if masked is None else masked
         starts = [0] + [i + 1 for i, c in enumerate(masked) if c == "\n"]
         module = module_name(relative)
         symbols: list[Symbol] = []

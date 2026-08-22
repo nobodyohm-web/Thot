@@ -31,7 +31,7 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
-from thot.codemap.ts_indexer import EXTENSIONS, _line_of, _mask
+from thot.codemap.ts_indexer import EXTENSIONS, _line_of, read_masked
 from thot.contracts import CodeRef, Symbol
 from thot.taint.js_catalog import active, imports, using
 
@@ -189,6 +189,15 @@ def _reads_tainted(text: str, tainted: dict[str, str]) -> str | None:
         if root in tainted:
             return root
     return None
+
+
+def _has_any_source(masked: str) -> bool:
+    """Whether any untrusted source appears anywhere in the file."""
+    for rule in active().sources:
+        for pattern in rule.patterns:
+            if pattern in masked:
+                return True
+    return False
 
 
 def _applicable(source: str) -> tuple[list, list]:
@@ -373,15 +382,22 @@ def _find_candidates(root: Path, symbols: list[Symbol]) -> list:
 
     found: list = []
     for relative in sorted(by_file):
-        try:
-            source = (root / relative).read_text(encoding="utf-8", errors="replace")
-        except OSError:
+        # Read and masked once per version of the file: the indexer has
+        # already paid for this, and paying twice showed up as nine seconds
+        # before the prompt on a TypeScript repository.
+        source, masked = read_masked(root / relative)
+        if not source:
+            continue
+        # A file with no untrusted source in it cannot contain a path, so
+        # there is nothing to walk. A plain substring test over the whole
+        # file costs microseconds and skips the great majority of them —
+        # measured on Prime: 938 files down to the few dozen that can
+        # possibly matter.
+        if not _has_any_source(masked):
             continue
         call_sinks, assign_sinks = _applicable(source)
         if not call_sinks and not assign_sinks:
             continue
-
-        masked = _mask(source)
         starts = [0] + [i + 1 for i, c in enumerate(masked) if c == "\n"]
         found.extend(
             _scan_body(
