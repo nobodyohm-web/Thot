@@ -34,7 +34,7 @@ from pathlib import Path, PurePosixPath
 
 from thot.codemap.ts_indexer import EXTENSIONS, _line_of, read_masked
 from thot.contracts import CodeRef, Symbol
-from thot.taint.js_catalog import active, imports, using
+from thot.taint.js_catalog import active, bindings, imports, using
 
 _IDENT = r"[A-Za-z_$][A-Za-z0-9_$]*"
 _DOTTED = re.compile(rf"{_IDENT}(?:\.{_IDENT})*")
@@ -446,21 +446,6 @@ _NAMED_IMPORT = re.compile(
 )
 
 
-def _bindings(clause: str) -> list[tuple[str, str]]:
-    """`{ a, b as c }` -> [("a", "a"), ("b", "c")] — (exported, local)."""
-    pairs = []
-    for piece in clause.split(","):
-        piece = piece.strip()
-        if not piece or piece.startswith("type "):
-            continue
-        if " as " in piece:
-            exported, _, local = piece.partition(" as ")
-            pairs.append((exported.strip(), local.strip()))
-        else:
-            pairs.append((piece, piece))
-    return [(a, b) for a, b in pairs if a.isidentifier() and b.isidentifier()]
-
-
 def _resolve(source_file: str, specifier: str, known: dict) -> str | None:
     """A relative specifier to a file this index already holds.
 
@@ -512,7 +497,7 @@ def _imported_callables(source: str, relative: str, by_file: dict,
         if target is None:
             continue
         defined = _exported_functions(target, by_file, cache)
-        for exported, local in _bindings(clause):
+        for exported, local in bindings(clause):
             symbol = defined.get(exported)
             if symbol is not None:
                 found[local] = (target, symbol)

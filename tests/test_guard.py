@@ -846,3 +846,49 @@ def test_a_default_parameter_holding_a_function_ends_no_list():
               "  }\n"
               "}\n")
     assert scan_text("runner.ts", source) == []
+
+
+# -- importing a module is not binding a name -----------------------------
+#
+# `wsl-clipboard-image.ts` imports `child_process` and never binds `exec`
+# from it: the name is a destructured parameter defaulting to
+# `execFileSync`, which takes an argv array and opens no shell. Asking
+# whether the module appears was too coarse a question.
+
+
+def test_a_local_name_shadowing_exec_is_not_the_module_s():
+    source = ("import { execFileSync } from 'node:child_process'\n"
+              "function read({ exec = execFileSync, candidates }) {\n"
+              "  for (const ps of candidates) {\n"
+              "    const out = exec(ps, ['-NoProfile', '-Command', encoded])\n"
+              "  }\n"
+              "}\n")
+    assert scan_text("clip.ts", source) == []
+
+
+def test_the_bound_name_is_the_one_that_counts():
+    source = ('import { execSync, spawnSync } from "child_process";\n'
+              "const output = execSync(command, { encoding: 'utf-8' });\n")
+    assert [f.rule for f in scan_text("config.ts", source)] \
+        == ["pattern.child_process_exec"]
+
+
+def test_a_renamed_import_does_not_bind_the_plain_name():
+    source = ('import { exec as runShell } from "child_process";\n'
+              "function exec(a) { return a; }\n"
+              "const out = exec(command);\n")
+    assert scan_text("run.ts", source) == []
+
+
+def test_the_dotted_form_names_the_module_itself():
+    source = ('const cp = require("child_process");\n'
+              "cp.child_process.exec(command);\n")
+    assert [f.rule for f in scan_text("run.ts", source)] \
+        == ["pattern.child_process_exec"]
+
+
+def test_a_wrapper_module_is_the_stated_price():
+    """Bound from somewhere else, so unseen — the taint engine pays this too."""
+    source = ('import { exec } from "./shell";\n'
+              "exec(command);\n")
+    assert scan_text("run.ts", source) == []

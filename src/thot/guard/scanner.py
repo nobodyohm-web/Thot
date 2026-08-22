@@ -20,7 +20,7 @@ from pathlib import Path
 
 from thot.contracts import CodeRef, Confidence, Finding, Severity
 from thot.codemap.ts_indexer import _skip_balanced
-from thot.taint.js_catalog import imports
+from thot.taint.js_catalog import binds
 from thot.guard.patterns import _JS_EXTS as _JS_SUFFIXES
 from thot.guard.patterns import SECURITY_PATTERNS
 from thot.scoring.role import Role, role_of
@@ -29,18 +29,20 @@ from thot.scoring.severity import compute_severity
 # Impact per rule. The upstream data carries a reminder but no severity, and
 # treating a disabled TLS check like an eval() of user input would make the
 # whole sweep unreadable.
-# The module a rule's call has to come from, when its bare name is ordinary.
-# `exec(` matches a local helper, a method definition and an interface
-# signature as readily as `child_process.exec`, and the sweep had no way to
-# tell them apart. The taint engine has gated this on the file's imports
-# since it was written; the same gate, from the same helper, applies here.
+# The module a rule's call has to be bound from, when its bare name is
+# ordinary. `exec(` matches a local helper, a method definition and an
+# interface signature as readily as `child_process.exec`.
 #
-# The price is a call reached through a local wrapper — `import { exec } from
-# "./shell"` — which the gate now skips. The taint engine already pays it,
-# and it buys back three of the eight HIGH `exec` findings on the two
-# shipped trees, every one of which was prose or a declaration.
-_NEEDS_IMPORT: dict[str, tuple[str, ...]] = {
-    "child_process_exec": ("child_process",),
+# Asked as a binding, not as an import. "Does this file mention the module"
+# was the first answer and it was too coarse: `wsl-clipboard-image.ts`
+# imports `child_process`, binds only `execFileSync` from it, and calls a
+# destructured parameter named `exec` that opens no shell.
+#
+# The price is a call reached through a local wrapper — `import { exec }
+# from "./shell"` — which is not bound from the module and so goes unseen.
+# The taint engine pays the same price for the same reason.
+_BOUND_FROM: dict[str, str] = {
+    "child_process_exec": "child_process",
 }
 
 
@@ -246,17 +248,40 @@ def _is_declaration(masked: str, span: tuple[int, int]) -> bool:
     return tail.startswith("{") or tail.startswith(":")
 
 
+def _is_foreign_name(
+    source: str, masked: str, span: tuple[int, int], module: str
+) -> bool:
+    """Whether the name called here is not the one that module exports.
+
+    Asked of the raw source, because the module name lives inside a string
+    literal that masking blanks. A dotted match — `child_process.exec` —
+    names the module at the call site and needs no binding to vouch for it.
+    """
+    start, end = span
+    matched = masked[start:end]
+    if "." in matched:
+        return False
+    called = re.match(r"[A-Za-z_$][\w$]*", matched)
+    if called is None:
+        return False
+    return not binds(source, module, called.group(0))
+
+
 def _fire_line(pattern: dict, name: str, masked: str, source: str) -> int | None:
     """The line to report, or None when every match on the rule is inert."""
-    if name not in _INJECTION_RULES:
+    module = _BOUND_FROM.get(name)
+    judged = name in _INJECTION_RULES
+    if module is None and not judged:
         return _first_line(masked, pattern)
     spans = _spans(masked, pattern)
     if not spans:
-        return _first_line(masked, pattern)
+        return _first_line(masked, pattern)  # a rule that fires on the path
     for span in spans:
-        if _constant_command(masked, source, span):
+        if module and _is_foreign_name(source, masked, span, module):
             continue
-        if _is_declaration(masked, span):
+        if judged and _constant_command(masked, source, span):
+            continue
+        if judged and _is_declaration(masked, span):
             continue
         return masked.count("\n", 0, span[0]) + 1
     return None
@@ -326,11 +351,6 @@ def scan_text(relative: str, text: str) -> list[Finding]:
     scannable = code_only(relative, text)
     for pattern in SECURITY_PATTERNS:
         name = pattern.get("ruleName", "?")
-        needed = _NEEDS_IMPORT.get(name)
-        # Asked of the raw text, never the masked one: the module name lives
-        # inside a string literal, which masking blanks.
-        if needed and not any(imports(text, module) for module in needed):
-            continue
         try:
             if not _applies(pattern, relative, scannable):
                 continue

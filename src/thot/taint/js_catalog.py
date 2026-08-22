@@ -15,6 +15,8 @@ A rule with `needs` only fires in a file that actually imports that module.
 
 from __future__ import annotations
 
+import re
+
 from contextlib import contextmanager
 from dataclasses import dataclass, replace
 
@@ -174,6 +176,56 @@ def imports(source: str, module: str) -> bool:
         if shape.format(name=module) in source:
             return True
         if shape.format(name=f"node:{module}") in source:
+            return True
+    return False
+
+
+def bindings(clause: str) -> list[tuple[str, str]]:
+    """`{ a, b as c }` -> [("a", "a"), ("b", "c")] — (exported, local)."""
+    pairs = []
+    for piece in clause.split(","):
+        piece = piece.strip()
+        if not piece or piece.startswith("type "):
+            continue
+        if " as " in piece:
+            exported, _, local = piece.partition(" as ")
+            pairs.append((exported.strip(), local.strip()))
+        else:
+            pairs.append((piece, piece))
+    return [(a, b) for a, b in pairs if a.isidentifier() and b.isidentifier()]
+
+
+# A named import or a destructuring require, from any specifier. The relative
+# form the crossing pass needs is a narrowing of this one, not a different
+# shape.
+_CLAUSE = re.compile(
+    r"""import\s*(?:type\s+)?\{(?P<clause>[^}]*)\}\s*from\s*['"](?P<spec>[^'"]+)['"]"""
+    r"""|(?:const|let|var)\s*\{(?P<clause2>[^}]*)\}\s*=\s*require\s*\(\s*"""
+    r"""['"](?P<spec2>[^'"]+)['"]\s*\)"""
+)
+
+
+def binds(source: str, module: str, name: str) -> bool:
+    """Whether this file binds `name`, locally, from `module`.
+
+    `imports` asks whether the module appears at all, which is the question
+    a `needs` rule wants. It is too coarse for a rule that matches a bare
+    name: `wsl-clipboard-image.ts` imports `child_process`, binds only
+    `execFileSync` from it, and calls a destructured parameter named `exec`
+    that opens no shell. The module is there; the name is somebody else's.
+
+    Raw source again, for the reason `imports` gives. A namespace import —
+    `import * as cp from "child_process"` — binds no plain name and answers
+    False; the call it enables is `cp.exec(`, which a bare-name rule does
+    not match either.
+    """
+    wanted = (module, f"node:{module}")
+    for match in _CLAUSE.finditer(source):
+        clause = match.group("clause") or match.group("clause2") or ""
+        specifier = match.group("spec") or match.group("spec2") or ""
+        if specifier not in wanted:
+            continue
+        if any(local == name for _, local in bindings(clause)):
             return True
     return False
 
