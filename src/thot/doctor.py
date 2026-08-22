@@ -157,6 +157,35 @@ def _fusion():
     return len(found) >= 1, " · ".join(name for name, _ in found)
 
 
+def _wiring():
+    """Whether Thot's map is still reachable from the two agents.
+
+    `parts` says the trees are on disk; it says nothing about whether Hermes
+    still lists the plugin in `plugins.enabled` or Prime still points at the
+    shared skills. Those are files belonging to other programs, with their
+    own upgrades and migrations, and they are exactly what breaks quietly
+    between two versions.
+    """
+    from thot.fusion.wiring import hermes_enabled, plan_hermes, plan_prime
+
+    steps = plan_hermes() + plan_prime()
+    if not steps:
+        return False, "rien à brancher — Hermes et Prime absents ?"
+
+    pending = [s for s in steps if s.action != "déjà en place"]
+    enabled = hermes_enabled()
+    if enabled is False:
+        pending.append("plugin non activé dans Hermes")
+    elif enabled is None:
+        pending.append("config de Hermes illisible")
+
+    if pending:
+        return False, (
+            f"{len(pending)} élément(s) à rebrancher — `thot fusion wire`"
+        )
+    return True, f"{len(steps)}/{len(steps)} fichiers en place"
+
+
 def _loop():
     from thot.schedule.jobs import load
 
@@ -171,6 +200,7 @@ def run(root: Path) -> list[Check]:
     root = Path(root)
     return [
         _safe("fusion", _fusion),
+        _safe("câblage", _wiring),
         _safe("moteurs", _engines),
         _safe("panel", lambda: _panel(root)),
         _safe("indexeurs", lambda: _indexers(root)),

@@ -167,3 +167,44 @@ def test_an_agent_that_leaves_the_disk_alone_passes(tmp_path):
     ok, detail = doctor._cannot_write(_Quiet)
     assert ok is True
     assert "n'a pas pu écrire" in detail
+
+
+def test_the_wiring_check_notices_a_plugin_that_was_disabled(monkeypatch):
+    """`parts` says the trees are on disk and nothing about the wiring.
+
+    Hermes's `plugins.enabled` and Prime's skills path are files belonging to
+    other programs, with their own upgrades and migrations — exactly what
+    breaks quietly between two versions.
+    """
+    from thot.fusion.wiring import Step
+
+    monkeypatch.setattr(
+        "thot.fusion.wiring.plan_hermes",
+        lambda: [Step(target=Path("a"), action="déjà en place")],
+    )
+    monkeypatch.setattr("thot.fusion.wiring.plan_prime", lambda: [])
+    monkeypatch.setattr("thot.fusion.wiring.hermes_enabled", lambda: False)
+
+    ok, detail = doctor._wiring()
+
+    assert ok is False
+    assert "rebrancher" in detail
+
+
+def test_the_wiring_check_passes_when_everything_is_in_place(monkeypatch):
+    from thot.fusion.wiring import Step
+
+    monkeypatch.setattr(
+        "thot.fusion.wiring.plan_hermes",
+        lambda: [Step(target=Path("a"), action="déjà en place")],
+    )
+    monkeypatch.setattr(
+        "thot.fusion.wiring.plan_prime",
+        lambda: [Step(target=Path("b"), action="déjà en place")],
+    )
+    monkeypatch.setattr("thot.fusion.wiring.hermes_enabled", lambda: True)
+
+    ok, detail = doctor._wiring()
+
+    assert ok is True
+    assert "2/2" in detail
