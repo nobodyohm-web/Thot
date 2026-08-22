@@ -278,3 +278,55 @@ def test_one_private_answer_among_several_is_enough_to_refuse(monkeypatch):
                           (2, 1, 6, "", ("10.0.0.5", 0))],
     )
     assert security.is_safe_callback_url("http://mixed.example/cb") is False
+
+
+def test_the_a2a_fetch_helpers_refuse_a_redirect_to_a_private_address(monkeypatch):
+    """Checking the first URL only is theatre: `urlopen` follows redirects.
+
+    Found by the adversarial pass on the code as it stood *after* the first
+    fix — the guard resolved the name it was given and then let the request
+    walk wherever a 302 pointed it.
+    """
+    import socket
+
+    security = _a2a_security()
+    monkeypatch.setenv("A2A_BEARER_TOKEN", "x")
+    monkeypatch.setattr(
+        socket, "getaddrinfo", lambda *a, **kw: [(2, 1, 6, "", ("127.0.0.1", 0))]
+    )
+    opener = security.guarded_opener()
+    handler = next(
+        h for h in opener.handlers if type(h).__name__ == "_NoInternalRedirects"
+    )
+    with pytest.raises(OSError):
+        handler.redirect_request(None, None, 302, "Found", {},
+                                 "http://rebind.example/next")
+
+
+def test_a2a_discover_refuses_a_model_supplied_internal_url(monkeypatch):
+    """`a2a_discover` takes its URL from a tool argument, so from the model.
+
+    The `# noqa: S310 (configured peers)` on the fetch helpers does not cover
+    this path, and the body of the response is summarised back into the
+    model's own context.
+    """
+    import importlib.util
+    import socket
+    import sys
+
+    from thot.fusion.locate import hermes_root
+
+    root = hermes_root()
+    if root is None:
+        pytest.skip("Hermes n'est pas installé ici")
+    path = root / "plugins" / "platforms" / "a2a" / "tools.py"
+    if not path.is_file():
+        pytest.skip("cette version de Hermes n'a pas l'adaptateur A2A")
+
+    source = path.read_text(encoding="utf-8")
+    assert "if not security.is_safe_callback_url(url):" in source, (
+        "a2a_discover doit valider l'URL avant de la chercher"
+    )
+    assert "security.guarded_opener()" in (
+        (root / "plugins" / "platforms" / "a2a" / "tools.py").read_text(encoding="utf-8")
+    ), "les aides HTTP doivent contrôler les redirections"

@@ -346,6 +346,25 @@ def is_safe_callback_url(url: str) -> bool:
     return True
 
 
+def guarded_opener():
+    """An opener that re-checks the destination at every redirect hop.
+
+    Validating only the URL handed in is theatre: a host the caller controls
+    answers a public address, then redirects to 127.0.0.1 or to the metadata
+    service. `urlopen` follows redirects by default, so the check has to
+    travel with the request.
+    """
+    import urllib.request
+
+    class _NoInternalRedirects(urllib.request.HTTPRedirectHandler):
+        def redirect_request(self, req, fp, code, msg, headers, newurl):
+            if not is_safe_callback_url(newurl):
+                raise OSError(f"refused redirect to a non-public address: {newurl}")
+            return super().redirect_request(req, fp, code, msg, headers, newurl)
+
+    return urllib.request.build_opener(_NoInternalRedirects)
+
+
 def _resolves_to_public_address(hostname: str) -> bool:
     """Whether every address this name resolves to is reachable by others.
 

@@ -80,7 +80,9 @@ def _auth_header(auth: dict) -> dict:
 
 def _http_get_json(url: str, headers: dict, timeout: int) -> dict:
     req = urllib.request.Request(url, headers=headers, method="GET")
-    with urllib.request.urlopen(req, timeout=timeout) as resp:  # noqa: S310 (configured peers)
+    # A redirect is never part of a configured peer's contract, and following
+    # one blindly undoes whatever check the caller made on the first URL.
+    with security.guarded_opener().open(req, timeout=timeout) as resp:  # noqa: S310
         return json.loads(resp.read().decode("utf-8"))
 
 
@@ -88,7 +90,7 @@ def _http_post_json(url: str, body: dict, headers: dict, timeout: int) -> dict:
     data = json.dumps(body).encode("utf-8")
     hdrs = {"Content-Type": "application/json", "A2A-Version": protocol.PROTOCOL_VERSION, **headers}
     req = urllib.request.Request(url, data=data, headers=hdrs, method="POST")
-    with urllib.request.urlopen(req, timeout=timeout) as resp:  # noqa: S310 (configured peers)
+    with security.guarded_opener().open(req, timeout=timeout) as resp:  # noqa: S310
         return json.loads(resp.read().decode("utf-8"))
 
 
@@ -226,6 +228,12 @@ def a2a_discover(args: dict, **_: Any) -> str:
     url = str(args.get("url") or "").strip()
     if not url:
         return "Error: 'url' is required (e.g. http://localhost:9999)."
+    # This URL comes from a tool argument, so it comes from the model. The
+    # `configured peers` justification on the fetch helpers does not cover
+    # this path: a prompt-injected model asking for the cloud metadata
+    # service would get the body summarised back into its own context.
+    if not security.is_safe_callback_url(url):
+        return f"Error: refused — {url} is not a public http(s) address."
     try:
         card = _fetch_card(url, {}, _DEFAULT_TIMEOUT)
     except urllib.error.HTTPError as e:

@@ -1207,7 +1207,11 @@ class A2AAdapter(BasePlatformAdapter):
         try:
             data = json.dumps(payload).encode("utf-8")
             req = urllib.request.Request(callback_url, data=data, headers=headers, method="POST")
-            with urllib.request.urlopen(req, timeout=10) as resp:  # noqa: S310
+            # `is_safe_callback_url` above validated the URL handed in, and
+            # `urlopen` follows redirects — so without this the check applied
+            # to the first hop only, and a public host answering a 302 to
+            # 127.0.0.1 walked straight through it.
+            with security.guarded_opener().open(req, timeout=10) as resp:  # noqa: S310
                 if 200 <= resp.status < 300:
                     protocol.metrics.push_sent += 1
                     logger.debug("A2A: push notification sent for task %s", task_id)
