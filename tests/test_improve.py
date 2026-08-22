@@ -310,3 +310,80 @@ def test_one_round_carries_the_write_up_from_the_audit_result(monkeypatch):
 
     assert round_.touched == ("hermes/cron/monitor.py",)
     assert "modifié" in round_.line()
+
+
+# --- un tour où tout a échoué n'est pas un succès --------------------------
+#
+# `Session.summary()` sait le dire — « Aucun verdict : toutes les tâches ont
+# échoué… un quota épuisé ou un agent absent se règle avant de relancer » —
+# mais `thot improve` rendait 0 quand même. Le job nocturne, lui, sort non nul
+# dans exactement le même cas, et l'asymétrie n'était expliquée nulle part :
+# `thot improve && …` enchaînait comme si le tour avait travaillé.
+
+
+def _improving(monkeypatch, session):
+    from thot import cli
+
+    monkeypatch.setattr("thot.improve.improve", lambda **kwargs: session)
+    monkeypatch.setattr("thot.cli.run_improvement", lambda **kwargs: session,
+                        raising=False)
+    return cli
+
+
+def test_a_round_where_every_task_failed_is_not_a_success(capsys, monkeypatch):
+    from thot.improve import PartRound, Session
+
+    session = Session(rounds=[[PartRound(part="thot", findings=4, judged=0,
+                                         failed=3, backlog=4)]])
+    cli = _improving(monkeypatch, session)
+
+    code = cli.main(["improve", "--rounds", "1"])
+    out = capsys.readouterr().out
+
+    assert "toutes les tâches ont échoué" in out, out
+    assert code != 0
+
+
+def test_an_ordinary_round_still_succeeds(capsys, monkeypatch):
+    from thot.improve import PartRound, Session
+
+    session = Session(rounds=[[PartRound(part="thot", findings=4, judged=2,
+                                         refuted=2, backlog=0)]])
+    cli = _improving(monkeypatch, session)
+
+    code = cli.main(["improve", "--rounds", "1"])
+    capsys.readouterr()
+
+    assert code == 0
+
+
+def test_a_quiet_round_with_nothing_to_judge_succeeds(capsys, monkeypatch):
+    from thot.improve import PartRound, Session
+
+    session = Session(rounds=[[PartRound(part="thot", findings=4, judged=0,
+                                         backlog=0)]])
+    cli = _improving(monkeypatch, session)
+
+    code = cli.main(["improve", "--rounds", "1"])
+    capsys.readouterr()
+
+    assert code == 0
+
+
+def test_a_round_that_judged_something_despite_failures_succeeds(capsys,
+                                                                 monkeypatch):
+    """The realistic case: a quota running out part-way through.
+
+    Without it the condition could be narrowed to `session.failed` alone and
+    nothing would notice — which is what the mutation showed.
+    """
+    from thot.improve import PartRound, Session
+
+    session = Session(rounds=[[PartRound(part="thot", findings=6, judged=2,
+                                         refuted=2, failed=3, backlog=2)]])
+    cli = _improving(monkeypatch, session)
+
+    code = cli.main(["improve", "--rounds", "1"])
+    capsys.readouterr()
+
+    assert code == 0

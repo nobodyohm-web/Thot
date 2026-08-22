@@ -1376,6 +1376,13 @@ def _cmd_improve(args) -> int:
     if session.backlog:
         print(f"`thot improve --rounds {max(2, args.rounds)}` pour continuer, "
               f"ou `thot improve --every daily` pour ne plus y penser.")
+
+    # A round where every task failed is not a round. `summary()` already says
+    # so — "un quota épuisé ou un agent absent se règle avant de relancer" —
+    # and the scheduled path returns non-zero for the same condition, so a
+    # `thot improve && …` used to carry on as though the pass had worked.
+    if session.failed and not session.settled:
+        return EXIT_ERROR
     return 0
 
 
