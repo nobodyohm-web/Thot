@@ -187,6 +187,86 @@ def _wiring():
     return True, f"{len(steps)}/{len(steps)} fichiers en place"
 
 
+# Folders macOS guards with TCC. A LaunchAgent holds no consent for them and
+# has no session in which to be asked for it: measured on this machine, a
+# minimal agent running `ls ~/Desktop/Thot/src` exits 1 while the same agent
+# reads `~/.local/share/uv/tools/thot` fine.
+#
+# That matters because an editable install writes the source path into a
+# `.pth` file, so it lands on `sys.path` and the interpreter scans it before
+# any of Thot's code runs. The nightly job then blocks in
+# `site.execsitecustomize` → `_fill_cache` at 0.03 s of CPU, indefinitely,
+# with an empty log and `LastExitStatus 0` — and `thot doctor` reported the
+# loop green the whole time.
+TCC_GUARDED = ("Desktop", "Documents", "Downloads")
+
+
+def unreachable_from_launchd(paths, *, home) -> list[str]:
+    """Import paths a scheduled job will not be allowed to read.
+
+    Matched on the first segment below `$HOME` only: `/opt/Desktop` is not the
+    guarded folder, and neither is `~/projets/Desktop_backup`.
+    """
+    home_path = Path(home)
+    found: list[str] = []
+    for entry in paths:
+        if not entry:
+            continue
+        try:
+            relative = Path(entry).relative_to(home_path)
+        except ValueError:
+            continue
+        if relative.parts and relative.parts[0] in TCC_GUARDED:
+            found.append(str(entry))
+    return found
+
+
+def job_import_paths(unit: Path) -> list[str]:
+    """Everything the scheduled interpreter will put on `sys.path`.
+
+    The unit names a console script; the script's shebang names the
+    interpreter; that interpreter's `site-packages` holds the `.pth` files an
+    editable install writes. On this machine `_thot.pth` contains
+    `/Users/dev/Desktop/Thot/src`, which is exactly the path launchd is
+    refused — and none of it is visible from `sys.path` of whatever process
+    happens to be running `thot doctor`.
+    """
+    try:
+        text = unit.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return []
+
+    programs = [
+        line.split("<string>", 1)[1].split("</string>", 1)[0]
+        for line in text.splitlines()
+        if "<string>" in line and "</string>" in line
+    ]
+    program = next((Path(p) for p in programs if Path(p).is_file()), None)
+    if program is None:
+        return []
+
+    found = [str(program.parent)]
+    try:
+        first = program.read_text(encoding="utf-8", errors="replace").split("\n", 1)[0]
+    except OSError:
+        return found
+    if not first.startswith("#!"):
+        return found
+
+    interpreter = Path(first[2:].strip().strip('"'))
+    root = interpreter.parent.parent
+    for pth in sorted(root.glob("lib/python*/site-packages/*.pth")):
+        try:
+            lines = pth.read_text(encoding="utf-8", errors="replace").splitlines()
+        except OSError:
+            continue
+        found += [
+            line.strip() for line in lines
+            if line.strip().startswith("/")
+        ]
+    return found
+
+
 def _loop():
     from thot.schedule.jobs import load
 
@@ -205,6 +285,22 @@ def _loop():
     detail = f"{job.schedule}, {job.budget} candidats par arbre"
     if not unit.is_file():
         return True, detail + " · unité non écrite (cron ?)"
+
+    # Before the PATH: a job that cannot even start its interpreter will
+    # never reach the point where the PATH matters. Asked of the job's own
+    # interpreter, never of this process — `thot doctor` is usually run from
+    # a checkout that launchd will never touch.
+    guarded = unreachable_from_launchd(
+        job_import_paths(unit), home=Path.home()
+    )
+    if guarded:
+        return False, (
+            detail + f" · l'import passe par {guarded[0]}, que macOS refuse à "
+            "un agent launchd — le job se bloque au démarrage de "
+            "l'interpréteur, sans écrire une ligne. Installe Thot hors de "
+            "Desktop/Documents/Downloads, ou donne l'accès complet au disque "
+            "à l'interpréteur qui exécute l'unité."
+        )
 
     text = unit.read_text(encoding="utf-8", errors="replace")
     marker = "<key>PATH</key><string>"

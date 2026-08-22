@@ -416,3 +416,136 @@ def test_a_unit_without_any_path_is_a_failure(tmp_path, monkeypatch):
     ok, detail = doctor._loop()
     assert ok is False
     assert "n'a pas de PATH" in detail
+
+
+# --- une boucle nocturne qui importe depuis un dossier protégé ne part pas --
+#
+# Mesuré sur cette machine : un LaunchAgent minimal exécutant
+# `ls /Users/dev/Desktop/Thot/src` sort en rc=1, tandis que
+# `ls ~/.local/share/uv/tools/thot` sort en rc=0. macOS refuse le Bureau à un
+# agent launchd, qui n'a aucun consentement TCC et aucune session pour le
+# demander. Or l'installation éditable écrit `/Users/dev/Desktop/Thot/src`
+# dans `_thot.pth`, donc sur `sys.path` : le job se bloque dans
+# `site.execsitecustomize` → `_fill_cache`, à 0,03 s de CPU, indéfiniment,
+# sans écrire une ligne dans son journal. `thot doctor` le disait au vert.
+
+
+def test_an_import_path_under_the_desktop_is_named():
+    from thot.doctor import unreachable_from_launchd
+
+    guarded = unreachable_from_launchd(
+        ["/Users/dev/Desktop/Thot/src", "/Users/dev/.local/lib/python"],
+        home="/Users/dev",
+    )
+
+    assert guarded == ["/Users/dev/Desktop/Thot/src"]
+
+
+def test_documents_and_downloads_are_guarded_too():
+    from thot.doctor import unreachable_from_launchd
+
+    guarded = unreachable_from_launchd(
+        ["/Users/dev/Documents/a", "/Users/dev/Downloads/b"], home="/Users/dev"
+    )
+
+    assert len(guarded) == 2
+
+
+def test_an_ordinary_install_path_is_left_alone():
+    from thot.doctor import unreachable_from_launchd
+
+    assert unreachable_from_launchd(
+        ["/Users/dev/.local/share/uv/tools/thot/lib", "/usr/lib/python3"],
+        home="/Users/dev",
+    ) == []
+
+
+def test_a_lookalike_directory_is_not_mistaken_for_the_real_one():
+    from thot.doctor import unreachable_from_launchd
+
+    # `Desktop` compte comme premier segment sous $HOME, pas ailleurs
+    assert unreachable_from_launchd(
+        ["/opt/Desktop/thing", "/Users/dev/projets/Desktop_backup"],
+        home="/Users/dev",
+    ) == []
+
+
+def test_the_paths_are_read_from_the_job_interpreter_not_from_this_process(tmp_path):
+    """The wiring: unit → console script → shebang → its own .pth files.
+
+    Written because the first version of this check asked `sys.path` of
+    whatever process ran `thot doctor`, and duly named the checkout's venv
+    instead of the path launchd is actually refused.
+    """
+    from thot.doctor import job_import_paths, unreachable_from_launchd
+
+    tools = tmp_path / "tools" / "thot"
+    (tools / "bin").mkdir(parents=True)
+    packages = tools / "lib" / "python3.11" / "site-packages"
+    packages.mkdir(parents=True)
+    interpreter = tools / "bin" / "python3"
+    interpreter.write_text("#!/bin/sh\n")
+    (packages / "_thot.pth").write_text("/Users/someone/Desktop/Thot/src\n")
+
+    script = tmp_path / "bin" / "thot"
+    script.parent.mkdir(parents=True)
+    script.write_text(f"#!{interpreter}\nprint('hi')\n")
+
+    unit = tmp_path / "job.plist"
+    unit.write_text(f"<string>{script}</string>\n<string>schedule</string>\n")
+
+    paths = job_import_paths(unit)
+
+    assert "/Users/someone/Desktop/Thot/src" in paths
+    assert unreachable_from_launchd(paths, home="/Users/someone") == [
+        "/Users/someone/Desktop/Thot/src"
+    ]
+
+
+def test_a_unit_pointing_at_nothing_readable_says_nothing(tmp_path):
+    from thot.doctor import job_import_paths
+
+    unit = tmp_path / "job.plist"
+    unit.write_text("<string>/nowhere/at/all</string>\n")
+
+    assert job_import_paths(unit) == []
+
+
+def test_the_loop_check_itself_fails_on_a_guarded_import_path(tmp_path, monkeypatch):
+    """`_loop` must actually consult the two helpers above.
+
+    Both of them were fully tested while `_loop` ignored them entirely:
+    neutering the branch left the suite green. This is the test that goes red.
+    """
+    from thot.schedule.jobs import FUSION, Job
+
+    home = tmp_path / "home"
+    tools = home / ".local" / "tools" / "thot"
+    (tools / "bin").mkdir(parents=True)
+    packages = tools / "lib" / "python3.11" / "site-packages"
+    packages.mkdir(parents=True)
+    interpreter = tools / "bin" / "python3"
+    interpreter.write_text("#!/bin/sh\n")
+    (packages / "_thot.pth").write_text(str(home / "Desktop" / "Thot" / "src") + "\n")
+
+    script = home / "bin" / "thot"
+    script.parent.mkdir(parents=True)
+    script.write_text(f"#!{interpreter}\n")
+
+    monkeypatch.setattr(
+        "thot.schedule.jobs.load",
+        lambda: [Job(name="improve", root=FUSION, deep=True, budget=8)],
+    )
+    monkeypatch.setattr("thot.schedule.install.LAUNCH_AGENTS", tmp_path)
+    monkeypatch.setattr("pathlib.Path.home", classmethod(lambda cls: home))
+    (tmp_path / "com.thot.improve.plist").write_text(
+        f"<plist><dict><string>{script}</string>"
+        "<key>PATH</key><string>/usr/bin</string></dict></plist>",
+        encoding="utf-8",
+    )
+
+    ok, detail = doctor._loop()
+
+    assert ok is False, detail
+    assert "Desktop" in detail
+    assert "launchd" in detail
