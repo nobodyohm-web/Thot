@@ -350,20 +350,30 @@ def _toolbelt(cls, *, strict: bool = True) -> tuple[bool, str]:
     # which the comma split turned into three imaginary tools. A name is
     # CamelCase or an `mcp__` prefix; a French word is neither, and this
     # check is about what the probe holds rather than how it writes.
-    named = re.compile(r"^(?:mcp__[\w.-]+|[A-Z][A-Za-z0-9_]*)$")
-    tools = {token for token in re.findall(r"[\w.]+", answer) if named.match(token)}
-    surplus = sorted(tools - READ_ONLY_TOOLBELT)
-    if not surplus:
-        return True, f"{len(tools) or len(listed)} outil(s), tous en lecture seule"
     if not strict:
         # Hermes and Prime cannot be narrowed further — `-t file` is "File
         # Operations", reads and writes together, and Prime's one built-in
         # tool is a kernel. A red line nobody can act on is a line people
-        # stop reading, so what they hold is shown instead of judged.
+        # stop reading, so what they hold is shown and never judged. Shown
+        # first, too: routing them through the verdict below once printed
+        # "1 outil, tous en lecture seule" about a Python kernel, because
+        # `ipython` is lowercase and the name pattern did not recognise it.
         return True, ", ".join(listed[:6]) + ("…" if len(listed) > 6 else "")
-    return False, (
-        f"{len(surplus)} outil(s) hors lecture seule : " + ", ".join(surplus[:6])
-    )
+
+    named = re.compile(r"^(?:mcp__[\w.-]+|[A-Z][A-Za-z0-9_]*)$")
+    tools = {token for token in re.findall(r"[\w.]+", answer) if named.match(token)}
+    if not tools:
+        # An answer nobody could parse is not an answer that everything is
+        # fine. The pattern only knows two shapes of name, and a client that
+        # named its tools differently would sail through as "all read-only".
+        return False, f"aucun nom d'outil reconnu dans : {answer[:60]!r}"
+    surplus = sorted(tools - READ_ONLY_TOOLBELT)
+    if surplus:
+        return False, (
+            f"{len(surplus)} outil(s) hors lecture seule : "
+            + ", ".join(surplus[:6])
+        )
+    return True, f"{len(tools)} outil(s), tous en lecture seule"
 
 
 def run_agents(*, writes: bool = True) -> list[Check]:

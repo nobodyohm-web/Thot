@@ -324,3 +324,36 @@ def test_prose_does_not_hide_a_real_surplus():
     ok, detail = doctor._toolbelt(_Mixed)
     assert ok is False
     assert "Bash" in detail and "CronCreate" in detail
+
+
+def test_an_unreadable_toolbelt_is_not_a_clean_one():
+    """It printed "1 outil, tous en lecture seule" about a Python kernel.
+
+    `ipython` is lowercase, the name pattern knows CamelCase and `mcp__`
+    prefixes, so nothing was recognised, nothing was surplus, and the line
+    went green about the most capable tool in the fusion. An answer nobody
+    could parse is not an answer that everything is fine.
+    """
+    from thot.engine.base import AgentResult, EngineCapabilities
+
+    class _Kernel:
+        def __init__(self, root, max_parallel=1):
+            pass
+
+        @property
+        def capabilities(self):
+            return EngineCapabilities(name="noyau", max_parallel=1)
+
+        def run(self, task):
+            return AgentResult(task_id=task.id, data={"verdict": "ipython"})
+
+        def fan_out(self, tasks):
+            return [self.run(t) for t in tasks]
+
+    strict_ok, strict_detail = doctor._toolbelt(_Kernel, strict=True)
+    assert strict_ok is False
+    assert "aucun nom d'outil reconnu" in strict_detail
+
+    shown_ok, shown_detail = doctor._toolbelt(_Kernel, strict=False)
+    assert shown_ok is True
+    assert shown_detail == "ipython", "montré tel quel, jamais qualifié"
