@@ -74,6 +74,9 @@ def audit_all(*, deep: bool = False, engine_name: str = "",
               on_decided=None) -> list[Part]:
     """Audit every part. One failure never costs the others.
 
+    `on_decided` is called as `(part_name, finding)` the moment a finding is
+    settled, so a long run can be reported and persisted as it goes.
+
     `require_authorization` mirrors `run_audit`'s own knob rather than
     hiding it: auditing a tree is a mandated act, and the one caller that
     skips the mandate — the interactive session, where launching Thot inside
@@ -93,10 +96,17 @@ def audit_all(*, deep: bool = False, engine_name: str = "",
                 continue
 
         memory = _memory(root)
+        # The callback is told which tree the decision came from. Without it
+        # a caller counting per part has no boundary to count against — the
+        # first tree would be credited with every decision of the run.
+        per_part = (
+            (lambda finding, part=name: on_decided(part, finding))
+            if on_decided is not None else None
+        )
         try:
             result = run_audit(root, engine=engine, memory=memory, budget=budget,
                                require_authorization=require_authorization,
-                               skip=skip, on_decided=on_decided)
+                               skip=skip, on_decided=per_part)
             done.append(Part(name, root, result=result))
         except AuthorizationError:
             done.append(

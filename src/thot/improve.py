@@ -106,10 +106,10 @@ def one_round(
     from thot.fusion.audit import audit_all
 
     seen = seen if seen is not None else set()
-    decided: list = []
+    decided: dict[str, list] = {}
 
-    def record(finding) -> None:
-        decided.append(finding)
+    def record(part: str, finding) -> None:
+        decided.setdefault(part, []).append(finding)
         seen.add(finding.id)
         if on_decided is not None:
             on_decided(finding)
@@ -123,17 +123,12 @@ def one_round(
         on_decided=record,
     )
 
-    # Attribution by tree: `audit_all` runs them in order, so the findings
-    # decided during a part's audit are the ones recorded since the previous
-    # part finished.
     rounds: list[PartRound] = []
-    consumed = 0
     for part in done:
         if not part.ok:
             rounds.append(PartRound(part=part.name, error=part.error))
             continue
-        mine = decided[consumed:]
-        consumed = len(decided)
+        mine = decided.get(part.name, [])
         rounds.append(
             PartRound(
                 part=part.name,

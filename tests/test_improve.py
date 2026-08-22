@@ -76,3 +76,35 @@ def test_a_contested_refutation_is_counted_on_its_own():
                        contested=1, backlog=4)
 
     assert "1 réfutation(s) contestée(s)" in round_.line()
+
+
+def test_each_tree_is_credited_with_its_own_decisions(monkeypatch):
+    """`audit_all` runs the trees in order; a caller needs the boundary.
+
+    Slicing a flat list of decisions after the fact credited the first tree
+    with every decision of the whole round.
+    """
+    from thot.contracts import Confidence
+    from thot.improve import one_round
+
+    class _Result:
+        findings: list = []
+
+    class _Part:
+        def __init__(self, name):
+            self.name, self.result, self.error = name, _Result(), ""
+            self.ok = True
+
+    def fake_audit_all(*, on_decided, **kwargs):
+        for part, count in (("thot", 1), ("hermes", 2)):
+            for index in range(count):
+                on_decided(part, _finding(f"{part}{index}",
+                                          Confidence.REFUTED))
+        return [_Part("thot"), _Part("hermes")]
+
+    monkeypatch.setattr("thot.fusion.audit.audit_all", fake_audit_all)
+
+    result = {r.part: r for r in one_round(budget=1, parallel=1)}
+
+    assert result["thot"].judged == 1
+    assert result["hermes"].judged == 2
