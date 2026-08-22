@@ -274,3 +274,30 @@ def test_the_progress_line_tells_the_three_kinds_of_undecided_apart(capsys):
     assert "sans verdict" in lines[0]
     assert "échec : délai dépassé (600s)" in lines[1]
     assert "réfutation contestée" in lines[2] and "prime" in lines[2]
+
+
+def test_the_report_is_handed_the_whole_pass_not_only_what_is_shown(
+    toy_repo, capsys, monkeypatch
+):
+    """A refutation lands on INFO, so it always falls below the display floor.
+
+    `_confidence_note` counts refutations, but the CLI handed it only the
+    findings the threshold kept — so a `--deep` pass that argued two findings
+    away closed on "Chaque finding est PLAUSIBLE". The wiring is what makes
+    the note able to see them, and nothing exercised it.
+    """
+    from thot import console
+
+    seen = {}
+    real = console.print_report
+
+    def spy(result, hidden=0, judged=None):
+        seen["judged"] = judged
+        return real(result, hidden=hidden, judged=judged)
+
+    monkeypatch.setattr(console, "print_report", spy)
+    write_authorization(toy_repo, owner="tester")
+    cli.main(["audit", str(toy_repo), "--no-store"])
+    capsys.readouterr()
+
+    assert seen.get("judged") is not None, "le CLI n'a pas transmis la passe entière"

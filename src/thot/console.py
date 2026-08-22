@@ -22,8 +22,16 @@ _ORDER = [
 console = Console()
 
 
-def print_report(result, hidden: int = 0) -> None:
-    """Render an AuditResult as a terminal report."""
+def print_report(result, hidden: int = 0, judged=None) -> None:
+    """Render an AuditResult as a terminal report.
+
+    `judged` is the whole run, before the display threshold. A refutation
+    lands on INFO by construction, so every one of them falls below the floor
+    — and the closing note, which counts them, was only ever handed what the
+    floor kept. A `--deep` pass that argued two findings away therefore ended
+    on "Chaque finding est PLAUSIBLE", the exact sentence its own docstring
+    was written to prevent.
+    """
     console.print()
     console.rule("[bold]Thot — rapport d'audit")
 
@@ -92,7 +100,7 @@ def print_report(result, hidden: int = 0) -> None:
     console.print(
         f"[bold]{len(result.findings)}[/bold] finding(s) — {breakdown}{suffix}"
     )
-    console.print(_confidence_note(result.findings))
+    console.print(_confidence_note(result.findings, judged))
     panel = _panel_note(result.findings)
     if panel:
         console.print(panel)
@@ -185,7 +193,7 @@ def _pattern_only(languages: dict) -> str:
     return "\n".join(lines)
 
 
-def _confidence_note(findings) -> str:
+def _confidence_note(findings, judged=None) -> str:
     """Say what the findings actually are.
 
     This line is the last thing a reader sees, so it outranks the table above
@@ -194,9 +202,13 @@ def _confidence_note(findings) -> str:
     remembered verdict, it told the reader the opposite of what had happened —
     and buried minutes of argued analysis under a disclaimer.
     """
-    confirmed = sum(1 for f in findings if f.confidence is Confidence.CONFIRMED)
-    refuted = sum(1 for f in findings if f.confidence is Confidence.REFUTED)
-    plausible = len(findings) - confirmed - refuted
+    counted = list(judged) if judged is not None else list(findings)
+    confirmed = sum(1 for f in counted if f.confidence is Confidence.CONFIRMED)
+    refuted = sum(1 for f in counted if f.confidence is Confidence.REFUTED)
+    plausible = len(findings) - sum(
+        1 for f in findings
+        if f.confidence in (Confidence.CONFIRMED, Confidence.REFUTED)
+    )
 
     if not confirmed and not refuted:
         return (

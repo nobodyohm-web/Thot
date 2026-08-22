@@ -613,7 +613,7 @@ def _cmd_audit(args) -> int:
         else:
             print(rendered)
     else:
-        print_report(shown, hidden=hidden)
+        print_report(shown, hidden=hidden, judged=result.findings)
         if args.paths:
             print_paths(shown)
 

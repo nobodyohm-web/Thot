@@ -57,3 +57,50 @@ def test_a_deep_path_is_readable_in_the_table():
     assert "…" not in raw, raw
     assert "packages/coding-agent/src/tools/terminal/sessi" in raw, raw
     assert "on-runner.ts:412" in raw, raw
+
+
+# --- une réfutation sous le seuil reste une réfutation ---------------------
+#
+# Observé en direct : une passe `--deep` sur Prime réfute deux findings par
+# `hermes` et `claude-cli`, les deux tombent sous le seuil d'affichage — et le
+# pied de page annonce « Chaque finding est PLAUSIBLE : détecté par analyse
+# statique, pas encore prouvé par exécution ». `_confidence_note` sait
+# pourtant compter les réfutations ; sa docstring dit même que c'est la raison
+# de son existence. Elle ne recevait que les findings retenus par le seuil,
+# donc le filtrage défaisait la correction.
+
+
+def _mixed():
+    from thot.contracts import CodeRef, Confidence, Finding, Severity
+
+    def one(identifier, severity, confidence):
+        return Finding(
+            id=identifier, rule="sink.js.exec", severity=severity,
+            confidence=confidence,
+            location=CodeRef(path="a.ts", line=1, symbol="s", ast_hash="h"),
+            failure_scenario="x",
+        )
+
+    kept = [one("k", Severity.HIGH, Confidence.PLAUSIBLE)]
+    judged = kept + [
+        one("r1", Severity.INFO, Confidence.REFUTED),
+        one("r2", Severity.INFO, Confidence.REFUTED),
+    ]
+    return kept, judged
+
+
+def test_the_note_counts_what_the_pass_judged_not_what_the_threshold_kept():
+    from thot.console import _confidence_note
+
+    kept, judged = _mixed()
+
+    assert "réfuté" in _confidence_note(kept, judged)
+    assert "2 réfuté" in _confidence_note(kept, judged)
+
+
+def test_without_a_deep_pass_the_note_is_unchanged():
+    from thot.console import _confidence_note
+
+    kept, _ = _mixed()
+
+    assert "PLAUSIBLE" in _confidence_note(kept, kept)
