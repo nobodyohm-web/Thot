@@ -96,7 +96,7 @@ def findings_table(findings) -> str:
             f"<td>{index}</td>"
             f'<td class="{severity}">{_escape(severity.upper())}</td>'
             f"<td>{_escape(finding.rule)}</td>"
-            f"<td>{_escape(finding.location.path)}:{finding.location.line}</td>"
+            f"<td>{_escape(finding.location.pinpoint())}</td>"
             f"<td>{_escape(finding.confidence.value)}</td>"
             f"<td>{_escape(_stages(finding))}</td>"
             f"<td><pre>{_escape(finding.failure_scenario)}</pre></td>"

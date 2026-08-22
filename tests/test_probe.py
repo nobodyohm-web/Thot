@@ -63,3 +63,30 @@ def test_every_task_carries_the_marker_when_the_file_is_gone(tmp_path):
     ]
     for task in built:
         assert "illisible" in task.context.lower(), task.id
+
+
+def test_two_calls_on_one_line_reach_the_agent_as_two_different_tasks(tmp_path):
+    """`site` decides identity; it has to reach the one who judges.
+
+    Both tasks used to carry `Emplacement : a.ts:219` verbatim, so an agent
+    judging the second saw exactly what it had seen for the first — for two
+    calls that `compute_id` deliberately keeps apart.
+    """
+    from thot.analysis.probe import _probe_task
+    from thot.contracts import CodeRef, Confidence, Finding, Severity
+
+    def at(site):
+        location = CodeRef(path="a.ts", line=219, symbol="load", ast_hash="h",
+                           site=site)
+        return Finding(
+            id=Finding.compute_id("sink.js.path", location),
+            rule="sink.js.path", severity=Severity.LOW,
+            confidence=Confidence.PLAUSIBLE, location=location,
+            failure_scenario="une valeur atteint join",
+        )
+
+    first = _probe_task(tmp_path, at("join#0")).context
+    second = _probe_task(tmp_path, at("join#1")).context
+
+    assert "join#0" in first and "join#1" in second
+    assert first != second, "deux appels, un seul énoncé"

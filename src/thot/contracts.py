@@ -42,6 +42,19 @@ class CodeRef:
     def __str__(self) -> str:
         return f"{self.path}:{self.line}"
 
+    def pinpoint(self) -> str:
+        """`path:line`, plus which call when the line holds more than one.
+
+        `__str__` stays as it was: it is used as a key and a label in many
+        places, and widening it would change all of them. This is the form for
+        a reader — and for the agent that judges, which used to receive two
+        identical task headers for two different calls that `site` exists to
+        keep apart.
+        """
+        if not self.site:
+            return str(self)
+        return f"{self} ({self.site})"
+
 
 @dataclass(frozen=True)
 class Symbol:

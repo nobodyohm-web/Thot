@@ -37,7 +37,7 @@ def render_markdown(
     for finding in sorted(findings, key=lambda f: (order[f.severity], f.location.path)):
         lines.append(f"## `{finding.rule}` — {finding.severity.value.upper()}")
         lines.append("")
-        lines.append(f"**Emplacement :** `{finding.location}`")
+        lines.append(f"**Emplacement :** `{finding.location.pinpoint()}`")
         if finding.location.symbol:
             lines.append(f"**Symbole :** `{finding.location.symbol}`")
         lines.append(f"**Confiance :** {finding.confidence.value}")

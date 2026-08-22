@@ -73,7 +73,7 @@ def print_report(result, hidden: int = 0) -> None:
         table.add_row(
             f"[{_STYLE[finding.severity]}]{finding.severity.value.upper()}[/]",
             finding.rule,
-            str(finding.location),
+            finding.location.pinpoint(),
             finding.location.symbol or "—",
         )
 

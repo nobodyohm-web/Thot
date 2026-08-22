@@ -182,7 +182,7 @@ def _probe_task(root: Path, finding: Finding) -> AgentTask:
     context = (
         f"{_scope_note(root, finding)}\n"
         f"Règle déclenchée : {finding.rule}\n"
-        f"Emplacement : {finding.location}\n"
+        f"Emplacement : {finding.location.pinpoint()}\n"
         f"Sévérité calculée (accessibilité × impact) : {finding.severity.value}\n"
         f"Chemin de teinte reconstruit :\n{_path_summary(finding)}\n\n"
         f"Code autour de l'emplacement :\n{excerpt(root, finding.location)}"
@@ -213,7 +213,7 @@ def _refute_task(
 ) -> AgentTask:
     context = (
         f"{_scope_note(root, finding)}\n"
-        f"Emplacement : {finding.location}\n"
+        f"Emplacement : {finding.location.pinpoint()}\n"
         f"Scénario d'exploitation avancé :\n{scenario}\n\n"
         f"Code :\n{excerpt(root, finding.location)}"
     )
@@ -257,7 +257,7 @@ def _review_task(root: Path, finding: Finding, scenario: str, reason: str) -> Ag
     """Ask a third agent whether a refutation actually holds."""
     context = (
         f"{_scope_note(root, finding)}\n"
-        f"Emplacement : {finding.location}\n"
+        f"Emplacement : {finding.location.pinpoint()}\n"
         f"Défaut soupçonné :\n{scenario}\n\n"
         f"Réfutation à vérifier :\n{reason}\n\n"
         f"Code :\n{excerpt(root, finding.location)}"
