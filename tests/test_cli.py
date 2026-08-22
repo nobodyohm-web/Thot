@@ -244,3 +244,33 @@ def test_auditing_a_missing_path_says_so_rather_than_reporting_nothing(
 
     with _pytest.raises(ScopeError):
         run_audit(tmp_path / "absent", require_authorization=False)
+
+
+def test_the_progress_line_tells_the_three_kinds_of_undecided_apart(capsys):
+    """An agent that failed, a model that hesitated, and a refutation a second
+    agent refused to stand behind all leave the finding `plausible`.
+
+    The last is a result, not an absence: it is the program catching itself
+    about to bury a defect.
+    """
+    from dataclasses import replace
+
+    from thot.cli import _deep_progress
+    from thot.contracts import CodeRef, Confidence, Finding, Severity
+
+    base = Finding(
+        id="1", rule="sink.os.system", severity=Severity.HIGH,
+        confidence=Confidence.PLAUSIBLE,
+        location=CodeRef(path="a.py", line=1, symbol="f", ast_hash="h"),
+    )
+    show = _deep_progress()
+    show(replace(base, provenance={"moteur": "hermes"}))
+    show(replace(base, provenance={"moteur": "hermes",
+                                   "erreur": "délai dépassé (600s)"}))
+    show(replace(base, provenance={"moteur": "hermes", "relecture": "prime",
+                                   "réfutation contestée": "la ligne est bien là"}))
+
+    lines = capsys.readouterr().err.splitlines()
+    assert "sans verdict" in lines[0]
+    assert "échec : délai dépassé (600s)" in lines[1]
+    assert "réfutation contestée" in lines[2] and "prime" in lines[2]

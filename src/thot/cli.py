@@ -1176,18 +1176,22 @@ def _deep_progress():
         state["n"] += 1
         provenance = finding.provenance or {}
         who = (
-            provenance.get("second contradicteur")
+            provenance.get("relecture")
+            or provenance.get("second contradicteur")
             or provenance.get("contradicteur")
             or provenance.get("moteur")
             or "?"
         )
-        # An agent that failed and a model that hesitated both left the
-        # finding `plausible`, and the line said the same thing for both —
-        # so a run where every task timed out looked exactly like a run
-        # where nothing could be decided. Say which one it was.
-        failure = provenance.get("erreur") or provenance.get("réfutation")
+        # Three different things left the finding `plausible`, and the line
+        # said "sans verdict" for all of them: an agent that failed, a model
+        # that would not commit, and a refutation a second agent refused to
+        # stand behind. The last is a result, not an absence — it is the
+        # program catching itself about to bury something.
         verdict = label.get(finding.confidence, finding.confidence.value)
-        if failure:
+        failure = provenance.get("erreur") or provenance.get("réfutation")
+        if provenance.get("réfutation contestée"):
+            verdict = "réfutation contestée"
+        elif failure:
             verdict = f"échec : {str(failure).splitlines()[0][:60]}"
         print(
             f"  [{state['n']}] {finding.location} — {verdict} · {who}",
