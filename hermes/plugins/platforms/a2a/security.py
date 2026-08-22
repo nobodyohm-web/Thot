@@ -30,6 +30,7 @@ import json
 import logging
 import os
 import re
+import socket
 import time
 from pathlib import Path
 from typing import Optional
@@ -337,8 +338,40 @@ def is_safe_callback_url(url: str) -> bool:
                 return True
             return False
     except ValueError:
-        pass  # not an IP, it's a hostname — fine
+        # A name, not a literal. It used to be waved through here, which made
+        # the docstring above false: the caller supplies this URL, and a name
+        # they control answers 127.0.0.1 or 169.254.169.254 as readily as a
+        # public address. The prefix list above only ever saw the spelling.
+        return _resolves_to_public_address(hostname)
     return True
+
+
+def _resolves_to_public_address(hostname: str) -> bool:
+    """Whether every address this name resolves to is reachable by others.
+
+    Every address, not the first: a name can carry several records, and one
+    private answer among them is enough to reach what it points at. A name
+    that does not resolve is refused — there is nothing to deliver to.
+    """
+    try:
+        resolved = socket.getaddrinfo(hostname, None)
+    except OSError:
+        return False
+
+    allow_loopback = localhost_only()
+    seen = False
+    for entry in resolved:
+        try:
+            ip = ipaddress.ip_address(entry[4][0])
+        except (ValueError, IndexError):
+            continue
+        seen = True
+        if ip.is_loopback and allow_loopback:
+            continue
+        if (ip.is_loopback or ip.is_link_local or ip.is_private
+                or ip.is_reserved or ip.is_multicast or ip.is_unspecified):
+            return False
+    return seen
 
 
 # --------------------------------------------------------------------------

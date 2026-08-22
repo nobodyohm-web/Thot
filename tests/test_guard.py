@@ -203,3 +203,78 @@ def test_a_redirect_is_checked_as_well_as_the_first_hop():
         handler.redirect_request(
             None, None, 302, "Found", {}, "http://127.0.0.1/secret"
         )
+
+
+def _a2a_security():
+    """Hermes's A2A callback guard, from the tree this program ships."""
+    import importlib.util
+    import sys
+
+    from thot.fusion.locate import hermes_root
+
+    root = hermes_root()
+    if root is None:
+        pytest.skip("Hermes n'est pas installé ici")
+    path = root / "plugins" / "platforms" / "a2a" / "security.py"
+    if not path.is_file():
+        pytest.skip("cette version de Hermes n'a pas l'adaptateur A2A")
+    spec = importlib.util.spec_from_file_location("a2a_security_under_test", path)
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+def test_a_callback_hostname_is_resolved_before_it_is_trusted(monkeypatch):
+    """The guard read the spelling of the address and never the address.
+
+    `is_safe_callback_url` checked a prefix list and an IP literal, then let
+    every hostname through with `pass  # not an IP, it's a hostname — fine`.
+    The docstring promised that internal addresses were blocked; a name the
+    caller controls answers 127.0.0.1 as readily as a public address.
+    Confirmed by the adversarial pass on the real file, not theorised.
+    """
+    import socket
+
+    security = _a2a_security()
+    monkeypatch.setenv("A2A_BEARER_TOKEN", "x")  # remote mode: the risky one
+    assert security.localhost_only() is False
+
+    def resolving_to(address):
+        return lambda *a, **kw: [(2, 1, 6, "", (address, 0))]
+
+    monkeypatch.setattr(socket, "getaddrinfo", resolving_to("127.0.0.1"))
+    assert security.is_safe_callback_url("http://rebind.example/cb") is False
+
+    monkeypatch.setattr(socket, "getaddrinfo", resolving_to("169.254.169.254"))
+    assert security.is_safe_callback_url("http://metadata.example/cb") is False
+
+    monkeypatch.setattr(socket, "getaddrinfo", resolving_to("93.184.216.34"))
+    assert security.is_safe_callback_url("http://public.example/cb") is True
+
+
+def test_a_name_that_does_not_resolve_is_refused(monkeypatch):
+    """There is nothing to deliver to, and it is the safe direction."""
+    import socket
+
+    security = _a2a_security()
+    monkeypatch.setenv("A2A_BEARER_TOKEN", "x")
+    monkeypatch.setattr(
+        socket, "getaddrinfo",
+        lambda *a, **kw: (_ for _ in ()).throw(OSError("nope")),
+    )
+    assert security.is_safe_callback_url("http://nowhere.invalid/cb") is False
+
+
+def test_one_private_answer_among_several_is_enough_to_refuse(monkeypatch):
+    """A name can carry several records; the first one is not the question."""
+    import socket
+
+    security = _a2a_security()
+    monkeypatch.setenv("A2A_BEARER_TOKEN", "x")
+    monkeypatch.setattr(
+        socket, "getaddrinfo",
+        lambda *a, **kw: [(2, 1, 6, "", ("93.184.216.34", 0)),
+                          (2, 1, 6, "", ("10.0.0.5", 0))],
+    )
+    assert security.is_safe_callback_url("http://mixed.example/cb") is False
