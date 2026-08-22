@@ -154,3 +154,32 @@ def test_switching_posture_mid_session_reaches_the_cli(toy_repo, monkeypatch):
 
     session._toolset("lecture")
     assert "Write" in session.claude.denied
+
+
+def test_the_read_only_posture_denies_the_subagent_too():
+    """One list, so one fix closed the door in both places.
+
+    The audit engine and the session's `lecture` posture derive their denial
+    list from the same tuple. `Task` was missing from it, and a subagent runs
+    with its own toolset without inheriting the list — so both the engine and
+    the session were denying five tools and leaving a sixth way through.
+    """
+    from thot.llm.claude_cli import WRITING_TOOLS
+    from thot.toolsets import denied_cli_tools
+
+    assert "Task" in WRITING_TOOLS
+    assert "Task" in denied_cli_tools("lecture")
+    assert "Task" in denied_cli_tools("carte")
+    assert denied_cli_tools("agent") == (), (
+        "la posture par défaut écrit : c'est son travail"
+    )
+
+
+def test_the_map_posture_denies_reading_as_well():
+    """`carte` means the model works from the precomputed map alone."""
+    from thot.llm.claude_cli import READING_TOOLS
+    from thot.toolsets import denied_cli_tools
+
+    denied = denied_cli_tools("carte")
+    for tool in READING_TOOLS:
+        assert tool in denied
