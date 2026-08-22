@@ -278,3 +278,46 @@ def test_a_fusion_job_audits_every_tree(tmp_path, monkeypatch):
     assert total > 0
     assert {f.location.path for f in fresh} == {"app.py"}
     assert len(fresh) >= 2, "les deux arbres doivent avoir été audités"
+
+
+def test_a_nightly_deep_job_reports_what_it_confirmed(tmp_path, monkeypatch):
+    """Its product is what it decided, not what appeared.
+
+    `new_since_last_run` answers "what is new above the threshold", which is
+    right for a sweep and wrong for a judgement: confirming a MEDIUM already
+    in the report is exactly what the loop exists for, and it would have gone
+    to nobody.
+    """
+    from thot.schedule.jobs import Job
+    from thot.schedule.runner import run_job
+
+    class _Confirms:
+        @property
+        def capabilities(self):
+            from thot.engine.base import EngineCapabilities
+
+            return EngineCapabilities(name="scripted", max_parallel=1)
+
+        def run(self, task):
+            from thot.engine.base import AgentResult
+
+            return AgentResult(
+                task_id=task.id,
+                data={"verdict": "confirmed", "scenario": "argv atteint le shell",
+                      "severity": "medium"},
+            )
+
+        def fan_out(self, tasks):
+            return [self.run(t) for t in tasks]
+
+    monkeypatch.setattr(
+        "thot.engine.factory.build_engine", lambda *a, **kw: _Confirms()
+    )
+    job = Job(name="nuit", root=str(_toy(tmp_path)), deep=True, budget=2,
+              threshold="critical")
+
+    fresh, total = run_job(job)
+
+    assert total > 0
+    assert fresh, "une confirmation doit remonter même sous le seuil"
+    assert any("app.py" in f.location.path for f in fresh)

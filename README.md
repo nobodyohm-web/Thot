@@ -859,6 +859,14 @@ thot improve --rounds 5           # jusqu'à ce qu'un tour ne juge plus rien
 thot improve --every daily        # la boucle devient permanente
 ```
 
+La version nocturne remonte ce qu'elle a **décidé**, pas ce qui est apparu.
+La distinction compte : le mécanisme de rapport des audits programmés répond
+à « qu'y a-t-il de neuf au-dessus du seuil », ce qui est la bonne question
+pour un balayage et la mauvaise pour un jugement. Confirmer un MEDIUM déjà
+présent dans le rapport est exactement ce à quoi sert la boucle — et cela
+n'aurait été rapporté à personne. Les fichiers qu'un audit aurait modifiés
+sont signalés dans le même journal.
+
 Une troisième la fait converger *vite* : les échecs sont comptés. Un candidat
 dont l'agent dépasse son délai, ou dont le modèle refuse de s'engager, garde
 sa sévérité — donc il est repris **en premier** au tour suivant, et au

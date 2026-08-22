@@ -72,7 +72,10 @@ def run_job(job, *, store=None, memory=None) -> tuple[list[Finding], int]:
     from thot.pipeline import run_audit
     from thot.plugins import discover, invoke_hook
 
+    from thot.improve import _is_news
+
     fresh: list[Finding] = []
+    judged: list[Finding] = []
     total = 0
 
     for root in roots_for(job):
@@ -81,6 +84,12 @@ def run_job(job, *, store=None, memory=None) -> tuple[list[Finding], int]:
         )
         engine = _engine_for(job, root)
         try:
+            # A deep job's product is what it *decided*, not what appeared.
+            # `new_since_last_run` answers "what is new above the threshold",
+            # which is the right question for a nightly sweep and the wrong
+            # one for a nightly judgement: confirming a MEDIUM that was
+            # already in the report is exactly what the loop is for, and it
+            # would have been reported to nobody.
             result = run_audit(
                 root,
                 store=store,
@@ -88,6 +97,7 @@ def run_job(job, *, store=None, memory=None) -> tuple[list[Finding], int]:
                 memory=memory,
                 engine=engine,
                 budget=getattr(job, "budget", 20),
+                on_decided=lambda f: judged.append(f) if _is_news(f) else None,
             )
         except Exception as exc:  # one tree must never cost the others
             print(f"[thot] {job.name} : {root} — {exc}", file=sys.stderr)
@@ -99,10 +109,27 @@ def run_job(job, *, store=None, memory=None) -> tuple[list[Finding], int]:
         total += len(result.findings)
         fresh.extend(new)
 
-        if new:
+        if result.touched:
+            print(
+                f"[thot] {job.name} : l'audit a modifié "
+                f"{len(result.touched)} fichier(s) de {root} — {result.touched[:5]}",
+                file=sys.stderr,
+            )
+
+        if new or judged:
             invoke_hook(
                 discover(root), "post_audit",
                 result=result, root=root, new_findings=new,
             )
 
+    for finding in judged:
+        provenance = finding.provenance or {}
+        state = ("réfutation contestée"
+                 if provenance.get("réfutation contestée") else "confirmé")
+        print(f"[thot] {job.name} : {finding.location} — {state}")
+
+    # The news rides back with what is new, deduplicated: a confirmation is
+    # the one thing a nightly run exists to hand a human.
+    known = {f.id for f in fresh}
+    fresh.extend(f for f in judged if f.id not in known)
     return fresh, total
