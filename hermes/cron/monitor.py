@@ -108,15 +108,78 @@ def _write_last_output(job_id: str, output: str) -> None:
         logger.warning("Monitor: failed to persist last output for %r: %s", job_id, exc)
 
 
+def _refuse_internal_target(url: str) -> Optional[str]:
+    """Refuse a URL that resolves to an address only this host can reach.
+
+    The scheme check above stops `file://` and nothing else. `monitor_url` is
+    settable through an agent tool (`tools/cronjob_tools.py`), so a model that
+    has been prompt-injected can point this fetch at the cloud metadata
+    service or at anything on the loopback interface — and the body of the
+    response is returned to the caller, which puts it back into the model's
+    own prompt. A read of `169.254.169.254/latest/meta-data/` is one cron job
+    away from being credentials in a transcript.
+
+    Resolution happens here rather than being left to `urlopen`, because the
+    name is what an attacker controls: a hostname they own can answer with
+    127.0.0.1 as easily as with a public address.
+    """
+    import ipaddress
+    import socket
+    from urllib.parse import urlsplit
+
+    host = urlsplit(url).hostname
+    if not host:
+        return f"monitor_url has no host: {url!r}"
+    try:
+        resolved = socket.getaddrinfo(host, None)
+    except OSError as exc:
+        return f"monitor_url host does not resolve: {host} ({exc})"
+
+    for family, _, _, _, address in resolved:
+        try:
+            ip = ipaddress.ip_address(address[0])
+        except ValueError:
+            continue
+        if (ip.is_private or ip.is_loopback or ip.is_link_local
+                or ip.is_reserved or ip.is_multicast or ip.is_unspecified):
+            return (
+                f"monitor_url resolves to a non-public address "
+                f"({host} -> {ip}); refused"
+            )
+    return None
+
+
+def _guarded_opener():
+    """An opener that re-checks every redirect hop.
+
+    Checking only the first URL would be theatre: a host an attacker controls
+    answers a public address and then redirects to 127.0.0.1.
+    """
+    import urllib.request
+
+    class _NoInternalRedirects(urllib.request.HTTPRedirectHandler):
+        def redirect_request(self, req, fp, code, msg, headers, newurl):
+            refusal = _refuse_internal_target(newurl)
+            if refusal:
+                raise OSError(refusal)
+            return super().redirect_request(req, fp, code, msg, headers, newurl)
+
+    return urllib.request.build_opener(_NoInternalRedirects)
+
+
 def _fetch_monitor_url(url: str) -> tuple[bool, str]:
     """Bounded GET of a monitor URL. Returns (ok, body-or-error)."""
     import urllib.request
 
     if not str(url).lower().startswith(("http://", "https://")):
         return False, f"monitor_url must be http(s): {url!r}"
+    refusal = _refuse_internal_target(url)
+    if refusal:
+        return False, refusal
     try:
         req = urllib.request.Request(url, headers={"User-Agent": "hermes-cron-monitor"})
-        with urllib.request.urlopen(req, timeout=URL_TIMEOUT_SECONDS) as resp:  # nosec B310 — scheme checked above
+        opener = _guarded_opener()
+        with opener.open(req, timeout=URL_TIMEOUT_SECONDS) as resp:  # nosec B310 — scheme and address checked above
             body = resp.read(MAX_URL_BYTES + 1)
         if len(body) > MAX_URL_BYTES:
             body = body[:MAX_URL_BYTES]

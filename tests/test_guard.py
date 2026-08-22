@@ -9,6 +9,8 @@ reading.
 
 from __future__ import annotations
 
+import pytest
+
 from thot.contracts import Confidence, Severity
 from thot.guard.scanner import scan_text, sweep_patterns
 
@@ -137,3 +139,67 @@ def test_identity_survives_reindentation():
     flat = scan_text("a.py", "import os\nos.system(cmd)\n")
     nested = scan_text("a.py", "import os\nif x:\n        os.system(cmd)\n")
     assert flat[0].id == nested[0].id
+
+
+# -- the vendored Hermes cron monitor ----------------------------------------
+
+
+def _monitor():
+    """Hermes's cron monitor, imported from the tree this program ships."""
+    import importlib.util
+    import sys
+
+    from thot.fusion.locate import hermes_root
+
+    root = hermes_root()
+    if root is None:
+        pytest.skip("Hermes n'est pas installé ici")
+    path = root / "cron" / "monitor.py"
+    if not path.is_file():
+        pytest.skip("cette version de Hermes n'a pas ce module")
+    if str(root) not in sys.path:
+        sys.path.insert(0, str(root))
+    spec = importlib.util.spec_from_file_location("hermes_cron_monitor", path)
+    module = importlib.util.module_from_spec(spec)
+    # Registered before execution: the module holds dataclasses, and
+    # `@dataclass` resolves annotations through `sys.modules[__name__]`.
+    sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+def test_the_cron_monitor_refuses_an_address_only_this_host_can_reach():
+    """Confirmed by the panel: SSRF with the response handed back.
+
+    `monitor_url` is settable through an agent tool, so a prompt-injected
+    model can point the fetch at the cloud metadata service — and the body
+    comes back into its own prompt. The scheme check stopped `file://` and
+    nothing else.
+    """
+    monitor = _monitor()
+    for url in (
+        "http://169.254.169.254/latest/meta-data/",
+        "http://127.0.0.1:8080/admin",
+        "http://localhost/admin",
+        "http://10.0.0.5/",
+    ):
+        assert monitor._refuse_internal_target(url), url
+
+
+def test_the_cron_monitor_still_allows_a_public_address():
+    monitor = _monitor()
+    assert monitor._refuse_internal_target("https://example.com/status") is None
+
+
+def test_a_redirect_is_checked_as_well_as_the_first_hop():
+    """A host an attacker owns answers publicly, then redirects to loopback."""
+    monitor = _monitor()
+    opener = monitor._guarded_opener()
+    handler = next(
+        h for h in opener.handlers
+        if type(h).__name__ == "_NoInternalRedirects"
+    )
+    with pytest.raises(OSError):
+        handler.redirect_request(
+            None, None, 302, "Found", {}, "http://127.0.0.1/secret"
+        )

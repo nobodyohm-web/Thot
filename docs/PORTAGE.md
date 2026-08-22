@@ -161,6 +161,7 @@ s'en écartent sur le même fichier :
 | fichier | pourquoi |
 |---|---|
 | `optional-skills/mcp/fastmcp/templates/database_server.py` | injection SQL confirmée par la passe adverse : `f"SELECT * FROM ({sql}) LIMIT {n}"` — la charge `select id from users) --` ferme la sous-requête et commente le `LIMIT`, mesuré 300 lignes au lieu de 50. Le plafond est appliqué par `fetchmany` et non écrit dans le SQL. |
+| `hermes/cron/monitor.py` | SSRF confirmée par le panel, avec renvoi de la réponse. Le contrôle de schéma arrêtait `file://` et rien d'autre ; `monitor_url` est réglable via un **outil d'agent** (`tools/cronjob_tools.py:1809`), donc un modèle soumis à une injection pointait `169.254.169.254` et le corps revenait dans son propre prompt. Le nom est résolu et les adresses privées, loopback, link-local et réservées sont refusées — à chaque saut de redirection, parce qu'un hôte hostile répond publiquement puis redirige vers 127.0.0.1. |
 | `hermes/optional-skills/mcp/fastmcp/templates/database_server.py` | **même correctif.** La copie de Hermes avait d'abord été laissée intacte — elle lui appartient. Le panel l'a confirmée une seconde fois, sur cette copie précise, avec la charge `select * from users) LIMIT 999999 --` exécutée localement : 500 lignes rendues pour 50 demandées, plafond `MAX_ROWS=200` contourné. Livrer un gabarit dont on sait qu'il est exploitable est pire qu'une divergence documentée. |
 
 Un fichier de gabarit existe pour être copié, donc un défaut dedans se
