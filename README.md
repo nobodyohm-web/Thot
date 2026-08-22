@@ -1020,6 +1020,32 @@ sink que l'équipe a délibérément accepté, sans patcher Thot. Un fichier mal
 formé arrête l'audit en nommant le fichier et la clé fautive, plutôt que de
 laisser croire à une absence de finding.
 
+### Les suppressions
+
+Une suppression est la seule affirmation sur la sécurité qu'aucun outil ne
+relit — y compris celui-ci, par construction. `# nosec`, `# noqa: S310`,
+`// eslint-disable … security/…` : c'est une affirmation sur le code, écrite
+une fois, qui survit aux appelants qu'elle décrivait.
+
+Deux fois dans un même audit, ici, elle était fausse :
+
+| suppression | ce qu'elle affirmait | ce qui était vrai |
+|---|---|---|
+| `# nosec B310 — scheme checked above` | le schéma est contrôlé | il arrêtait `file://` et rien d'autre — SSRF vers le service de métadonnées |
+| `# noqa: S310 (configured peers)` | l'URL vient de la configuration | un des appelants la lit dans un argument d'outil, donc du modèle |
+
+Thot les rapporte donc **comme classe**, en LOW, avec le motif écrit à côté.
+Le finding ne dit pas « cette ligne est dangereuse » : il dit « personne n'a
+relu la raison pour laquelle elle a été excusée ». Sur une passe `--deep`,
+c'est un agent qui va vérifier si le motif tient encore.
+
+Pour Python, ce sont les vrais jetons de commentaire qui sont lus, pas des
+motifs — une expression rationnelle ne distingue pas `# nosec` dans un
+commentaire du même texte cité dans une docstring, et la docstring de ce
+module en cite deux.
+
+Mesuré : **0 sur Thot, 0 sur Prime, 45 sur Hermes.**
+
 ### Calibration
 
 La précision compte autant que la détection. Sont volontairement **non**

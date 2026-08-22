@@ -151,6 +151,15 @@ def run_audit(
     # CI workflows — and shapes that are dangerous without a provable path.
     findings += sweep_patterns(root, list(manifest.files))
 
+    # A suppression is the one claim about safety that no scanner re-reads —
+    # including this one, by design. Twice in a single audit a comment
+    # disarming a check turned out to be false, so they are reported as a
+    # class and left LOW: not "this is dangerous", but "nobody has re-read
+    # the reason this was excused".
+    from thot.guard.suppressions import sweep_suppressions
+
+    findings += sweep_suppressions(root, list(manifest.files))
+
     # Dependencies are the one surface that needs the network, so they are
     # opt-in and imported here rather than at module level: an audit without
     # `--deps` must stay provably offline.
