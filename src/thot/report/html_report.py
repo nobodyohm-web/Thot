@@ -98,14 +98,28 @@ def findings_table(findings) -> str:
             f"<td>{_escape(finding.rule)}</td>"
             f"<td>{_escape(finding.location.path)}:{finding.location.line}</td>"
             f"<td>{_escape(finding.confidence.value)}</td>"
+            f"<td>{_escape(_stages(finding))}</td>"
             f"<td><pre>{_escape(finding.failure_scenario)}</pre></td>"
             "</tr>"
         )
     return (
         "<table><thead><tr><th>#</th><th>Gravité</th><th>Règle</th>"
-        "<th>Emplacement</th><th>Confiance</th><th>Scénario</th></tr></thead>"
+        "<th>Emplacement</th><th>Confiance</th><th>Jugement</th>"
+        "<th>Scénario</th></tr></thead>"
         "<tbody>" + "".join(rows) + "</tbody></table>"
     )
+
+
+def _stages(finding) -> str:
+    """Who argued, who attacked, who read the refutation — or nothing.
+
+    Empty for a deterministic run: an audit that ran no agent has no
+    judgement to show, and inventing an em dash there would read as "nobody
+    found anything to say".
+    """
+    from thot.report import judgement
+
+    return " · ".join(f"{label} {value}" for label, value in judgement(finding))
 
 
 def audit_page(result, *, root: str = "") -> Page:

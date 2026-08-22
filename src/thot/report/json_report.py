@@ -60,16 +60,19 @@ def render_json(
 
 
 def _judgement(finding: Finding) -> dict:
-    """Who argued this, and who tried to destroy it.
+    """Who argued this, who attacked it, who read the refutation.
 
     Omitted entirely when no agent ran: a deterministic pass claiming an
     empty judgement would read as "nobody found anything to say", when the
-    truth is that nobody was asked.
+    truth is that nobody was asked. Reads the shared list of stages, so a
+    stage added to the cascade appears in every format at once — the JSON
+    report knew about two attackers and the others knew about none.
     """
+    from thot.report import JUDGEMENT_KEYS
+
     provenance = finding.provenance or {}
-    kept = {
+    return {
         key: provenance[key]
-        for key in ("moteur", "contradicteur", "phase")
+        for key, _ in JUDGEMENT_KEYS
         if provenance.get(key)
     }
-    return kept

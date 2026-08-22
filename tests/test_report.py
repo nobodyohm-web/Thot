@@ -152,3 +152,58 @@ def test_a_deterministic_run_has_nothing_to_say_about_judges():
         confidence=Confidence.PLAUSIBLE, location=location,
     )
     assert _panel_note([finding]) == ""
+
+
+def test_every_format_shows_who_judged_the_finding():
+    """The JSON report carried the panel's stages; Markdown and HTML did not.
+
+    Two of the four ways of reading an audit hid its entire point — and a
+    stage added to the cascade would have drifted into one format only.
+    """
+    from pathlib import Path
+
+    from thot.contracts import CodeRef, Confidence, Finding, Severity
+    from thot.report.html_report import audit_page
+    from thot.report.json_report import render_json
+    from thot.report.markdown_report import render_markdown
+    from thot.scope.manifest import ScopeManifest
+
+    location = CodeRef(path="a.py", line=1, symbol="f", ast_hash="h")
+    finding = Finding(
+        id="1", rule="sink.os.system", severity=Severity.HIGH,
+        confidence=Confidence.CONFIRMED, location=location,
+        failure_scenario="argv atteint le shell",
+        provenance={"moteur": "claude-cli", "contradicteur": "prime",
+                    "second contradicteur": "hermes"},
+    )
+    manifest = ScopeManifest(root=Path("."), files=("a.py",),
+                             languages={"python": 1}, entrypoints=())
+
+    as_json = render_json([finding], manifest, 1.0)
+    as_markdown = render_markdown([finding], manifest, 1.0)
+
+    for name in ("claude-cli", "prime", "hermes"):
+        assert name in as_json
+        assert name in as_markdown
+
+    class _Result:
+        findings = [finding]
+        elapsed = 1.0
+
+    _Result.manifest = manifest
+    as_html = audit_page(_Result(), root=".").html
+    for name in ("claude-cli", "prime", "hermes"):
+        assert name in as_html
+
+
+def test_a_deterministic_finding_shows_no_judgement():
+    """Nobody was asked, which is not the same as nobody having anything to say."""
+    from thot.contracts import CodeRef, Confidence, Finding, Severity
+    from thot.report import judgement
+
+    location = CodeRef(path="a.py", line=1, symbol="f", ast_hash="h")
+    finding = Finding(
+        id="1", rule="r", severity=Severity.LOW,
+        confidence=Confidence.PLAUSIBLE, location=location,
+    )
+    assert judgement(finding) == []

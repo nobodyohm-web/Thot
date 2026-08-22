@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from thot.contracts import Finding
+from thot.report import judgement
 from thot.report.json_report import SEVERITY_ORDER, summarise
 
 
@@ -40,6 +41,12 @@ def render_markdown(
         if finding.location.symbol:
             lines.append(f"**Symbole :** `{finding.location.symbol}`")
         lines.append(f"**Confiance :** {finding.confidence.value}")
+        stages = judgement(finding)
+        if stages:
+            lines.append(
+                "**Jugement :** "
+                + " · ".join(f"{label} {value}" for label, value in stages)
+            )
         if finding.failure_scenario:
             lines.append(f"**Scénario :** {finding.failure_scenario}")
         if finding.taint_path:
