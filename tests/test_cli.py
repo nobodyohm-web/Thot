@@ -398,3 +398,64 @@ def test_verdicts_from_another_tree_are_not_called_orphans(
     # Et la raison : sans elle, « hors du dernier audit » invite encore à
     # supprimer une décision parfaitement valide.
     assert "commune aux dépôts" in out, out
+
+
+def test_verdicts_can_be_asked_about_another_tree(toy_repo, tmp_path, capsys,
+                                                  monkeypatch, isolated_home):
+    """The listing advertises `thot verdicts <chemin>`; it has to exist.
+
+    The command read `Path.cwd()` and took no positional argument, so the
+    advice added one commit earlier pointed at a usage error. Nothing caught
+    it because every test chdirs first and calls `verdicts` bare — the same
+    shortcut that let the advice be written without being run.
+
+    The assertion has to be the out-of-scope count, not the presence of the
+    verdict: the memory is global, so the decision is listed from any root and
+    a first version of this test passed with the argument ignored.
+    """
+    from thot.memory import build_memory
+    from thot.memory.base import Decision, Verdict
+    from thot.paths import run_store
+    from thot.pipeline import run_audit
+    from thot.store.db import Store
+
+    other = tmp_path / "ailleurs"
+    (other / "src").mkdir(parents=True)
+    (other / "src" / "app.py").write_text(
+        "import os, sys\n\n\ndef run():\n    os.system(sys.argv[1])\n",
+        encoding="utf-8",
+    )
+
+    store = Store.open(run_store())
+    try:
+        here = run_audit(toy_repo, store, require_authorization=False)
+        there = run_audit(other, store, require_authorization=False)
+    finally:
+        store.close()
+
+    assert there.findings, "le dépôt témoin n'a produit aucun finding"
+    memory = build_memory(other)
+    try:
+        memory.remember(
+            Verdict.of(there.findings[0], Decision.REFUTED, "littéral", "prime")
+        )
+    finally:
+        memory.close()
+
+    monkeypatch.chdir(toy_repo)
+
+    assert cli.main(["verdicts", str(other)]) == 0
+    asked_there = capsys.readouterr().out
+    assert cli.main(["verdicts"]) == 0
+    asked_here = capsys.readouterr().out
+
+    assert "hors du dernier audit" not in asked_there, asked_there
+    assert "hors du dernier audit" in asked_here, asked_here
+    assert here.findings is not None
+
+
+def test_verdicts_without_an_argument_still_means_here(toy_repo, capsys,
+                                                       monkeypatch):
+    monkeypatch.chdir(toy_repo)
+
+    assert cli.main(["verdicts"]) == 0

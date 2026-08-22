@@ -340,6 +340,11 @@ def build_parser() -> argparse.ArgumentParser:
     verdicts = subparsers.add_parser(
         "verdicts", help="Les décisions d'audit mémorisées"
     )
+    verdicts.add_argument(
+        "root", nargs="?", default=".",
+        help="Le dépôt dont on parle. La mémoire est commune aux arbres, mais "
+             "« hors du dernier audit » se juge par rapport à celui-ci.",
+    )
     verdicts.add_argument("--forget", metavar="ID", help="Oublier une décision")
     verdicts.add_argument(
         "--forget-author", metavar="AGENT",
@@ -733,7 +738,7 @@ def _run_scheduled(name: str | None) -> int:
 def _cmd_verdicts(args) -> int:
     from thot.memory import build_memory
 
-    root = Path.cwd().resolve()
+    root = Path(getattr(args, "root", ".") or ".").resolve()
     memory = build_memory(root)
     try:
         if args.where:
