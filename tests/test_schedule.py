@@ -474,3 +474,53 @@ def test_installing_warns_when_the_job_could_never_start(tmp_path, monkeypatch):
 
     assert "Desktop" in step, step
     assert "launchd" in step, step
+
+
+# --- ce que le démon retient d'une nuit, c'est le code de sortie -----------
+#
+# `MISSING_ENGINE` est bien rempli par le runner — un test le tient depuis
+# longtemps. Ce qui n'était tenu par rien, c'est la moitié qui compte : que
+# le CLI en tire un code non nul. Un ensemble rempli ne change rien si la
+# commande sort quand même 0, et le commentaire de `cli.py` dit exactement
+# pourquoi : « launchd enregistrait un succès chaque nuit, pour toujours,
+# pendant que la boucle ne faisait rien du tout ».
+
+
+def _scheduled(monkeypatch, tmp_path, *, missing=False, fresh=()):
+    from thot.schedule import jobs as jobs_module
+    from thot.schedule import runner
+    from thot.schedule.jobs import Job
+
+    job = Job(name="nuit", root=str(tmp_path), deep=True, budget=2)
+    monkeypatch.setattr(jobs_module, "load", lambda: [job])
+    runner.MISSING_ENGINE.clear()
+
+    def fake_run_job(the_job, **kwargs):
+        if missing:
+            runner.MISSING_ENGINE.add(the_job.name)
+        return list(fresh), len(fresh)
+
+    monkeypatch.setattr(runner, "run_job", fake_run_job)
+    return job
+
+
+def test_a_night_without_an_agent_tells_the_daemon_it_failed(
+    tmp_path, capsys, monkeypatch
+):
+    from thot import cli
+
+    _scheduled(monkeypatch, tmp_path, missing=True)
+    code = cli.main(["schedule", "run", "nuit"])
+    capsys.readouterr()
+
+    assert code != 0
+
+
+def test_a_quiet_night_is_a_success(tmp_path, capsys, monkeypatch):
+    from thot import cli
+
+    _scheduled(monkeypatch, tmp_path)
+    code = cli.main(["schedule", "run", "nuit"])
+    capsys.readouterr()
+
+    assert code == 0
