@@ -390,3 +390,69 @@ def test_a_shared_verdict_travels_to_a_colleague_who_has_no_history(tmp_path,
     assert seen is not None, "le collègue doit voir la décision, pas seulement la subir"
     assert seen.author == "dev"
     assert "entrée locale" in seen.reason
+
+
+# --- une réfutation dont la relecture a échoué n'est pas acquise -----------
+#
+# La relecture n'est déclenchée que pour les findings qui comptent (MEDIUM et
+# au-dessus) : elle existe pour rattraper une réfutation fautive avant qu'elle
+# ne fasse taire un défaut vivant. Quand elle échouait — quota, délai, agent
+# absent — `_apply_review` conservait la réfutation en notant « relecture
+# impossible », et `record_verdicts` l'écrivait quand même en mémoire
+# permanente. L'étage de contrôle devenait facultatif sans que rien ne le
+# dise, et la réfutation non vérifiée obtenait la même permanence qu'une
+# réfutation vérifiée.
+
+
+def _refuted(identifier="f1", provenance=None):
+    from thot.contracts import CodeRef, Confidence, Finding, Severity
+
+    return Finding(
+        id=identifier, rule="sink.os.system", severity=Severity.INFO,
+        confidence=Confidence.REFUTED,
+        location=CodeRef(path="a.py", line=2, symbol="m", ast_hash="h"),
+        failure_scenario="argv atteint os.system\n\nRéfuté : entrée constante",
+        provenance=provenance,
+    )
+
+
+def test_a_refutation_whose_review_failed_is_not_remembered(tmp_path):
+    from thot.memory.base import record_verdicts
+    from thot.memory.jsonfile import JsonMemory
+
+    memory = JsonMemory.open(tmp_path / "v.json")
+    kept = record_verdicts(
+        [_refuted(provenance={"relecture": "prime",
+                              "relecture impossible": "délai dépassé"})],
+        memory, author="hermes",
+    )
+
+    assert kept == 0
+    assert memory.recall("f1") is None
+
+
+def test_a_reviewed_refutation_is_remembered(tmp_path):
+    from thot.memory.base import record_verdicts
+    from thot.memory.jsonfile import JsonMemory
+
+    memory = JsonMemory.open(tmp_path / "v.json")
+    kept = record_verdicts(
+        [_refuted(provenance={"relecture": "prime", "réfutation vérifiée": "oui"})],
+        memory, author="hermes",
+    )
+
+    assert kept == 1
+    assert memory.recall("f1") is not None
+
+
+def test_a_refutation_that_needed_no_review_is_still_remembered(tmp_path):
+    """Low-severity findings never reach the review stage; nothing changes."""
+    from thot.memory.base import record_verdicts
+    from thot.memory.jsonfile import JsonMemory
+
+    memory = JsonMemory.open(tmp_path / "v.json")
+    kept = record_verdicts(
+        [_refuted(provenance={"contradicteur": "hermes"})], memory, author="hermes"
+    )
+
+    assert kept == 1

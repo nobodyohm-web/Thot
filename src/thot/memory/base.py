@@ -192,6 +192,15 @@ def record_verdicts(
             continue
         if memory.recall(finding.id) is not None:
             continue  # a human decision outranks a machine one
+        # The review stage runs only for findings that matter, and exists to
+        # catch a wrong refutation before it silences a live defect. When it
+        # could not run — quota, timeout, agent absent — the refutation stands
+        # for this run's report but is not cached: an unverified refutation
+        # must not gain the permanence of a verified one. Left uncached, the
+        # next round argues it again, which is what "we do not know whether
+        # the refutation holds" means.
+        if (finding.provenance or {}).get("relecture impossible"):
+            continue
         reason = _reason_from(finding)
         # On a panel the refuter is not the arguer, and the verdict belongs
         # to the one who refuted. `author` stays the fallback for a single
