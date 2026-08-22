@@ -157,3 +157,35 @@ def test_a_short_conversation_is_left_alone():
         content = "court"
 
     assert not plan([_M(), _M()], budget=AUTO_BUDGET).worth_doing
+
+
+def test_both_turn_paths_compact_themselves():
+    """A long task filled the window, the next turn was refused, and the
+    thread died with everything in it.
+
+    Two paths end a turn — the tool-loop path and the account-mode path — and
+    a guard wired into one of them protects half the sessions. Same shape as
+    the tripwire, which landed on `thot audit --deep` and missed the session
+    for an hour.
+    """
+    from pathlib import Path
+
+    source = (Path(__file__).parent.parent / "src" / "thot"
+              / "session.py").read_text(encoding="utf-8")
+    calls = [
+        line for line in source.splitlines()
+        if "_compact_if_needed()" in line and not line.strip().startswith("#")
+        and not line.strip().startswith("def ")
+    ]
+    assert len(calls) >= 2, (
+        "les deux fins de tour doivent compacter, pas une seule"
+    )
+
+
+def test_the_automatic_compaction_is_reachable_from_a_session():
+    """Wired, not merely defined: a method nobody calls is dead code that
+    looks like a feature."""
+    from thot.session import Session
+
+    assert hasattr(Session, "_compact_if_needed")
+    assert hasattr(Session, "_compact")
