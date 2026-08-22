@@ -71,7 +71,15 @@ def load() -> list[Channel]:
         by_platform[platform] = Channel(
             platform=platform,
             settings={k: v for k, v in entry.items() if k not in {"platform", "allow"}},
-            allow=tuple(str(a) for a in allow),
+            # Stripped, and empties dropped: the environment path
+            # already does this in `_split`, and a hand-edited file or
+            # a pasted identifier carrying a newline would otherwise
+            # lock out the very person who just authorised themselves.
+            # An empty entry is worse than useless — it makes `two_way`
+            # true for a channel that will refuse every message.
+            allow=tuple(
+                stripped for a in allow if (stripped := str(a).strip())
+            ),
         )
 
     for platform, mapping in ENV.items():

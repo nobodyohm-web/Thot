@@ -408,3 +408,53 @@ def test_the_phone_can_audit_a_whole_program_job(tmp_path, monkeypatch):
 
     assert "n'est pas un dossier" not in answer
     assert "échoué" not in answer
+
+
+# --- un identifiant collé avec une espace verrouille son propriétaire ------
+#
+# Le chemin des variables d'environnement nettoie déjà (`_split`). Le chemin
+# JSON, non : `"allow": ["12345 "]` dans un `~/.thot/gateway.json` retouché à
+# la main, ou un identifiant collé avec un retour à la ligne, refuse à jamais
+# la personne qui vient de s'autoriser — et le message de refus lui dit
+# d'ajouter l'identifiant qu'elle a déjà ajouté. L'échec est fermé, donc sûr,
+# donc silencieux et indiagnosticable.
+
+
+def test_a_pasted_identifier_with_spaces_still_matches(isolated_home):
+    config.upsert("telegram", {"token": "t", "chat_id": "1"}, (" 12345\n",))
+
+    channel = config.load()[0]
+
+    assert channel.allow == ("12345",)
+    assert channel.allows("12345")
+
+
+def test_an_identifier_written_as_a_number_still_matches(isolated_home):
+    config.upsert("telegram", {"token": "t", "chat_id": "1"}, (12345,))
+
+    assert config.load()[0].allows("12345")
+
+
+def test_a_padded_incoming_identifier_is_recognised(isolated_home):
+    from thot.gateway.base import Channel
+
+    assert Channel(platform="telegram", allow=("12345",)).allows(" 12345 ")
+
+
+def test_an_empty_entry_never_authorises_anyone(isolated_home):
+    from thot.gateway.base import Channel
+
+    channel = Channel(platform="telegram", allow=("",))
+    assert channel.allows("") is False
+    assert channel.allows("   ") is False
+
+
+def test_an_allowlist_of_nothing_is_not_a_channel_that_listens(isolated_home):
+    """`two_way` reads `bool(self.allow)`, and [""] is truthy but authorises nobody.
+
+    Announcing "à l'écoute" on a channel that will refuse every message is the
+    same silence the send-only warning exists to prevent.
+    """
+    config.upsert("telegram", {"token": "t", "chat_id": "1"}, ("", "  "))
+
+    assert config.load()[0].two_way is False

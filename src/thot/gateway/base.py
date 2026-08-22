@@ -91,7 +91,9 @@ class Channel:
         return bool(self.allow) and self.platform in RECEIVING
 
     def allows(self, sender: str) -> bool:
-        return bool(sender) and str(sender) in self.allow
+        """Both sides trimmed: a platform may pad an id, a human always does."""
+        cleaned = str(sender).strip()
+        return bool(cleaned) and cleaned in self.allow
 
 
 def truncate(text: str, limit: int = MAX_MESSAGE_CHARS) -> str:
