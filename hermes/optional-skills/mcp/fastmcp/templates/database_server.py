@@ -65,11 +65,18 @@ def query(sql: str, limit: int = 50) -> dict[str, Any]:
     """Run a read-only SELECT query and return rows plus column names."""
     _reject_mutation(sql)
     safe_limit = max(0, min(limit, MAX_ROWS))
-    wrapped_sql = f"SELECT * FROM ({sql.strip().rstrip(';')}) LIMIT {safe_limit}"
+    # The row cap is applied by the driver, not written into the SQL.
+    # `... LIMIT {safe_limit}` appended to attacker-controlled text is not a
+    # cap: `sql = "select * from users) LIMIT 999999 --"` closes the wrapping
+    # subquery and comments the LIMIT out. Reproduced on this file: 500 rows
+    # returned where 50 were asked for and MAX_ROWS is 200.
+    # The `SELECT * FROM (` prefix is kept — it is what forces the statement
+    # to remain a SELECT — and `fetchmany` does the clamping.
+    wrapped_sql = f"SELECT * FROM ({sql.strip().rstrip(';')})"
     with _connect() as conn:
         cursor = conn.execute(wrapped_sql)
         columns = [column[0] for column in cursor.description or []]
-        rows = [dict(zip(columns, row)) for row in cursor.fetchall()]
+        rows = [dict(zip(columns, row)) for row in cursor.fetchmany(safe_limit)]
     return {"limit": safe_limit, "columns": columns, "rows": rows}
 
 

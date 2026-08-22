@@ -275,3 +275,30 @@ def test_the_reported_payload_no_longer_beats_the_cap(tmp_path):
 
     assert len(beaten) == 300, "la forme d'origine laissait passer 300 lignes"
     assert len(held) == 50
+
+
+def test_hermes_copy_of_the_template_carries_the_same_fix():
+    """The fused program ships both copies, so both are ours to answer for.
+
+    The deep pass confirmed the bypass a second time, on Hermes's copy, with
+    a payload run locally: `query(sql="select * from users) LIMIT 999999 --")`
+    returned 500 rows where 50 were asked for and MAX_ROWS is 200. Leaving a
+    template known to be exploitable in a tree we ship is worse than a
+    documented divergence from upstream.
+    """
+    from thot.fusion.locate import hermes_root
+
+    root = hermes_root()
+    if root is None:
+        pytest.skip("Hermes n'est pas installé ici")
+    copy = (root / "optional-skills" / "mcp" / "fastmcp" / "templates"
+            / "database_server.py")
+    if not copy.is_file():
+        pytest.skip("cette version de Hermes ne livre pas ce gabarit")
+
+    code = "\n".join(
+        line for line in copy.read_text(encoding="utf-8").splitlines()
+        if not line.lstrip().startswith("#")
+    )
+    assert "LIMIT {safe_limit}" not in code
+    assert "fetchmany(safe_limit)" in code
