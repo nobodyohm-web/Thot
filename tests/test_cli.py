@@ -520,3 +520,35 @@ def test_every_command_the_program_suggests_exists():
 def test_the_sweep_actually_finds_commands():
     """Guard the guard: an empty sweep would pass the test above silently."""
     assert len(_advertised_commands()) >= 25
+
+
+def test_every_slash_command_the_readme_documents_exists():
+    """Same claim, other interface: `/x` in the README must resolve.
+
+    Three of them — /triage, /harden, /regress — are not built-ins but shipped
+    custom commands, which the README states outright ("Trois sont livrées").
+    Checked rather than trusted: all three load.
+    """
+    import re
+    from pathlib import Path
+
+    from thot.commands import discover
+
+    root = Path(__file__).resolve().parents[1]
+    source = (root / "src" / "thot" / "session.py").read_text(encoding="utf-8")
+
+    builtin = set(re.findall(r'command == "([a-z-]+)"', source))
+    for group in re.findall(r"command in \{([^}]*)\}", source):
+        builtin |= {
+            word.strip().strip("\"'") for word in group.split(",") if word.strip()
+        }
+    shipped = {getattr(item, "name", "") for item in discover(root)}
+
+    documented = {
+        name.strip("`/")
+        for name in re.findall(r"`(/[a-z-]+)`",
+                               (root / "README.md").read_text(encoding="utf-8"))
+    }
+
+    assert documented, "aucune commande de session citée dans le README"
+    assert documented - builtin - shipped == set(), documented - builtin - shipped
