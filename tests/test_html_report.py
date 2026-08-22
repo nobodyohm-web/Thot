@@ -99,3 +99,53 @@ def test_writing_the_page_creates_its_directory(tmp_path):
     target = audit_page(_result()).write(tmp_path / "sous" / "rapport.html")
     assert target.is_file()
     assert target.read_text(encoding="utf-8").startswith("<!doctype")
+
+
+# --- une page partagée doit dire si un panel a argumenté -------------------
+#
+# La ligne de métadonnées portait les fichiers, le décompte par sévérité, la
+# durée et la date — rien sur la passe. Une page HTML est ce qu'on transmet à
+# quelqu'un qui n'a pas lancé l'audit : sans mention, il la lit comme un scan
+# statique. Troisième sortie de la même famille, après le terminal et le
+# Markdown.
+
+
+def _judged_result(engine):
+    from types import SimpleNamespace
+
+    from thot.contracts import CodeRef, Confidence, Finding, Severity
+    from thot.scope.detect import ScopeManifest
+
+    def one(identifier, severity, confidence):
+        return Finding(
+            id=identifier, rule="sink.js.exec", severity=severity,
+            confidence=confidence,
+            location=CodeRef(path="a.ts", line=1, symbol="s", ast_hash="h"),
+            failure_scenario="x",
+        )
+
+    return SimpleNamespace(
+        findings=[one("k", Severity.HIGH, Confidence.PLAUSIBLE),
+                  one("r", Severity.INFO, Confidence.REFUTED)],
+        manifest=ScopeManifest(root=".", files=["a.ts"],
+                               languages={"typescript": 1},
+                               entrypoints=(), test_command=""),
+        elapsed=0.1, engine=engine,
+    )
+
+
+def test_the_page_names_the_engine_that_argued():
+    from thot.report.html_report import audit_page
+
+    html = audit_page(_judged_result("panel"), root="/tmp/dépôt").html
+
+    assert "panel" in html
+    assert "réfuté" in html
+
+
+def test_a_deterministic_page_claims_nothing():
+    from thot.report.html_report import audit_page
+
+    html = audit_page(_judged_result(None), root="/tmp/dépôt").html
+
+    assert "jugé par" not in html.lower(), html[:400]

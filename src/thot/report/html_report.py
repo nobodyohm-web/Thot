@@ -129,9 +129,26 @@ def audit_page(result, *, root: str = "") -> Page:
         counts[finding.severity.value] = counts.get(finding.severity.value, 0) + 1
     tally = " · ".join(f"{n} {k}" for k, n in counts.items()) or "aucun finding"
 
+    # What the pass decided, when something argued. A page is what gets sent
+    # to someone who did not run the audit; with nothing said, they read it as
+    # a raw static scan. Third view of the same family, after the terminal and
+    # the markdown report.
+    said = {"refuted": "réfuté", "confirmed": "confirmé"}
+    decided: dict[str, int] = {}
+    for finding in result.findings:
+        label = said.get(finding.confidence.value)
+        if label:
+            decided[label] = decided.get(label, 0) + 1
+    engine = getattr(result, "engine", None)
+    judged = (
+        " · jugé par " + str(engine) + " : "
+        + " · ".join(f"{n} {k}(s)" for k, n in sorted(decided.items()))
+        if engine and decided else ""
+    )
+
     name = str(root).rstrip("/").rsplit("/", 1)[-1] or "dépôt"
     meta = (f"{len(result.manifest.files)} fichiers · {tally} · "
-            f"analyse en {result.elapsed:.2f} s · {_now()}")
+            f"analyse en {result.elapsed:.2f} s{judged} · {_now()}")
 
     return Page(
         title=f"Thot — {name}",
