@@ -224,6 +224,11 @@ def _refute_task(
     context = (
         f"{_scope_note(root, finding)}\n"
         f"Emplacement : {finding.location.pinpoint()}\n"
+        # The path, because breaking a taint finding usually means showing
+        # that one of its steps sanitises — and the excerpt only covers the
+        # sink. The steps this agent would have to inspect were the ones it
+        # could not see; 317 of Hermes's 416 findings carry two or three.
+        f"Chemin de teinte reconstruit :\n{_path_summary(finding)}\n\n"
         f"Scénario d'exploitation avancé :\n{scenario}\n\n"
         f"Code :\n{excerpt(root, finding.location)}"
     )
@@ -268,6 +273,7 @@ def _review_task(root: Path, finding: Finding, scenario: str, reason: str) -> Ag
     context = (
         f"{_scope_note(root, finding)}\n"
         f"Emplacement : {finding.location.pinpoint()}\n"
+        f"Chemin de teinte reconstruit :\n{_path_summary(finding)}\n\n"
         f"Défaut soupçonné :\n{scenario}\n\n"
         f"Réfutation à vérifier :\n{reason}\n\n"
         f"Code :\n{excerpt(root, finding.location)}"

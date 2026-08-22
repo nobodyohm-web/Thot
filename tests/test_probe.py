@@ -137,3 +137,42 @@ def test_a_finding_without_a_scenario_adds_no_empty_heading(tmp_path):
     context = _probe_task(tmp_path, finding).context
 
     assert "reproche" not in context.lower(), context
+
+
+def _tainted_finding():
+    from thot.contracts import CodeRef, Confidence, Finding, Severity
+
+    source = CodeRef(path="routes.ts", line=8, symbol="handler", ast_hash="a")
+    sink = CodeRef(path="run.ts", line=42, symbol="launch", ast_hash="b")
+    return Finding(
+        id="f1", rule="sink.js.exec", severity=Severity.HIGH,
+        confidence=Confidence.PLAUSIBLE, location=sink,
+        taint_path=(source, sink),
+        failure_scenario="req.query.host atteint exec",
+    )
+
+
+def test_the_refuter_sees_the_path_it_is_asked_to_break(tmp_path):
+    """The usual way to break a taint finding is to show a step sanitises.
+
+    The refuter got the scenario and the code around the *sink* only — never
+    the reconstructed path — so the steps it would have to inspect were the
+    ones it could not see. Measured on Hermes: 317 of 416 findings carry a
+    path of two or three steps, and the refuter is the agent whose verdict is
+    remembered permanently.
+    """
+    from thot.analysis.probe import _refute_task
+
+    context = _refute_task(tmp_path, _tainted_finding(), "req.query.host atteint exec").context
+
+    assert "routes.ts:8" in context, context
+    assert "run.ts:42" in context, context
+
+
+def test_the_reviewer_sees_it_too(tmp_path):
+    from thot.analysis.probe import _review_task
+
+    context = _review_task(tmp_path, _tainted_finding(), "req.query.host atteint exec",
+                           "l'entrée est validée en amont").context
+
+    assert "routes.ts:8" in context, context
