@@ -151,18 +151,21 @@ class PanelEngine:
         # One stand-in, not a cascade: a task every agent refuses is a task
         # with a problem of its own, and trying all of them would triple the
         # cost of a systematic failure to learn nothing.
-        stand_ins = [m for m in self.members if m.capabilities.name != name]
+        #
+        # The stand-in has to be *eligible*, not merely different. Taking the
+        # next member in the list handed a second refutation back to the agent
+        # that wrote the first one — seen in a real run, where `contradicteur`
+        # and `second contradicteur` were the same name and the escalation
+        # bought nothing.
+        stand_ins = [
+            m for m in self._pool_for(task)
+            if m is not member and m.capabilities.name != name
+        ]
         if not stand_ins:
             self._record(task, name)
             return result
 
-        # By identity, not equality: engines are dataclasses, so two members
-        # configured alike would compare equal and `.index` would hand back
-        # the wrong one — quietly retrying on the member that just failed.
-        index = next(
-            i for i, candidate in enumerate(self.members) if candidate is member
-        )
-        stand_in = (self.members[index + 1:] + self.members[:index])[0]
+        stand_in = stand_ins[0]
         second = stand_in.run(task)
         if second.ok:
             self._record(task, stand_in.capabilities.name)

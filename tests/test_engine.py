@@ -449,3 +449,28 @@ def test_a_slow_member_does_not_hold_the_batch_open():
     assert all(r.ok for r in results)
     assert [r.task_id for r in results] == [t.id for t in tasks], "ordre préservé"
     assert len(fast.seen) > len(slow.seen), "le rapide doit avoir absorbé le gros"
+
+
+def test_a_stand_in_is_never_someone_who_already_spoke():
+    """Seen in a real run: both attackers of one finding were the same agent.
+
+    The first attacker failed the second-attack task, and the stand-in was
+    picked as "the next member in the list" — which was the first attacker
+    itself. The escalation then bought nothing at all.
+    """
+    from thot.engine.panel import PanelEngine
+
+    arguer, attacker, third = _Fake("hermes"), _Fake("claude"), _Fake("prime")
+    panel = PanelEngine(members=[arguer, attacker, third])
+
+    panel.fan_out([_task("probe:f1")])
+    panel.fan_out([_task("refute:f1")])
+
+    spoken = {panel.who("probe:f1"), panel.who("refute:f1")}
+    assert len(spoken) == 2
+    third.fails = True  # the only member eligible for the second attack fails
+
+    result = panel.fan_out([_task("refute2:f1")])[0]
+
+    assert panel.who("refute2:f1") not in spoken
+    assert not result.ok, "un échec vaut mieux qu'un second avis qui n'en est pas un"
