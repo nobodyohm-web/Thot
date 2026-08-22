@@ -189,40 +189,16 @@ def run_audit(
     engine_name = None
     touched_files: tuple[str, ...] = ()
     if engine is not None and findings:
-        engine_name = engine.capabilities.name
-        from thot.analysis import tripwire
+        from thot.analysis.deep import run_deep_pass
 
-        before = tripwire.snapshot(root, manifest.files)
-
-        from thot.analysis import attempts
-
-        def settled(finding: Finding) -> None:
-            # Written the moment it is decided, not at the end. A deep pass
-            # over a large repository runs for hours; persisting only on the
-            # way out means one interruption throws away every judgement the
-            # run had already paid for. Because a remembered refutation is
-            # skipped by the next `select_for_analysis`, this also makes an
-            # interrupted pass resume where it stopped rather than restart.
-            if memory is not None:
-                record_verdicts([finding], memory, author=engine_name or "thot")
-            # A failure is not a decision, so it is counted rather than
-            # remembered: nothing was judged, and the finding must keep
-            # coming back — just not ahead of everything else for ever.
-            provenance = finding.provenance or {}
-            if provenance.get("erreur") or provenance.get("réfutation"):
-                attempts.record_failure(finding.id)
-            else:
-                attempts.clear(finding.id)
-            if on_decided is not None:
-                on_decided(finding)
-
-        findings = analyse(
-            root, findings, engine, limit=budget, on_decided=settled, skip=skip,
-            demote=attempts.demoted(),
+        outcome = run_deep_pass(
+            root, findings, engine,
+            files=manifest.files, memory=memory, limit=budget, skip=skip,
+            on_decided=on_decided,
         )
-        touched_files = tripwire.touched(
-            before, tripwire.snapshot(root, manifest.files)
-        )
+        findings = outcome.findings
+        engine_name = outcome.engine
+        touched_files = outcome.touched
 
     # Plugins see the finished findings, before anything is written down.
     findings = annotate_findings(findings, root)

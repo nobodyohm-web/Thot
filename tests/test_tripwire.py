@@ -111,6 +111,32 @@ def test_the_interactive_pass_carries_the_same_tripwire():
     text = source.read_text(encoding="utf-8")
     deep = text.split("def _deep_analyse")[1].split("\n    def ")[0]
 
-    assert "tripwire.snapshot" in deep
-    assert "tripwire.touched" in deep
+    assert "run_deep_pass" in deep, "la session doit passer par la passe commune"
+    assert "outcome.touched" in deep
     assert "n'est pas normal" in deep
+
+
+def test_both_deep_paths_run_the_same_function():
+    """Written apart, they drifted apart four times in one day.
+
+    The tripwire, the failure ledger and the demotion of walled candidates
+    each landed on one side only, and nothing failed — the two call sites
+    simply stopped doing the same thing.
+    """
+    root = Path(__file__).parent.parent / "src" / "thot"
+    pipeline = (root / "pipeline.py").read_text(encoding="utf-8")
+    session = (root / "session.py").read_text(encoding="utf-8")
+
+    assert "run_deep_pass" in pipeline
+    assert "run_deep_pass" in session
+    # Neither may call the raw pass again without going through the shared
+    # one. Word-boundary matched: `_deep_analyse` is a caller, not a call.
+    import re
+
+    bare = re.compile(r"(?<![\w.])analyse\s*\(")
+    for text, name in ((pipeline, "pipeline"), (session, "session")):
+        direct = [
+            line for line in text.splitlines()
+            if bare.search(line) and not line.strip().startswith("#")
+        ]
+        assert not direct, f"{name} appelle analyse() directement : {direct}"

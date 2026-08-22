@@ -482,34 +482,35 @@ class Session:
             # pass runs for minutes, and a session closed mid-way used to
             # take every judgement it had already paid for with it.
             progress["done"] += 1
-            if memory is not None:
-                progress["kept"] += self._record_one(finding, memory)
+            if finding.confidence is Confidence.REFUTED:
+                # Counted here, written by the pass: two writers would have
+                # meant two verdicts, or one silently dropped.
+                progress["kept"] += 1
             status.update(
                 f"   [dim]{progress['done']}/{len(selected)} jugé(s) · {who}[/dim]"
             )
 
-        # The same tripwire `thot audit --deep` carries. A safety property
-        # that holds on one path and not another is not a property: two of
-        # the three agents can write, and this path runs them too.
-        from thot.analysis import tripwire
-
-        before = tripwire.snapshot(self.root, self.recon.manifest.files)
+        # The same pass `thot audit --deep` runs, from the same function.
+        # Written apart, these two drifted apart four times in one day —
+        # the tripwire, the failure ledger, the demotion of walled
+        # candidates, each landing on one side only and failing nothing.
+        from thot.analysis.deep import run_deep_pass
 
         try:
             with theme.console.status(
                 f"   [dim]{label}[/dim]", spinner="dots"
             ) as status:
-                analysed = analyse(
+                outcome = run_deep_pass(
                     self.root, findings, engine,
+                    files=self.recon.manifest.files, memory=memory,
                     limit=DEFAULT_LIMIT, on_decided=landed,
                 )
         finally:
             if memory is not None:
                 getattr(memory, "close", lambda: None)()
 
-        touched = tripwire.touched(
-            before, tripwire.snapshot(self.root, self.recon.manifest.files)
-        )
+        analysed = outcome.findings
+        touched = outcome.touched
         if touched:
             theme.console.print()
             theme.warn(
