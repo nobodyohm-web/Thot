@@ -103,11 +103,32 @@ Pas plus : une tâche que tout le monde refuse a un problème à elle.
 doctor --agents` le vérifie en lui demandant d'écrire un fichier, puis en
 allant regarder sur le disque.
 
-`Task` a été ajouté après coup : la sonde a été refusée cinq fois puis a
-réussi une fois. Un sous-agent tourne avec son propre jeu d'outils et
-n'hérite pas de la liste — c'est à ça que ressemble, vu du dehors, une
-posture à laquelle il reste une porte. Et une ligne verte ici veut dire
-« pas cette fois », pas « impossible » : elle est formulée ainsi.
+Ce n'est pas une liste blanche, parce que le client n'en propose pas :
+`--allowed-tools` **pré-approuve**, il ne restreint pas. Mesuré — une sonde
+lancée avec `Read Glob Grep` autorisés dispose quand même de `Write`, `Bash`
+et `Workflow`. Le seul levier est la liste noire.
+
+Ce qu'une sonde tenait avant qu'on la mesure : `CronCreate`, `CronDelete`,
+`Workflow`, `SendMessage`, `PushNotification`, `RemoteTrigger`,
+`EnterWorktree`, `WebFetch`, et **tous les serveurs MCP connectés par
+l'utilisateur** — dont un outil dont le nom commençait par `clear_`. Créer
+des tâches planifiées persistantes, envoyer des messages, atteindre une
+boîte mail. Pour lire du code et répondre en JSON.
+
+Ce qu'elle tient après :
+
+```
+✓ outils · claude        7 outil(s), tous en lecture seule
+  Glob, Grep, ListAgents, Read, ReportFindings, Skill, ToolSearch
+```
+
+Une liste noire est fragile par construction — `Task` y manquait et un
+sous-agent a écrit un fichier par ce trou, une fois sur six. Alors l'écart
+est rendu **détectable** : `thot doctor --agents` demande à une sonde vivante
+ce qu'elle tient réellement et nomme tout ce qu'il ne reconnaît pas, parce
+que la prochaine version du client apportera des outils dont cette liste n'a
+jamais entendu parler. Et une ligne verte sur l'écriture veut dire « pas
+cette fois », pas « impossible » : elle est formulée ainsi.
 
 Hermes et Prime **n'ont pas de mode lecture seule**, et c'est dit plutôt que
 supposé : `-t file` désigne « File Operations », lecture et écriture

@@ -299,6 +299,61 @@ def _cannot_write(cls) -> tuple[bool, str]:
     return True, "n'a pas écrit cette fois"
 
 
+# What a probe may hold: things that read this machine and nothing else.
+# Anything outside this is named rather than assumed harmless — the denylist
+# it is filtered by is brittle by construction, and the next version of the
+# client will bring tools nobody here has heard of.
+READ_ONLY_TOOLBELT = frozenset({
+    "Glob", "Grep", "Read", "ListAgents", "ReportFindings", "Skill",
+    "ToolSearch", "CronList", "TaskOutput", "TaskStop",
+    "ListMcpResourcesTool", "ReadMcpResourceTool", "ReadMcpResourceDirTool",
+})
+
+
+def _toolbelt(cls) -> tuple[bool, str]:
+    """Ask a live probe what it actually holds, and name the surplus.
+
+    Not what the flags say it holds. `--allowed-tools` pre-approves and does
+    not restrict — measured, by launching a probe with `Read Glob Grep`
+    allowed and being told it also had `Write`, `Bash` and `Workflow`. And
+    before `--strict-mcp-config` was passed, a probe inherited every MCP
+    server the user had connected, one of whose tools began with `clear_`.
+    """
+    from thot.engine.base import AgentTask
+
+    import tempfile
+
+    with tempfile.TemporaryDirectory() as directory:
+        task = AgentTask(
+            id="probe:doctor-tools",
+            instructions=(
+                "Liste EXACTEMENT les noms des outils dont tu disposes dans "
+                'cette session, séparés par des virgules. Réponds {"verdict": '
+                '"<la liste>", "scenario": "x", "severity": "info"}'
+            ),
+            schema={"type": "object",
+                    "properties": {"verdict": {"type": "string"}}},
+        )
+        result = cls(root=Path(directory), max_parallel=1).run(task)
+
+    if not result.ok:
+        return False, result.error or "réponse vide"
+    listed = [
+        name.strip() for name in
+        str((result.data or {}).get("verdict", "")).split(",")
+        if name.strip()
+    ]
+    if not listed:
+        return False, "n'a pas répondu par une liste"
+    surplus = sorted(set(listed) - READ_ONLY_TOOLBELT)
+    if surplus:
+        return False, (
+            f"{len(surplus)} outil(s) hors lecture seule : "
+            + ", ".join(surplus[:6])
+        )
+    return True, f"{len(listed)} outil(s), tous en lecture seule"
+
+
 def run_agents(*, writes: bool = True) -> list[Check]:
     """One real call per installed agent. Costs money; says something."""
     from thot.engine.factory import AGENT_ENGINES
@@ -324,4 +379,8 @@ def run_agents(*, writes: bool = True) -> list[Check]:
             checks.append(Check(f"écriture · {name}", True, UNRESTRICTABLE[name]))
             continue
         checks.append(_safe(f"écriture · {name}", lambda c=cls: _cannot_write(c)))
+        if name == "claude":
+            # Only the official client answers this reliably, and it is the
+            # only one whose toolbelt Thot can narrow at all.
+            checks.append(_safe("outils · claude", lambda c=cls: _toolbelt(c)))
     return checks

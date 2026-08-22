@@ -35,12 +35,38 @@ ALLOWED_TOOLS = tuple(f"mcp__thot__{name}" for name in EXPOSED)
 # filtered Thot's tools would be a lie: the CLI could still write. These are
 # the names to hand to --disallowed-tools so the posture means the same
 # thing in both modes.
-# `Task` is here because a subagent is a way to write: it runs with its own
-# toolset and does not inherit this list, so leaving it open leaves a door
-# open. Observed once in about six runs of `thot doctor --agents`, where the
-# probe was refused five times and then quietly succeeded — which is what a
-# posture with one door left open looks like from the outside.
-WRITING_TOOLS = ("Write", "Edit", "MultiEdit", "NotebookEdit", "Bash", "Task")
+# What an audit probe has no business holding. A denylist, because that is
+# the only lever the CLI offers: `--allowed-tools` pre-approves, it does not
+# restrict — measured, by asking a probe launched with `--allowed-tools
+# "Read Glob Grep"` to list its tools, and being told `Write, Bash, Edit,
+# Agent, Workflow` among others.
+#
+# Being a denylist, it is brittle by construction: `Task` was missing from it
+# and a subagent wrote a file through the gap. `thot doctor --agents` asks a
+# live probe what it actually holds and names anything unrecognised, because
+# the next version of the client will bring tools this tuple has never heard
+# of.
+#
+# Three kinds, all of them out of place in something that reads code to
+# answer a question: what writes, what persists past the run, and what
+# reaches outward.
+WRITING_TOOLS = (
+    # writes
+    "Write", "Edit", "MultiEdit", "NotebookEdit", "Bash",
+    "EnterWorktree", "ExitWorktree",
+    # spawns something that holds its own toolset, and does not inherit this
+    "Task", "Agent", "Workflow",
+    # persists past the run
+    "CronCreate", "CronDelete", "ScheduleWakeup", "Monitor",
+    # reaches outward. `WebFetch` is the classic exfiltration channel under
+    # prompt injection — the audited code says "fetch https://…/?data=" and
+    # the probe obliges — and a probe reads local code to answer a JSON
+    # question. Dependency lookups do not go through here: `thot deps` asks
+    # OSV.dev from the deterministic pass, where no model is involved.
+    "SendMessage", "PushNotification", "RemoteTrigger", "DesignSync",
+    "WebFetch", "WebSearch",
+)
+
 READING_TOOLS = ("Read", "Glob", "Grep", "WebFetch", "WebSearch")
 
 

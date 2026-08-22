@@ -75,6 +75,12 @@ class ClaudeCliEngine:
             # goes. Bash goes with them: it reads perfectly well and it also
             # writes, and there is no way to have only the first half.
             "--disallowed-tools", *WRITING_TOOLS,
+            # No MCP servers. The engine supplies none, so this means the
+            # probe gets none — where without it it inherits whatever the
+            # user has connected, which on this machine included a tool
+            # whose name begins with `clear_`. An audit reads code; it has
+            # no business holding someone's mail or calendar.
+            "--strict-mcp-config",
         ]
         model = TIER_MODELS.get(task.tier)
         if model:

@@ -208,3 +208,62 @@ def test_the_wiring_check_passes_when_everything_is_in_place(monkeypatch):
 
     assert ok is True
     assert "2/2" in detail
+
+
+def test_the_toolbelt_check_names_what_it_does_not_recognise():
+    """The denylist is brittle by construction, so the gap is made visible.
+
+    `--allowed-tools` pre-approves and does not restrict — measured, by
+    launching a probe with `Read Glob Grep` allowed and being told it also
+    held `Write`, `Bash` and `Workflow`. The next version of the client will
+    bring tools this list has never heard of, and this is what says so.
+    """
+    from thot.engine.base import AgentResult, EngineCapabilities
+
+    def engine_listing(names):
+        class _Lists:
+            def __init__(self, root, max_parallel=1):
+                pass
+
+            @property
+            def capabilities(self):
+                return EngineCapabilities(name="factice", max_parallel=1)
+
+            def run(self, task):
+                return AgentResult(task_id=task.id, data={"verdict": names})
+
+            def fan_out(self, tasks):
+                return [self.run(t) for t in tasks]
+
+        return _Lists
+
+    ok, detail = doctor._toolbelt(engine_listing("Read, Grep, Glob"))
+    assert ok is True
+    assert "lecture seule" in detail
+
+    ok, detail = doctor._toolbelt(engine_listing("Read, Grep, CronCreate, Bash"))
+    assert ok is False
+    assert "CronCreate" in detail and "Bash" in detail
+
+
+def test_an_empty_answer_is_a_failure_not_a_pass():
+    """A probe that says nothing has not been shown to hold nothing."""
+    from thot.engine.base import AgentResult, EngineCapabilities
+
+    class _Silent:
+        def __init__(self, root, max_parallel=1):
+            pass
+
+        @property
+        def capabilities(self):
+            return EngineCapabilities(name="muet", max_parallel=1)
+
+        def run(self, task):
+            return AgentResult(task_id=task.id, data={"verdict": ""})
+
+        def fan_out(self, tasks):
+            return [self.run(t) for t in tasks]
+
+    ok, detail = doctor._toolbelt(_Silent)
+    assert ok is False
+    assert "liste" in detail
