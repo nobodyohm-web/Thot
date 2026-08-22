@@ -123,7 +123,7 @@ def _path_summary(finding: Finding) -> str:
     return "\n".join(f"  {i + 1}. {ref}" for i, ref in enumerate(finding.taint_path))
 
 
-def _scope_note(root: Path) -> str:
+def _scope_note(root: Path, finding: Finding | None = None) -> str:
     """Pin the agent to the tree that was actually audited.
 
     This is not decoration. Thot audits three trees that live inside one
@@ -135,11 +135,23 @@ def _scope_note(root: Path) -> str:
     had been fixed the day before. The verdict was then remembered, which is
     how a live defect gets silenced for good.
     """
+    # The file, spelled absolutely. Not decoration either: measured on the
+    # three agents, Hermes cannot open a path relative to its working
+    # directory and answers "I cannot read that file" — so a third of the
+    # panel was blind to every claim that needed a second file opened, and
+    # said so in words that read like a refusal rather than a gap.
+    examined = ""
+    if finding is not None:
+        examined = f"Fichier examiné : {(Path(root) / finding.location.path).resolve()}\n"
+
     return (
         f"Dépôt audité : {Path(root).resolve()}\n"
-        "Tout chemin relatif se résout sous CETTE racine. Un fichier de même "
-        "chemin peut exister dans un dépôt parent ou voisin : ce n'est pas "
-        "celui-ci.\n"
+        + examined
+        + 
+        "Ouvre les fichiers par leur chemin ABSOLU sous cette racine — un "
+        "chemin relatif ne se résout pas dans tous les agents. Un fichier de "
+        "même chemin peut exister dans un dépôt parent ou voisin : ce n'est "
+        "pas celui-ci.\n"
         "Le code ci-dessous a été lu sur le disque au moment de l'audit. "
         "L'historique git n'est pas l'état audité : « ce code a changé depuis » "
         "n'est pas une réfutation recevable, l'identité du finding est calculée "
@@ -149,7 +161,7 @@ def _scope_note(root: Path) -> str:
 
 def _probe_task(root: Path, finding: Finding) -> AgentTask:
     context = (
-        f"{_scope_note(root)}\n"
+        f"{_scope_note(root, finding)}\n"
         f"Règle déclenchée : {finding.rule}\n"
         f"Emplacement : {finding.location}\n"
         f"Sévérité calculée (accessibilité × impact) : {finding.severity.value}\n"
@@ -181,7 +193,7 @@ def _refute_task(
     root: Path, finding: Finding, scenario: str, *, again: bool = False
 ) -> AgentTask:
     context = (
-        f"{_scope_note(root)}\n"
+        f"{_scope_note(root, finding)}\n"
         f"Emplacement : {finding.location}\n"
         f"Scénario d'exploitation avancé :\n{scenario}\n\n"
         f"Code :\n{excerpt(root, finding.location)}"
@@ -225,7 +237,7 @@ def _refute_task(
 def _review_task(root: Path, finding: Finding, scenario: str, reason: str) -> AgentTask:
     """Ask a third agent whether a refutation actually holds."""
     context = (
-        f"{_scope_note(root)}\n"
+        f"{_scope_note(root, finding)}\n"
         f"Emplacement : {finding.location}\n"
         f"Défaut soupçonné :\n{scenario}\n\n"
         f"Réfutation à vérifier :\n{reason}\n\n"

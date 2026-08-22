@@ -17,6 +17,7 @@ import shutil
 import subprocess
 
 from thot.engine import process as process_group
+from thot.llm.claude_cli import WRITING_TOOLS
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
@@ -67,6 +68,13 @@ class ClaudeCliEngine:
             "--output-format", "stream-json",
             "--verbose",
             "--append-system-prompt", self.system,
+            # An audit must not be able to change what it audits. Reading is
+            # the capability the probe needs — a refutation almost always
+            # rests on code outside the excerpt, and checking it is the whole
+            # job — so Read, Glob and Grep stay and everything that writes
+            # goes. Bash goes with them: it reads perfectly well and it also
+            # writes, and there is no way to have only the first half.
+            "--disallowed-tools", *WRITING_TOOLS,
         ]
         model = TIER_MODELS.get(task.tier)
         if model:

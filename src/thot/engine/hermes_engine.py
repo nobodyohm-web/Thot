@@ -40,6 +40,9 @@ TIER_REASONING = {"cheap": "minimal", "deep": "high"}
 # would produce a confident answer about the wrong code. Refuse instead.
 MAX_PROMPT = 100_000
 
+# Hermes enables a dozen toolsets by default. An audit needs one.
+TOOLSETS = "file"
+
 
 @dataclass
 class HermesEngine:
@@ -72,7 +75,12 @@ class HermesEngine:
             raise FileNotFoundError(
                 "Hermes est introuvable — `uv sync` à la racine du dépôt"
             )
-        command = [*base, "-z", prompt, "--in", str(self.root)]
+        # File operations only. An audit reads; it has no business holding a
+        # terminal, a browser, a code interpreter or an image generator, and
+        # every one of those is enabled by default. `file` keeps the one
+        # capability a refutation needs: going to look at the code it rests
+        # on, which is usually not in the excerpt.
+        command = [*base, "-z", prompt, "--in", str(self.root), "-t", TOOLSETS]
         reasoning = TIER_REASONING.get(task.tier)
         if reasoning:
             command += ["--reasoning", reasoning]

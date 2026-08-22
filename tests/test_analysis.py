@@ -432,3 +432,24 @@ def test_the_reviewer_is_told_to_read_what_the_refutation_leans_on(tmp_path):
 
     assert "Va lire ces endroits" in task.instructions
     assert "vérifiée toi-même" in task.instructions
+
+
+def test_every_task_names_the_file_by_its_absolute_path(tmp_path):
+    """Measured on the three agents: Hermes cannot open a relative path.
+
+    It answers "I cannot read that file", which reads like a refusal rather
+    than a gap — so a third of the panel was blind to every claim that needed
+    a second file opened, including the ones the reviewer is asked to check.
+    """
+    from thot.analysis.probe import _probe_task, _refute_task, _review_task
+
+    finding = make_finding(path="src/app.py")
+    expected = str((tmp_path / "src/app.py").resolve())
+
+    for task in (
+        _probe_task(tmp_path, finding),
+        _refute_task(tmp_path, finding, "scénario"),
+        _review_task(tmp_path, finding, "scénario", "raison"),
+    ):
+        assert expected in task.context
+        assert "chemin ABSOLU" in task.context

@@ -98,6 +98,21 @@ jusqu'à ce que quelqu'un tranche.
 Si un agent échoue sur une tâche, elle est reprise **une fois** par un autre.
 Pas plus : une tâche que tout le monde refuse a un problème à elle.
 
+**Un audit ne peut pas modifier ce qu'il audite.** Claude tourne sans `Write`,
+`Edit`, `MultiEdit`, `NotebookEdit` ni `Bash` ; Hermes avec le seul jeu
+d'outils `file`, au lieu de la douzaine activée par défaut — pas de terminal,
+pas de navigateur, pas d'interpréteur. La lecture reste, parce qu'une
+réfutation s'appuie presque toujours sur du code hors extrait et qu'aller le
+vérifier est tout le travail. Prime fait exception et c'est dit plutôt que
+caché : son unique outil intégré est un noyau IPython, donc une sonde qui
+tourne sur Prime a la portée de Prime.
+
+Les chemins sont donnés **en absolu**. Mesuré sur les trois : Hermes n'ouvre
+pas un chemin relatif à son dossier de travail et répond « je ne peux pas lire
+ce fichier » — ce qui se lit comme un refus et non comme une lacune. Un tiers
+du panel était aveugle à toute affirmation demandant d'ouvrir un second
+fichier.
+
 Chaque agent s'authentifie **comme lui-même**, sur ton compte : Thot lance sa
 ligne de commande, ne l'importe jamais et ne détient aucun jeton. Le verdict
 mémorisé porte le nom de celui qui a décidé — `refuted · hermes` — parce
