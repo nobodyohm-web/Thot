@@ -323,3 +323,48 @@ def test_a_personal_plugin_needs_no_approval(tmp_path, isolated_home):
     write_plugin(isolated_home / "plugins", "perso")
 
     assert "perso" in {p.name for p in loader.discover_report(tmp_path)[0]}
+
+
+def test_bytecode_next_to_the_source_does_not_revoke_approval(tmp_path):
+    """The reason IGNORED_DIRS exists, asserted rather than explained.
+
+    Python writes `__pycache__` beside a module the first time it imports it.
+    If that revoked trust, every approved plugin would be refused on its
+    second run — the mechanism would revoke itself into disuse.
+    """
+    from thot.plugins import trust
+
+    folder, _ = repo_plugin(tmp_path)
+    trust.trust(folder)
+    cache = folder / "__pycache__"
+    cache.mkdir(exist_ok=True)
+    (cache / "__init__.cpython-311.pyc").write_bytes(b"\x00" * 64)
+
+    assert trust.status(folder) == "trusted"
+
+
+def test_renaming_a_file_lapses_the_approval(tmp_path):
+    """An import reads the whole directory, so the whole directory is approved."""
+    from thot.plugins import trust
+
+    folder, _ = repo_plugin(tmp_path)
+    (folder / "helper.py").write_text("VALUE = 1\n", encoding="utf-8")
+    trust.trust(folder)
+
+    (folder / "helper.py").rename(folder / "aide.py")
+
+    assert trust.status(folder) == "changed"
+
+
+def test_moving_a_file_lapses_the_approval_even_with_identical_bytes(tmp_path):
+    """Path is hashed alongside content: `sub/a.py` is not `a.py`."""
+    from thot.plugins import trust
+
+    folder, _ = repo_plugin(tmp_path)
+    (folder / "helper.py").write_text("VALUE = 1\n", encoding="utf-8")
+    trust.trust(folder)
+
+    (folder / "inner").mkdir()
+    (folder / "helper.py").rename(folder / "inner" / "helper.py")
+
+    assert trust.status(folder) == "changed"
