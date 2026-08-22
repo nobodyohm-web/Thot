@@ -50,6 +50,25 @@ def estimate_tokens(text: str) -> int:
     return max(1, len(text or "") // CHARS_PER_TOKEN)
 
 
+def should_compact(*, estimated: int, measured: int = 0,
+                   budget: int = AUTO_BUDGET) -> bool:
+    """Whether the window is full enough to be worth restarting the thread.
+
+    Two signals, and the larger one wins. `estimated` is what Thot can see of
+    its own message list; `measured` is what the CLI reported actually being
+    in the window on the last turn.
+
+    They are not close. In account mode the CLI owns the thread: Thot records
+    the user's lines and the assistant's final text, never the files a tool
+    read. Measured on one ordinary turn — a single file read — the estimate
+    was 95 tokens against 88 290 really in the window. Trusting the estimate
+    alone meant a threshold of 120 000 that a real session never reached, so
+    the automatic compaction never fired once in the mode people use, and a
+    long task died of exactly the exhaustion it exists to prevent.
+    """
+    return max(estimated, measured) >= budget
+
+
 def total_tokens(messages) -> int:
     return sum(estimate_tokens(getattr(m, "content", "") or "") for m in messages)
 

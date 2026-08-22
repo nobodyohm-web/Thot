@@ -1551,7 +1551,8 @@ class Session:
         theme.console.print()
         return None
 
-    def _compact(self, argument: str, *, budget: int | None = None) -> None:
+    def _compact(self, argument: str, *, budget: int | None = None,
+                 force: bool = False) -> None:
         """Summarise the middle, keep the beginning and the end verbatim.
 
         Hermes Agent's compression strategy, ported: the opening frames the
@@ -1573,14 +1574,20 @@ class Session:
             **({"budget": budget} if budget is not None else {}),
         )
 
-        if not manual and not proposal.worth_doing:
+        if not manual and not force and not proposal.worth_doing:
             theme.console.print()
             theme.hint(f"Rien à compacter — ~{proposal.before} jetons, "
                        f"sous le seuil.")
             theme.console.print()
             return None
 
-        summary = manual or self._summarise(proposal)
+        # Forced with nothing of Thot's own worth paraphrasing: the exchanges
+        # ride along verbatim and the CLI thread is what gets reset.
+        bare = force and not manual and not proposal.worth_doing
+        summary = manual or ("" if bare else self._summarise(proposal))
+        if bare and not summary:
+            summary = ("Contexte du CLI réinitialisé : la fenêtre était pleine. "
+                       "Les échanges ci-dessous sont conservés tels quels.")
         if not summary:
             theme.warn("Rien à résumer pour l'instant.")
             theme.console.print()
@@ -1589,7 +1596,9 @@ class Session:
         child = self.store.branch(self.session_id, summary)
         self.session_id = child
 
-        if manual and not proposal.worth_doing:
+        if bare:
+            kept = list(self.messages)
+        elif manual and not proposal.worth_doing:
             kept = [Message(role="user",
                             content=f"{compaction.MARKER} :\n{summary}")]
         else:
@@ -1629,16 +1638,26 @@ class Session:
 
         if self.store is None or not self.messages:
             return
+
+        # What the CLI said was actually in the window, which is the only
+        # honest number in account mode — Thot's own list holds neither the
+        # files a tool read nor the tool traffic itself.
+        measured = int(getattr(self.claude, "last_tokens", 0) or 0)
         proposal = compaction.plan(self.messages, budget=compaction.AUTO_BUDGET)
-        if not proposal.worth_doing:
+        if not compaction.should_compact(estimated=proposal.before,
+                                         measured=measured):
             return
 
+        full = measured >= compaction.AUTO_BUDGET
         theme.console.print()
         theme.warn(
-            f"Contexte à ~{proposal.before} jetons — compactage automatique "
-            f"pour que la tâche puisse continuer."
+            f"Contexte à ~{max(proposal.before, measured)} jetons — compactage "
+            f"automatique pour que la tâche puisse continuer."
         )
-        self._compact("", budget=compaction.AUTO_BUDGET)
+        # A full window with a short message list is the ordinary account-mode
+        # shape: there is little of Thot's own to summarise, and restarting the
+        # CLI thread is what actually frees the context.
+        self._compact("", budget=compaction.AUTO_BUDGET, force=full)
 
     @staticmethod
     def _carry_text(messages) -> str:

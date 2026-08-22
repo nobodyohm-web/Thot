@@ -189,3 +189,87 @@ def test_the_automatic_compaction_is_reachable_from_a_session():
 
     assert hasattr(Session, "_compact_if_needed")
     assert hasattr(Session, "_compact")
+
+
+# --- le déclencheur automatique doit croire la mesure, pas l'estimation ----
+#
+# En mode compte le CLI possède le fil : `Session.messages` ne garde que les
+# lignes de l'utilisateur et le texte final de l'assistant — jamais les
+# fichiers lus ni le trafic d'outils. Mesuré sur un tour ordinaire (`claude
+# -p` lisant un seul fichier) : 95 jetons vus par Thot contre 88 290
+# réellement dans la fenêtre, soit 929x trop bas. Avec un seuil à 120 000, le
+# compactage automatique ne se déclenchait donc jamais dans le mode que
+# l'utilisateur emploie, et la tâche longue mourait de la panne que cette
+# fonction existe pour éviter.
+
+
+def test_the_measured_window_triggers_a_compaction_the_estimate_would_miss():
+    from thot.state.compaction import AUTO_BUDGET, should_compact
+
+    # ce qu'un tour réel produit : une estimation ridicule, une fenêtre pleine
+    assert should_compact(estimated=95, measured=AUTO_BUDGET + 1)
+
+
+def test_the_estimate_still_triggers_when_nothing_was_measured():
+    from thot.state.compaction import AUTO_BUDGET, should_compact
+
+    assert should_compact(estimated=AUTO_BUDGET + 1, measured=0)
+
+
+def test_a_small_context_is_left_alone_by_both_signals():
+    from thot.state.compaction import should_compact
+
+    assert not should_compact(estimated=95, measured=88_290)
+
+
+def test_the_session_asks_the_cli_what_the_window_really_holds():
+    """The wiring, exercised rather than read."""
+    from thot.session import Session
+    from thot.state import compaction
+
+    class _Cli:
+        last_tokens = compaction.AUTO_BUDGET + 5_000
+        forgotten = False
+
+        def forget_thread(self):
+            self.forgotten = True
+
+    class _Fake:
+        store = object()
+        messages = [type("M", (), {"role": "user", "content": "salut"})()]
+        claude = _Cli()
+        compacted = None
+
+        def _compact(self, argument, *, budget=None, force=False):
+            self.compacted = (budget, force)
+
+    fake = _Fake()
+    Session._compact_if_needed(fake)
+
+    assert fake.compacted is not None, "la mesure du CLI a été ignorée"
+    budget, force = fake.compacted
+    assert budget == compaction.AUTO_BUDGET
+    assert force is True, "un plan vide ne doit pas annuler un contexte plein"
+
+
+def test_a_local_session_without_a_cli_still_uses_its_own_estimate():
+    from thot.session import Session
+    from thot.state import compaction
+
+    class _Fake:
+        store = object()
+        claude = None
+        compacted = None
+        messages = [
+            type("M", (), {"role": "user", "content": "x " * 4_000})()
+            for _ in range(60)
+        ]
+
+        def _compact(self, argument, *, budget=None, force=False):
+            self.compacted = (budget, force)
+
+    fake = _Fake()
+    Session._compact_if_needed(fake)
+
+    assert fake.compacted is not None
+    assert fake.compacted[1] is False, "rien de mesuré : pas de forçage"
