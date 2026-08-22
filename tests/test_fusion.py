@@ -792,3 +792,65 @@ def test_nothing_is_added_when_no_verdict_applies():
 
 def part_line(part):
     return part.line()
+
+
+# --- une sauvegarde qui cesse d'en être une --------------------------------
+#
+# Les quatre sites de `fusion/` gardent `if not backup.exists()`, et le
+# commentaire dit pourquoi : « une copie qui précède la première erreur ».
+# Sans cette garde, le second passage écraserait la sauvegarde avec le
+# résultat du premier, et des mois de notes disparaîtraient sans un message.
+# L'invariant était expliqué et gardé par aucun test : un seul lisait le
+# contenu, et seulement après une projection.
+
+
+def test_a_second_projection_keeps_the_first_backup(homes, tmp_path):
+    from thot.fusion import memory
+    from thot.harness import Harness
+
+    _, prime = homes
+    prime.mkdir(parents=True)
+    (prime / "AGENTS.md").write_text("des mois de notes\n", encoding="utf-8")
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    Harness.open(repo).remember(title="x", content="y", scope="global")
+
+    memory.project(repo)
+    Harness.open(repo).remember(title="z", content="w", scope="global")
+    memory.project(repo)
+
+    backup = prime / "AGENTS.md.thot-backup"
+    assert backup.read_text(encoding="utf-8") == "des mois de notes\n", (
+        "la seconde passe a écrasé la sauvegarde avec sa propre sortie"
+    )
+
+
+def test_a_rewiring_after_the_user_edits_keeps_the_first_backup(homes, tmp_path):
+    """The second wiring must actually reach the backup code to prove anything.
+
+    `wire_prime` returns early when nothing needs changing, so simply calling
+    it twice exercises the early return and passes with the guard removed —
+    which is what the first version of this test did. The real scenario is a
+    user who edits their settings after the first wiring: Thot wires again,
+    and the backup must still hold what they had before Thot ever ran.
+    """
+    from thot.fusion import wiring
+
+    _, prime = homes
+    prime.mkdir(parents=True)
+    original = '{"defaultModel": "à-moi"}'
+    settings = prime / "settings.json"
+    settings.write_text(original, encoding="utf-8")
+
+    wiring.wire_prime()
+    after_first = settings.read_text(encoding="utf-8")
+    assert after_first != original, "le premier câblage n'a rien fait"
+
+    # L'utilisateur reprend la main et défait le câblage.
+    settings.write_text('{"defaultModel": "un-autre"}', encoding="utf-8")
+    wiring.wire_prime()
+
+    backup = prime / "settings.json.thot-backup"
+    assert backup.read_text(encoding="utf-8") == original, (
+        "la sauvegarde porte désormais une version postérieure à Thot"
+    )
