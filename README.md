@@ -535,8 +535,14 @@ n'atteint — c'est ainsi qu'un rapport cesse d'être lu.
 
 | | avant | après |
 |---|---|---|
-| hermes | 25 high · 88 medium · 252 low | **13** high · 52 medium · 300 low |
-| prime | 11 high · 2 medium · 1 low | **5** high · 8 medium · 1 low |
+| hermes | 25 high · 94 medium · 297 low | **13** high · 58 medium · 345 low |
+| prime | 11 high · 2 medium · 9 low | **5** high · 8 medium · 9 low |
+
+Les colonnes HIGH sont celles qui portent l'argument, et elles n'ont pas
+bougé d'un finding depuis la première mesure : 25 → 13 et 11 → 5. Les
+décomptes medium et low ci-dessus ont été refaits sur les arbres tels qu'ils
+sont aujourd'hui, neuf vulnérabilités ayant été corrigées dans Hermes entre
+les deux mesures.
 
 Aucun finding ajouté, aucun perdu. C'est une démotion, jamais une
 suppression : du code de test tourne sur les machines des développeurs et
