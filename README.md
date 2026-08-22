@@ -442,7 +442,7 @@ Le rapport le dit lui-même plutôt que de laisser croire à une couverture
 uniforme :
 
 ```
-indexés et cartographiés, sans moteur de teinte : typescript 912
+teinte au fichier près, pas au-delà : javascript 3 · typescript 912
 ```
 
 L'indexeur TypeScript est un scanner, pas `tsc` : il masque commentaires et

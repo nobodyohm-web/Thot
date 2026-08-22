@@ -207,3 +207,37 @@ def test_a_deterministic_finding_shows_no_judgement():
         confidence=Confidence.PLAUSIBLE, location=location,
     )
     assert judgement(finding) == []
+
+
+def test_the_report_states_the_depth_it_actually_reached():
+    """The tiers drifted once already, in the wrong direction.
+
+    The JavaScript taint engine was written and the language list was not
+    updated, so for an afternoon every report told its reader that TypeScript
+    had no taint engine while it had one. A claim about depth is worth as
+    much as the code behind it.
+    """
+    from thot.console import _pattern_only
+
+    deep = _pattern_only({"python": 10})
+    assert deep == "", "le langage le plus couvert n'a rien à signaler"
+
+    shallow = _pattern_only({"typescript": 912})
+    assert "au fichier près" in shallow
+    assert "sans moteur de teinte" not in shallow
+
+    blind = _pattern_only({"yaml": 4})
+    assert "motifs seuls" in blind
+
+
+def test_the_three_tiers_are_consistent_with_each_other():
+    """Deeper implies shallower: a language cannot cross files without being
+    tainted at all, nor be tainted without being indexed."""
+    from thot.codemap import (
+        DEEP_TAINT_LANGUAGES,
+        INDEXED_LANGUAGES,
+        TAINTED_LANGUAGES,
+    )
+
+    assert set(DEEP_TAINT_LANGUAGES) <= set(TAINTED_LANGUAGES)
+    assert set(TAINTED_LANGUAGES) <= set(INDEXED_LANGUAGES)

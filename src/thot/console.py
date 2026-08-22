@@ -143,7 +143,11 @@ def _pattern_only(languages: dict) -> str:
     a reader assume 912 TypeScript files had been analysed the same way as
     23 Python ones.
     """
-    from thot.codemap import INDEXED_LANGUAGES, TAINTED_LANGUAGES
+    from thot.codemap import (
+        DEEP_TAINT_LANGUAGES,
+        INDEXED_LANGUAGES,
+        TAINTED_LANGUAGES,
+    )
 
     def named(subset: dict) -> str:
         return " · ".join(f"{n} {c}" for n, c in sorted(subset.items()))
@@ -152,12 +156,21 @@ def _pattern_only(languages: dict) -> str:
         name: count for name, count in languages.items()
         if name not in INDEXED_LANGUAGES and count
     }
+    shallow = {
+        name: count for name, count in languages.items()
+        if name in TAINTED_LANGUAGES
+        and name not in DEEP_TAINT_LANGUAGES and count
+    }
     mapped = {
         name: count for name, count in languages.items()
         if name in INDEXED_LANGUAGES and name not in TAINTED_LANGUAGES and count
     }
 
     lines = []
+    if shallow:
+        lines.append(
+            f"teinte au fichier près, pas au-delà : {named(shallow)}"
+        )
     if mapped:
         lines.append(
             f"indexés et cartographiés, sans moteur de teinte : {named(mapped)}"
