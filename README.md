@@ -62,10 +62,15 @@ Le rapport dit qui a fait quoi :
 
 ```
 Analyse assistée : panel — claude-cli contre hermes contre prime
+  [1] serve.py:7 — confirmé · hermes
 …
 1 confirmé(s) · 2 réfuté(s)
-Argumenté par claude-cli 1 · hermes 1 — attaqué par hermes 1 · prime 1
+Argumenté par claude-cli 1 — attaqué par prime 1 — puis par hermes 1
 ```
+
+Trois agents distincts sur le même finding, mesuré : claude-cli a argumenté,
+prime a tenté de détruire le scénario et a échoué, hermes a attaqué une
+seconde fois. Ce qui est rapporté a survécu à deux adversaires indépendants.
 
 **La cascade.** Un finding est argumenté, puis attaqué. Ce qui *survit* à
 l'attaque est ce qui sera montré à un humain — donc ça repart à un

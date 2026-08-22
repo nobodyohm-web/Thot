@@ -112,3 +112,43 @@ def test_an_all_python_repository_says_nothing_extra():
     from thot.console import _pattern_only
 
     assert _pattern_only({"python": 162}) == ""
+
+
+def test_the_summary_names_every_stage_of_the_cascade():
+    """The escalation is the step the panel exists for.
+
+    A summary that stopped at the first attacker made the third agent's work
+    invisible — and that agent is the one who decides whether a finding is
+    reported at all.
+    """
+    from thot.console import _panel_note
+    from thot.contracts import CodeRef, Confidence, Finding, Severity
+
+    location = CodeRef(path="a.py", line=1, symbol="f", ast_hash="h")
+    finding = Finding(
+        id="1", rule="sink.os.system", severity=Severity.HIGH,
+        confidence=Confidence.CONFIRMED, location=location,
+        provenance={
+            "moteur": "claude-cli",
+            "contradicteur": "prime",
+            "second contradicteur": "hermes",
+        },
+    )
+
+    note = _panel_note([finding])
+
+    assert "Argumenté par claude-cli 1" in note
+    assert "attaqué par prime 1" in note
+    assert "puis par hermes 1" in note
+
+
+def test_a_deterministic_run_has_nothing_to_say_about_judges():
+    from thot.console import _panel_note
+    from thot.contracts import CodeRef, Confidence, Finding, Severity
+
+    location = CodeRef(path="a.py", line=1, symbol="f", ast_hash="h")
+    finding = Finding(
+        id="1", rule="sink.os.system", severity=Severity.HIGH,
+        confidence=Confidence.PLAUSIBLE, location=location,
+    )
+    assert _panel_note([finding]) == ""

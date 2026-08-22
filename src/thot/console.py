@@ -102,25 +102,36 @@ def _panel_note(findings) -> str:
     """
     from collections import Counter
 
-    argued: Counter = Counter()
-    attacked: Counter = Counter()
+    # Every stage, not just the first two. The escalation is the step the
+    # panel exists for, and a summary that stopped at the first attacker
+    # made the third agent's work — the one that decides whether a finding
+    # is reported at all — invisible.
+    stages = (
+        ("moteur", "Argumenté par {}"),
+        ("contradicteur", "attaqué par {}"),
+        ("second contradicteur", "puis par {}"),
+        ("relecture", "réfutation relue par {}"),
+    )
+
+    counts: dict[str, Counter] = {key: Counter() for key, _ in stages}
     for finding in findings:
         provenance = finding.provenance or {}
-        if provenance.get("moteur"):
-            argued[provenance["moteur"]] += 1
-        if provenance.get("contradicteur"):
-            attacked[provenance["contradicteur"]] += 1
+        for key, _ in stages:
+            who = provenance.get(key)
+            if who:
+                counts[key][who] += 1
 
-    if not argued:
+    if not counts["moteur"]:
         return ""
 
     def tally(counter) -> str:
         return " · ".join(f"{name} {count}" for name, count in counter.most_common())
 
-    line = f"[dim]Argumenté par {tally(argued)}"
-    if attacked:
-        line += f" — attaqué par {tally(attacked)}"
-    return line + "[/dim]"
+    parts = [
+        shape.format(tally(counts[key]))
+        for key, shape in stages if counts[key]
+    ]
+    return "[dim]" + " — ".join(parts) + "[/dim]"
 
 
 def _pattern_only(languages: dict) -> str:
