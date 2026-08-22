@@ -477,12 +477,19 @@ def _advertised_commands() -> set[tuple[str, ...]]:
     root = Path(__file__).resolve().parents[1]
     quoted = re.compile(r"`thot ((?:[a-z][a-z-]*)(?: [a-z][a-z-]*)*)")
     found: set[tuple[str, ...]] = set()
-    for folder in ("src/thot", "plugins"):
-        for path in (root / folder).rglob("*.py"):
-            if "__pycache__" in path.parts:
-                continue
-            for match in quoted.findall(path.read_text(encoding="utf-8")):
-                found.add(tuple(match.split()))
+    sources = [
+        path
+        for folder in ("src/thot", "plugins")
+        for path in (root / folder).rglob("*.py")
+        if "__pycache__" not in path.parts
+    ]
+    # The README too: it is the first thing anyone reads, and a command that
+    # does not exist wastes their first minute. 29 distinct commands are
+    # quoted across the source and the README today.
+    sources.append(root / "README.md")
+    for path in sources:
+        for match in quoted.findall(path.read_text(encoding="utf-8")):
+            found.add(tuple(match.split()))
     return found
 
 
@@ -512,4 +519,4 @@ def test_every_command_the_program_suggests_exists():
 
 def test_the_sweep_actually_finds_commands():
     """Guard the guard: an empty sweep would pass the test above silently."""
-    assert len(_advertised_commands()) >= 20
+    assert len(_advertised_commands()) >= 25
