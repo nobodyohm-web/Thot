@@ -90,7 +90,10 @@ def sweep(root: Path, *, deep: bool = True) -> Recon:
         from thot.guard.suppressions import sweep_suppressions
 
         recon.findings += sweep_patterns(root, list(manifest.files))
-        recon.findings += sweep_suppressions(root, list(manifest.files))
+        recon.findings += sweep_suppressions(
+            root, list(manifest.files),
+            {(f.location.path, f.location.line) for f in recon.findings},
+        )
         recon.findings = _remember(recon.findings, root)
 
     recon.elapsed = time.monotonic() - started

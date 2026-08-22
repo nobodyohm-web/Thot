@@ -115,3 +115,40 @@ def test_a_file_that_will_not_parse_still_gets_read():
     """A syntax error must not silence a whole file."""
     found = scan_text("broken.py", "def f(:\n    run()  # nosec\n")
     assert len(found) == 1
+
+
+def test_a_suppression_on_a_flagged_line_is_ranked_higher():
+    """It is not the same object as a suppression on ordinary code.
+
+    It is a claim that directly contradicts a live finding, written by
+    someone who read the same line and concluded otherwise. Measured on
+    Hermes: 8 of 45 — and three of the ones read that day were false.
+    """
+    from thot.contracts import Severity
+
+    source = "with urlopen(req) as r:  # nosec B310 — catalogue fixe\n"
+
+    alone = scan_text("app.py", source)[0]
+    contested = scan_text("app.py", source, {("app.py", 1)})[0]
+
+    assert alone.severity is Severity.LOW
+    assert contested.severity is Severity.MEDIUM
+    assert contested.provenance["contredit"] == "un finding de cet audit"
+    assert "contredit un finding vivant" in contested.failure_scenario
+
+
+def test_a_suppression_beside_the_flagged_line_still_counts():
+    """It is written above or beside the call it excuses at least as often."""
+    from thot.contracts import Severity
+
+    source = "# nosec B310\nwith urlopen(req) as r:\n"
+    found = scan_text("app.py", source, {("app.py", 2)})[0]
+
+    assert found.severity is Severity.MEDIUM
+
+
+def test_a_flag_in_another_file_does_not_promote_anything():
+    from thot.contracts import Severity
+
+    found = scan_text("app.py", "run()  # nosec\n", {("autre.py", 1)})[0]
+    assert found.severity is Severity.LOW

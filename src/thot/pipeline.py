@@ -162,7 +162,10 @@ def run_audit(
     # the reason this was excused".
     from thot.guard.suppressions import sweep_suppressions
 
-    findings += sweep_suppressions(root, list(manifest.files))
+    findings += sweep_suppressions(
+            root, list(manifest.files),
+            {(f.location.path, f.location.line) for f in findings},
+        )
 
     # Dependencies are the one surface that needs the network, so they are
     # opt-in and imported here rather than at module level: an audit without

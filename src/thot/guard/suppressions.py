@@ -85,14 +85,31 @@ def _python_comments(text: str) -> dict[int, str] | None:
     return found
 
 
-def scan_text(relative: str, text: str) -> list[Finding]:
-    """Every security suppression in one file."""
+def scan_text(
+    relative: str, text: str, flagged: set[tuple[str, int]] | None = None
+) -> list[Finding]:
+    """Every security suppression in one file.
+
+    `flagged` holds the locations the rest of the audit already reported. A
+    suppression sitting on one of them is not the same object as a
+    suppression sitting on ordinary code: it is a claim that directly
+    contradicts a live finding, written by someone who saw the same line and
+    concluded otherwise. Measured on Hermes: 8 of 45. Three of the ones read
+    that day turned out to be false.
+    """
     if not relative.lower().endswith(READABLE):
         return []
 
     findings: list[Finding] = []
     role = role_of(relative)
     seen: set[str] = set()
+    # A line either side as well: a suppression is written above or beside
+    # the call it excuses at least as often as on it.
+    contested = {
+        line for path, line in (flagged or ())
+        if path == relative
+        for line in (line - 1, line, line + 1)
+    }
 
     comments: dict[int, str] | None = None
     if relative.lower().endswith(PYTHON_SUFFIXES):
@@ -124,7 +141,10 @@ def scan_text(relative: str, text: str) -> list[Finding]:
             seen.add(identity)
 
             reason = _justification(match.groupdict().get("tail") or "")
+            disputed = number in contested
             provenance = {"phase": "motif", "outil": family}
+            if disputed:
+                provenance["contredit"] = "un finding de cet audit"
             if role is not Role.PRODUCTION:
                 provenance["rôle"] = role.value
             findings.append(
@@ -132,7 +152,14 @@ def scan_text(relative: str, text: str) -> list[Finding]:
                     id=identity,
                     rule=RULE,
                     severity=compute_severity(
-                        Severity.LOW, None, Confidence.PLAUSIBLE,
+                        # HIGH rather than MEDIUM, because the scale is
+                        # computed and not written: a plausible finding with
+                        # no reachability is discounted, and MEDIUM impact
+                        # lands back on LOW — indistinguishable from an
+                        # ordinary suppression, which is the whole point of
+                        # the distinction.
+                        Severity.HIGH if disputed else Severity.LOW,
+                        None, Confidence.PLAUSIBLE,
                         entrypoints_known=False, role=role,
                     ),
                     confidence=Confidence.PLAUSIBLE,
@@ -144,6 +171,11 @@ def scan_text(relative: str, text: str) -> list[Finding]:
                         + ". Cette justification n'est vérifiée par aucun "
                         "outil et survit aux appelants qu'elle décrivait : "
                         "reste-t-elle vraie du code tel qu'il est aujourd'hui ?"
+                        + (
+                            " Cet audit signale la même ligne — la suppression "
+                            "contredit un finding vivant."
+                            if disputed else ""
+                        )
                     ),
                     provenance=provenance,
                 )
@@ -153,7 +185,9 @@ def scan_text(relative: str, text: str) -> list[Finding]:
     return findings
 
 
-def sweep_suppressions(root: Path, files: list[str]) -> list[Finding]:
+def sweep_suppressions(
+    root: Path, files: list[str], flagged: set[tuple[str, int]] | None = None
+) -> list[Finding]:
     """Every security suppression in scope."""
     root = Path(root)
     findings: list[Finding] = []
@@ -164,5 +198,5 @@ def sweep_suppressions(root: Path, files: list[str]) -> list[Finding]:
             text = (root / relative).read_text(encoding="utf-8", errors="replace")
         except OSError:
             continue
-        findings.extend(scan_text(relative, text))
+        findings.extend(scan_text(relative, text, flagged))
     return findings

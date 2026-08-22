@@ -1211,6 +1211,12 @@ motifs — une expression rationnelle ne distingue pas `# nosec` dans un
 commentaire du même texte cité dans une docstring, et la docstring de ce
 module en cite deux.
 
+Une suppression posée sur une ligne que **cet audit signale** n'est pas le
+même objet : c'est une affirmation qui contredit un finding vivant, écrite
+par quelqu'un qui a lu la même ligne et conclu autrement. Elle est remontée
+d'un cran et le dit. Mesuré sur Hermes : **8 sur 45** — et trois des
+suppressions lues ce jour-là étaient fausses.
+
 Mesuré : **0 sur Thot, 0 sur Prime, 45 sur Hermes.**
 
 ### Calibration
