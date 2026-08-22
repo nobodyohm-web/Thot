@@ -27,6 +27,38 @@ class SinkRule:
 
 
 @dataclass(frozen=True)
+class EntrySourceRule:
+    """A function whose *parameters* are untrusted, because of who calls it.
+
+    Sources are expressions — `sys.argv`, `os.environ`. That covers a program
+    someone runs and misses a program something calls: an agent tool receives
+    its untrusted input as named parameters, filled by a registry from what a
+    model asked for, and no expression appears anywhere in the body.
+
+    Measured cost of not having this: four SSRF vulnerabilities in one
+    afternoon, every one of them reached through a tool argument, none of
+    them found by taint. They were found by pattern rules, which recognise a
+    shape and prove nothing.
+
+    Empty by default. Which functions a registry calls is a fact about a
+    codebase, and guessing it would put a source under every parameter in
+    every program.
+    """
+
+    id: str
+    patterns: tuple[str, ...]
+    description: str
+    match_mode: str = "prefix"
+    # Which parameters arrive from outside. Empty means all of them, which
+    # is right for a handler and wrong for a helper that happens to live in
+    # the same package: `base_url` is configuration, and a rule naming a
+    # whole package would taint it. Naming the parameter is what makes the
+    # rule about a convention — `args` filled from what a model asked for —
+    # rather than about a directory.
+    parameters: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
 class SourceRule:
     id: str
     patterns: tuple[str, ...]
@@ -127,10 +159,18 @@ class Catalog:
     sinks: tuple[SinkRule, ...]
     sources: tuple[SourceRule, ...]
     sanitizers: frozenset[str]
+    entry_sources: tuple[EntrySourceRule, ...] = ()
 
     def match_sink(self, call_name: str) -> SinkRule | None:
         for rule in self.sinks:
             if _matches(call_name, rule.patterns, rule.match_mode):
+                return rule
+        return None
+
+    def match_entry(self, symbol_name: str) -> EntrySourceRule | None:
+        """Whether this function's parameters arrive from somewhere untrusted."""
+        for rule in self.entry_sources:
+            if _matches(symbol_name, rule.patterns, rule.match_mode):
                 return rule
         return None
 
@@ -184,6 +224,10 @@ def match_sink(call_name: str) -> SinkRule | None:
 
 def match_source(expression: str) -> SourceRule | None:
     return active().match_source(expression)
+
+
+def match_entry(symbol_name: str) -> EntrySourceRule | None:
+    return active().match_entry(symbol_name)
 
 
 # Calls that neutralise untrusted data. A tainted value passing through one of

@@ -142,3 +142,75 @@ def test_a_test_finding_is_still_reported(tmp_path):
     found = scan_text("tests/conftest.py", "import os\nos.system(cmd)\n")
     assert found
     assert found[0].severity is not Severity.INFO
+
+
+# -- functions a registry calls, whose parameters come from outside -----------
+
+
+def test_an_entry_point_taints_its_parameters(tmp_path):
+    """Sources are expressions; an agent tool's input is a parameter.
+
+    Measured cost of not modelling this: four SSRF vulnerabilities in one
+    afternoon, every one reached through a tool argument, none found by
+    taint — they were found by pattern rules, which recognise a shape and
+    prove nothing.
+    """
+    from thot.pipeline import run_audit
+    from thot.scope.authorization import write_authorization
+
+    (tmp_path / "handler.py").write_text(
+        "import requests\n\n\n"
+        "def fetch_image(image_url):\n"
+        "    return requests.get(image_url, timeout=5)\n"
+    )
+    write_authorization(tmp_path, owner="tester")
+
+    assert not [f for f in run_audit(tmp_path).findings if f.taint_path], (
+        "sans règle, un paramètre n'est pas une source"
+    )
+
+    rules = tmp_path / ".thot" / "rules"
+    rules.mkdir(parents=True, exist_ok=True)
+    (rules / "agent.yaml").write_text(
+        "entry_sources:\n"
+        "  - id: entry.tool\n"
+        "    patterns: [handler]\n"
+        "    description: appelé par le modèle\n"
+        "    match_mode: prefix\n",
+        encoding="utf-8",
+    )
+    tainted = [f for f in run_audit(tmp_path).findings if f.taint_path]
+    assert tainted, "avec la règle, le paramètre est une source"
+    assert any("network" in f.rule for f in tainted)
+
+
+def test_naming_a_parameter_keeps_configuration_out_of_it(tmp_path):
+    """A package-wide rule tainted the `base_url` a helper gets from config.
+
+    Naming the parameter makes the rule about a convention — `args`, filled
+    from what a model asked for — rather than about a directory.
+    """
+    from thot.pipeline import run_audit
+    from thot.scope.authorization import write_authorization
+
+    (tmp_path / "handler.py").write_text(
+        "import requests\n\n\n"
+        "def call_api(base_url):\n"
+        "    return requests.get(base_url, timeout=5)\n"
+    )
+    write_authorization(tmp_path, owner="tester")
+
+    rules = tmp_path / ".thot" / "rules"
+    rules.mkdir(parents=True, exist_ok=True)
+    (rules / "agent.yaml").write_text(
+        "entry_sources:\n"
+        "  - id: entry.tool\n"
+        "    patterns: [handler]\n"
+        "    parameters: [args]\n"
+        "    description: arguments d'outil\n"
+        "    match_mode: prefix\n",
+        encoding="utf-8",
+    )
+    assert not [f for f in run_audit(tmp_path).findings if f.taint_path], (
+        "`base_url` n'est pas `args` : la configuration reste de la configuration"
+    )

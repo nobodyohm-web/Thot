@@ -1151,6 +1151,37 @@ js:
   sanitizers: [escapeArg]
 ```
 
+### Ce que le modèle demande est une entrée non fiable
+
+Les sources sont des **expressions** — `sys.argv`, `os.environ`. Cela couvre
+un programme qu'on lance et rate un programme qu'on appelle : l'outil d'un
+agent reçoit son entrée non fiable en **paramètres nommés**, remplis par un
+registre à partir de ce qu'un modèle a demandé, et aucune expression
+n'apparaît nulle part dans le corps.
+
+Le coût mesuré de ne pas modéliser ça : quatre SSRF en un après-midi, toutes
+atteintes par un argument d'outil, aucune trouvée par la teinte — elles l'ont
+été par des règles de motif, qui reconnaissent une forme et ne prouvent rien.
+
+```yaml
+entry_sources:
+  - id: entry.tool
+    patterns: [tools.image_gen]     # les fonctions qu'un registre appelle
+    parameters: [args]              # facultatif : lesquels de leurs paramètres
+    description: Arguments remplis par le modèle
+    match_mode: prefix
+```
+
+Vide par défaut, et volontairement : quelles fonctions un registre appelle
+est un fait sur un dépôt, et le deviner mettrait une source sous chaque
+paramètre de chaque programme. Mesuré sur Hermes, les deux extrêmes : une
+règle nommant les paquets `plugins` et `tools` révèle **19 chemins prouvés**
+dont plusieurs sur-approximés (le `base_url` qu'un helper reçoit de la
+configuration n'est pas non fiable) ; une règle nommant le paramètre `args`
+en révèle **zéro**, parce que les gestionnaires de Hermes prennent des
+paramètres nommés et non un dictionnaire. La bonne règle nomme les points
+d'entrée réels — et c'est à leurs auteurs de la connaître.
+
 Une règle qui reprend un `id` intégré le **remplace** — de quoi dégrader un
 sink que l'équipe a délibérément accepté, sans patcher Thot. Un fichier mal
 formé arrête l'audit en nommant le fichier et la clé fautive, plutôt que de

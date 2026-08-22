@@ -26,6 +26,7 @@ from pathlib import Path
 from thot.codemap.catalog import (
     active,
     is_sanitizer,
+    match_entry,
     match_sink,
     match_source,
     using,
@@ -181,6 +182,22 @@ def _ordered_nodes(node: ast.AST) -> list[ast.AST]:
 def _analyse_body(symbol: Symbol, node: ast.AST) -> _Facts:
     facts = _Facts(symbol=symbol)
     params = set(symbol.params)
+
+    # A function a registry calls has no caller in this graph, so its
+    # parameters would stay merely "conditionally tainted" for ever — waiting
+    # on a caller that lives in a framework. When a rule says this is an
+    # entry point, they are tainted outright, because the thing that fills
+    # them is a model or a request and not another function here.
+    entry = match_entry(symbol.name)
+    if entry is not None:
+        seed = CodeRef(path=symbol.path, line=symbol.lineno,
+                       symbol=symbol.name, ast_hash=symbol.ast_hash)
+        # Named parameters only, when the rule names any. A package-wide rule
+        # that tainted every parameter would taint the `base_url` a helper
+        # receives from configuration, and call it untrusted.
+        untrusted = set(entry.parameters) & params if entry.parameters else params
+        for name in untrusted:
+            facts.tainted[name] = seed
 
     def is_tainted(names: set[str]) -> CodeRef | None:
         """Return where the taint came from, or None."""

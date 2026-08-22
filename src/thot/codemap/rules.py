@@ -29,6 +29,7 @@ import yaml
 from thot.codemap.catalog import (
     DEFAULT_CATALOG,
     Catalog,
+    EntrySourceRule,
     SinkRule,
     SourceRule,
 )
@@ -152,6 +153,7 @@ def load_catalog(root: Path, *, user_dir: Path | None = None) -> Catalog:
     sinks = {rule.id: rule for rule in DEFAULT_CATALOG.sinks}
     sources = {rule.id: rule for rule in DEFAULT_CATALOG.sources}
     sanitizers = set(DEFAULT_CATALOG.sanitizers)
+    entries = {rule.id: rule for rule in DEFAULT_CATALOG.entry_sources}
 
     for directory in directories:
         for path in _rule_files(directory):
@@ -162,6 +164,9 @@ def load_catalog(root: Path, *, user_dir: Path | None = None) -> Catalog:
             for entry in _entries(document, "sources", path):
                 rule = _source(entry, path)
                 sources[rule.id] = rule
+            for entry in _entries(document, "entry_sources", path):
+                rule = _entry_source(entry, path)
+                entries[rule.id] = rule
             extra = document.get("sanitizers") or []
             if not isinstance(extra, list):
                 raise RuleError(f"{path.name} : `sanitizers` doit être une liste")
@@ -171,6 +176,7 @@ def load_catalog(root: Path, *, user_dir: Path | None = None) -> Catalog:
         sinks=tuple(sinks.values()),
         sources=tuple(sources.values()),
         sanitizers=frozenset(sanitizers),
+        entry_sources=tuple(entries.values()),
     )
 
 
@@ -241,3 +247,17 @@ def load_js_catalog(root: Path, *, user_dir: Path | None = None):
                 sanitizers=frozenset(str(s) for s in sanitizers),
             )
     return catalog
+
+
+def _entry_source(entry: dict, path: Path) -> EntrySourceRule:
+    identifier = str(_require(entry, "id", path, "entry_source"))
+    names = entry.get("parameters") or ()
+    if isinstance(names, str):
+        names = [names]
+    return EntrySourceRule(
+        id=identifier,
+        patterns=_patterns(entry, path, "entry_source"),
+        description=str(entry.get("description", identifier)),
+        match_mode=_match_mode(entry, path, "prefix"),
+        parameters=tuple(str(name) for name in names),
+    )
