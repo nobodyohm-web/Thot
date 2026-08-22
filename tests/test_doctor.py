@@ -594,3 +594,114 @@ def test_the_loop_check_also_guards_the_trees_it_audits(tmp_path, monkeypatch):
 
     assert ok is False, detail
     assert "projet" in detail, detail
+
+
+# --- une tâche qui n'a jamais rien écrit n'a jamais tourné ------------------
+#
+# Le blocage TCC de cette machine était invisible par tous les signaux :
+# launchctl la disait chargée, LastExitStatus valait 0, et le journal était
+# *absent* plutôt que faux. launchd crée pourtant son fichier de sortie à
+# chaque exécution — un journal qui n'existe pas après l'heure dite est la
+# preuve qu'aucune exécution n'a eu lieu, quelle qu'en soit la cause.
+
+HOUR = 3600
+DAY = 24 * HOUR
+
+
+def test_a_job_installed_minutes_ago_is_not_yet_late():
+    from thot.doctor import stale_loop
+
+    assert stale_loop(schedule="daily", installed=1000 * DAY,
+                      log_exists=False, log_mtime=0, log_size=0,
+                      now=1000 * DAY + HOUR) == ""
+
+
+def test_a_job_past_its_hour_with_no_log_never_ran():
+    from thot.doctor import stale_loop
+
+    said = stale_loop(schedule="daily", installed=1000 * DAY,
+                      log_exists=False, log_mtime=0, log_size=0,
+                      now=1000 * DAY + 3 * DAY)
+
+    assert "jamais" in said, said
+
+
+def test_a_job_that_ran_last_night_says_nothing():
+    from thot.doctor import stale_loop
+
+    now = 1000 * DAY
+    assert stale_loop(schedule="daily", installed=now - 30 * DAY,
+                      log_exists=True, log_mtime=now - HOUR, log_size=400,
+                      now=now) == ""
+
+
+def test_a_log_that_stopped_growing_is_named():
+    from thot.doctor import stale_loop
+
+    now = 1000 * DAY
+    said = stale_loop(schedule="daily", installed=now - 30 * DAY,
+                      log_exists=True, log_mtime=now - 9 * DAY, log_size=400,
+                      now=now)
+
+    assert "9 jour" in said, said
+
+
+def test_an_empty_log_after_the_hour_is_a_run_that_produced_nothing():
+    from thot.doctor import stale_loop
+
+    now = 1000 * DAY
+    said = stale_loop(schedule="daily", installed=now - 30 * DAY,
+                      log_exists=True, log_mtime=now - 3 * DAY, log_size=0,
+                      now=now)
+
+    assert "sans une ligne" in said, said
+
+
+def test_an_hourly_job_is_judged_on_hours_not_days():
+    from thot.doctor import stale_loop
+
+    now = 1000 * DAY
+    assert stale_loop(schedule="hourly", installed=now - 30 * DAY,
+                      log_exists=True, log_mtime=now - 5 * HOUR, log_size=9,
+                      now=now) != ""
+
+
+def test_the_loop_check_reports_a_job_that_never_wrote(tmp_path, monkeypatch):
+    """The wiring: `_loop` must actually consult the log."""
+    import os
+    import time
+
+    from thot.schedule.jobs import FUSION, Job
+
+    home = tmp_path / "home"
+    binaries = home / ".local" / "bin"
+    binaries.mkdir(parents=True)
+    (binaries / "thot").write_text("#!/bin/sh\n")
+    for agent in ("claude", "hermes"):
+        (binaries / agent).write_text("#!/bin/sh\n")
+    tree = home / "projets" / "app"
+    tree.mkdir(parents=True)
+
+    monkeypatch.setattr(
+        "thot.schedule.jobs.load",
+        lambda: [Job(name="improve", root=FUSION, deep=True, budget=8)],
+    )
+    monkeypatch.setattr("thot.fusion.audit.parts", lambda: [("app", tree)])
+    monkeypatch.setattr("thot.schedule.install.LAUNCH_AGENTS", tmp_path)
+    monkeypatch.setattr("pathlib.Path.home", classmethod(lambda cls: home))
+    monkeypatch.setattr("thot.paths.log_file", lambda name: home / "absent.log")
+
+    unit = tmp_path / "com.thot.improve.plist"
+    unit.write_text(
+        f"<plist><dict><string>{binaries / 'thot'}</string>"
+        f"<key>PATH</key><string>{binaries}</string></dict></plist>",
+        encoding="utf-8",
+    )
+    # installée il y a une semaine : son heure est passée plusieurs fois
+    old = time.time() - 7 * 86_400
+    os.utime(unit, (old, old))
+
+    ok, detail = doctor._loop()
+
+    assert ok is False, detail
+    assert "jamais exécutée" in detail, detail

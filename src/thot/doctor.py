@@ -267,6 +267,37 @@ def job_import_paths(unit: Path) -> list[str]:
     return found
 
 
+# How long one turn of each schedule takes, in seconds.
+PERIOD = {"hourly": 3600, "daily": 86_400, "weekly": 7 * 86_400}
+
+
+def stale_loop(*, schedule: str, installed: float, log_exists: bool,
+               log_mtime: float, log_size: int, now: float) -> str:
+    """What to say about a job that has not been writing. '' when it has.
+
+    launchd creates the unit's output file on every run, so an absent log
+    after the hour has come is proof that no run happened — whatever the
+    cause. On this machine the cause was a TCC refusal that blocked the
+    interpreter before Thot existed, and every other signal said healthy:
+    the unit was loaded, `LastExitStatus` was 0, and the log was *missing*
+    rather than wrong, which nobody looks at.
+    """
+    period = PERIOD.get(schedule, 86_400)
+    if now - installed < period:
+        return ""  # its hour has not come yet
+    if not log_exists:
+        return (" · programmée mais jamais exécutée — launchd crée le journal "
+                "à chaque tour et il n'existe pas")
+
+    age = now - log_mtime
+    if not log_size and age > period:
+        return " · dernière exécution sans une ligne de sortie"
+    if age > 2 * period:
+        unit, count = ("jour", age / 86_400) if period >= 86_400 else ("heure", age / 3600)
+        return f" · rien écrit depuis {int(count)} {unit}(s)"
+    return ""
+
+
 def _loop():
     from thot.schedule.jobs import load
 
@@ -338,6 +369,24 @@ def _loop():
             "sortir l'arbre de Desktop/Documents/Downloads, ou accorder "
             "l'accès complet au disque."
         )
+    # Last, because it is the symptom: every check above names a cause, and a
+    # cause is more useful than "nothing happened". When none of them fires
+    # and the job still writes nothing, this is what remains to be said.
+    import time
+
+    from thot.paths import log_file
+
+    log = log_file(job.name)
+    said = stale_loop(
+        schedule=job.schedule,
+        installed=unit.stat().st_mtime,
+        log_exists=log.exists(),
+        log_mtime=log.stat().st_mtime if log.exists() else 0.0,
+        log_size=log.stat().st_size if log.exists() else 0,
+        now=time.time(),
+    )
+    if said:
+        return False, detail + said
     return True, detail + " · agents joignables depuis l'unité"
 
 
