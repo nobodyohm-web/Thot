@@ -320,3 +320,28 @@ def test_the_json_summary_counts_findings_the_threshold_hid(toy_repo, capsys):
     assert payload["summary"]["hidden_below_threshold"] >= 1
     assert sum(payload["summary"]["by_confidence"].values()) >= 1, payload["summary"]
     assert "engine" in payload["summary"]
+
+
+def test_the_markdown_report_is_handed_the_pass_and_the_engine(
+    toy_repo, capsys, monkeypatch
+):
+    """Only a `--deep` run has an engine, so the wiring cannot be seen from
+    the rendered text on a deterministic audit. It is checked at the call."""
+    from thot.report import markdown_report
+
+    seen = {}
+    real = markdown_report.render_markdown
+
+    def spy(findings, manifest, elapsed, hidden=0, judged=None, engine=None):
+        seen["judged"], seen["engine"] = judged, engine
+        return real(findings, manifest, elapsed, hidden=hidden,
+                    judged=judged, engine=engine)
+
+    monkeypatch.setattr(markdown_report, "render_markdown", spy)
+    monkeypatch.setattr("thot.cli.render_markdown", spy, raising=False)
+    write_authorization(toy_repo, owner="tester")
+    cli.main(["audit", str(toy_repo), "--markdown", "--no-store"])
+    capsys.readouterr()
+
+    assert "judged" in seen, "le CLI n'a pas transmis la passe au rapport markdown"
+    assert seen["judged"] is not None

@@ -8,9 +8,10 @@ from thot.report.json_report import SEVERITY_ORDER, summarise
 
 
 def render_markdown(
-    findings: list[Finding], manifest, elapsed: float, hidden: int = 0
+    findings: list[Finding], manifest, elapsed: float, hidden: int = 0,
+    judged=None, engine: str | None = None,
 ) -> str:
-    summary = summarise(findings, hidden)
+    summary = summarise(findings, hidden, judged, engine)
     languages = ", ".join(f"{k} ({v})" for k, v in manifest.languages.items()) or "—"
     lines = [
         "# Rapport d'audit Thot",
@@ -23,6 +24,26 @@ def render_markdown(
         + (f" _({hidden} masqués sous le seuil)_" if hidden else ""),
         "",
     ]
+
+    # What the pass decided, when something argued. A markdown report is what
+    # gets attached to a ticket, and a reader who is not told a panel ran
+    # takes it for a raw static scan — the same misreading the terminal note
+    # produced until the whole pass was handed to it. Refutations land on INFO
+    # by construction, so they are always among the hidden ones.
+    argued = {
+        key: count for key, count in (summary.get("by_confidence") or {}).items()
+        if key != "plausible"
+    }
+    if engine and argued:
+        said = {"refuted": "réfuté", "confirmed": "confirmé",
+                "plausible": "plausible"}
+        decided = " · ".join(
+            f"{count} {said.get(key, key)}(s)" for key, count in sorted(argued.items())
+        )
+        lines.insert(
+            len(lines) - 1,
+            f"- Jugé par **{engine}** : {decided}",
+        )
 
     if not findings:
         lines.append("Aucun chemin de teinte détecté sur ce périmètre.")

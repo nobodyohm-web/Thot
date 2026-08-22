@@ -338,3 +338,44 @@ def test_an_argued_run_reports_what_the_panel_decided():
     assert body["summary"]["engine"] == "panel"
     assert body["summary"]["by_confidence"]["refuted"] == 1
     assert body["summary"]["by_confidence"]["plausible"] == 1
+
+
+def test_the_markdown_header_says_a_panel_argued(tmp_path):
+    from thot.contracts import CodeRef, Confidence, Finding, Severity
+    from thot.report.markdown_report import render_markdown
+    from thot.scope.detect import ScopeManifest
+
+    def one(identifier, severity, confidence):
+        return Finding(
+            id=identifier, rule="sink.js.exec", severity=severity,
+            confidence=confidence,
+            location=CodeRef(path="a.ts", line=1, symbol="s", ast_hash="h"),
+            failure_scenario="x",
+        )
+
+    kept = [one("k", Severity.HIGH, Confidence.PLAUSIBLE)]
+    judged = kept + [one("r", Severity.INFO, Confidence.REFUTED)]
+    manifest = ScopeManifest(root=".", files=["a.ts"],
+                             languages={"typescript": 1},
+                             entrypoints=(), test_command="")
+
+    text = render_markdown(kept, manifest, 0.1, hidden=1,
+                           judged=judged, engine="panel")
+
+    assert "panel" in text
+    assert "1 réfuté" in text
+
+
+def test_a_deterministic_markdown_report_claims_no_panel(tmp_path):
+    from thot.report.markdown_report import render_markdown
+    from thot.scope.detect import ScopeManifest
+
+    manifest = ScopeManifest(root=".", files=["a.ts"],
+                             languages={"typescript": 1},
+                             entrypoints=(), test_command="")
+
+    text = render_markdown([_sited(None)], manifest, 0.1)
+
+    # Pas seulement l'absence du mot : la ligne entière ne doit pas paraître,
+    # sinon elle s'affiche « Jugé par None : » sur un audit déterministe.
+    assert "Jugé par" not in text, text

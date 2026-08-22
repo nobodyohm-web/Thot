@@ -598,7 +598,8 @@ def _cmd_audit(args) -> int:
         )
     elif args.markdown:
         rendered = render_markdown(
-            shown.findings, shown.manifest, shown.elapsed, hidden=hidden
+            shown.findings, shown.manifest, shown.elapsed, hidden=hidden,
+            judged=result.findings, engine=result.engine,
         )
     elif args.html:
         from thot.report.html_report import audit_page
