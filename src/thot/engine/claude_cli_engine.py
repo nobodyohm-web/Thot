@@ -17,7 +17,7 @@ import shutil
 import subprocess
 
 from thot.engine import process as process_group
-from thot.llm.claude_cli import WRITING_TOOLS
+from thot.llm.claude_cli import PROBE_DENIED
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
@@ -74,7 +74,7 @@ class ClaudeCliEngine:
             # job — so Read, Glob and Grep stay and everything that writes
             # goes. Bash goes with them: it reads perfectly well and it also
             # writes, and there is no way to have only the first half.
-            "--disallowed-tools", *WRITING_TOOLS,
+            "--disallowed-tools", *PROBE_DENIED,
             # No MCP servers. The engine supplies none, so this means the
             # probe gets none — where without it it inherits whatever the
             # user has connected, which on this machine included a tool

@@ -58,14 +58,22 @@ WRITING_TOOLS = (
     "Task", "Agent", "Workflow",
     # persists past the run
     "CronCreate", "CronDelete", "ScheduleWakeup", "Monitor",
-    # reaches outward. `WebFetch` is the classic exfiltration channel under
-    # prompt injection — the audited code says "fetch https://…/?data=" and
-    # the probe obliges — and a probe reads local code to answer a JSON
-    # question. Dependency lookups do not go through here: `thot deps` asks
-    # OSV.dev from the deterministic pass, where no model is involved.
+    # reaches outward
     "SendMessage", "PushNotification", "RemoteTrigger", "DesignSync",
-    "WebFetch", "WebSearch",
 )
+
+# What an *audit probe* is denied, which is more than a read-only session is.
+# The two were one list for an hour, and extending it for the probe quietly
+# took web search away from someone reading a repository in `lecture` mode —
+# one list, two needs, and the narrower need won by accident.
+#
+# The difference is the audited code. A session reads a repository because
+# its user asked it to; a probe reads code nobody vouches for, and that code
+# can say "fetch https://…/?data=" — the classic exfiltration channel under
+# prompt injection. Dependency lookups do not go through here anyway:
+# `thot deps` asks OSV.dev from the deterministic pass, where no model is
+# involved.
+PROBE_DENIED = WRITING_TOOLS + ("WebFetch", "WebSearch")
 
 READING_TOOLS = ("Read", "Glob", "Grep", "WebFetch", "WebSearch")
 

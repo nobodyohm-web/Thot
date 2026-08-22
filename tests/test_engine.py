@@ -490,7 +490,7 @@ def test_the_audit_engines_are_narrowed_to_what_an_audit_needs():
 
     from thot.engine.claude_cli_engine import ClaudeCliEngine
     from thot.engine.hermes_engine import HermesEngine
-    from thot.llm.claude_cli import WRITING_TOOLS
+    from thot.llm.claude_cli import PROBE_DENIED
 
     if ClaudeCliEngine.available():
         command = ClaudeCliEngine(root=Path("."))._command(
@@ -499,7 +499,7 @@ def test_the_audit_engines_are_narrowed_to_what_an_audit_needs():
             )
         )
         assert "--disallowed-tools" in command
-        for tool in WRITING_TOOLS:
+        for tool in PROBE_DENIED:
             assert tool in command
 
     if HermesEngine.available():

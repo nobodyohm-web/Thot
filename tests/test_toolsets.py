@@ -183,3 +183,19 @@ def test_the_map_posture_denies_reading_as_well():
     denied = denied_cli_tools("carte")
     for tool in READING_TOOLS:
         assert tool in denied
+
+
+def test_a_read_only_session_keeps_the_tools_that_only_read():
+    """Extending the probe's denial list once took web search from `lecture`.
+
+    A session reads a repository because its user asked it to; a probe reads
+    code nobody vouches for. One list served both for an hour, and the
+    narrower need won by accident.
+    """
+    from thot.llm.claude_cli import PROBE_DENIED
+    from thot.toolsets import denied_cli_tools
+
+    lecture = denied_cli_tools("lecture")
+    assert "Write" in lecture and "Task" in lecture
+    assert "WebFetch" not in lecture, "chercher sur le web, c'est lire"
+    assert "WebFetch" in PROBE_DENIED
