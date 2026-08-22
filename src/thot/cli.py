@@ -337,6 +337,11 @@ def build_parser() -> argparse.ArgumentParser:
     )
     verdicts.add_argument("--forget", metavar="ID", help="Oublier une décision")
     verdicts.add_argument(
+        "--forget-author", metavar="AGENT",
+        help="Oublier toutes les décisions d'un agent — quand ce qu'il pouvait "
+             "voir en les prenant s'avère avoir été faux",
+    )
+    verdicts.add_argument(
         "--path", metavar="CHEMIN", help="Filtrer sur un chemin de fichier"
     )
     verdicts.add_argument(
@@ -732,6 +737,20 @@ def _cmd_verdicts(args) -> int:
             removed = memory.forget(args.forget)
             print("Oublié." if removed else f"Aucune décision pour {args.forget}.")
             return EXIT_OK if removed else EXIT_USAGE
+
+        if getattr(args, "forget_author", None):
+            # A whole agent's judgements can turn out to be unsound at once —
+            # a broken tool configuration, a model that could not see what it
+            # was asked to check. A verdict silences its finding for good, so
+            # one that may be unsound is worse than none at all.
+            author = args.forget_author
+            doomed = [v for v in memory.all_verdicts() if v.author == author]
+            for verdict in doomed:
+                memory.forget(verdict.finding_id)
+            print(f"{len(doomed)} décision(s) de « {author} » oubliée(s).")
+            if doomed:
+                print("Les findings correspondants reviendront au prochain audit.")
+            return EXIT_OK
 
         stored = memory.all_verdicts()
         if args.path:

@@ -294,3 +294,40 @@ def test_an_enormous_reason_is_cut_on_a_sentence_not_a_word():
     assert len(cut) <= MAX_REASON + 8
     assert cut.endswith(". […]")
     assert not cut.rstrip(" […]").endswith("phras")
+
+
+def test_a_whole_agent_s_judgements_can_be_forgotten_at_once(tmp_path):
+    """Sometimes an agent turns out to have been unable to see what it judged.
+
+    Hermes rendered sixty-five refutations while it could not open a file by
+    relative path — so it could never check a claim that rested on a second
+    file. A verdict silences its finding for good, which makes one that may
+    be unsound worse than none at all.
+    """
+    from thot.contracts import CodeRef, Confidence, Finding, Severity
+    from thot.memory import build_memory
+    from thot.memory.base import Decision, Verdict
+
+    memory = build_memory(tmp_path)
+    try:
+        for index, author in enumerate(("hermes", "hermes", "prime")):
+            location = CodeRef(path=f"a{index}.py", line=1, symbol="f",
+                               ast_hash="h")
+            finding = Finding(
+                id=Finding.compute_id("r", location), rule="r",
+                severity=Severity.HIGH, confidence=Confidence.REFUTED,
+                location=location,
+            )
+            memory.remember(
+                Verdict.of(finding, Decision.REFUTED, "raison", author)
+            )
+
+        doomed = [v for v in memory.all_verdicts() if v.author == "hermes"]
+        assert len(doomed) == 2
+        for verdict in doomed:
+            assert memory.forget(verdict.finding_id) is True
+
+        left = memory.all_verdicts()
+        assert [v.author for v in left] == ["prime"]
+    finally:
+        memory.close()
