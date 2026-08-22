@@ -227,3 +227,86 @@ def test_the_session_summary_separates_settled_from_broken():
                                         failed=3, backlog=4)]])
     assert "Rien à juger" not in broken.summary(), broken.summary()
     assert "échec" in broken.summary(), broken.summary()
+
+
+# --- une écriture pendant la boucle nocturne doit crier ---------------------
+#
+# `AuditResult.touched` existe parce que deux des trois agents peuvent écrire
+# et qu'aucun drapeau ne les en empêche — sa docstring dit « ce qui ne peut
+# pas être empêché est rendu impossible à manquer ». La session le dit, le CLI
+# ponctuel le dit, et la boucle nocturne — le seul chemin sans témoin, qui
+# tourne sur trois arbres — ne le disait pas du tout.
+
+
+def test_a_tree_the_probe_wrote_to_says_so_on_its_own_row():
+    from thot.improve import PartRound
+
+    line = PartRound(part="hermes", findings=9, judged=2, refuted=2,
+                     touched=("src/a.py", "src/b.py")).line()
+
+    assert "2 fichier(s)" in line, line
+    assert "modifié" in line, line
+
+
+def test_a_quiet_round_still_reports_a_write():
+    from thot.improve import PartRound
+
+    # « rien à juger » ne doit surtout pas avaler l'alerte
+    line = PartRound(part="thot", findings=4, judged=0, backlog=0,
+                     touched=("src/a.py",)).line()
+
+    assert "modifié" in line, line
+
+
+def test_a_clean_round_says_nothing_about_writes():
+    from thot.improve import PartRound
+
+    assert "modifié" not in PartRound(part="thot", findings=4, judged=1).line()
+
+
+def test_the_summary_names_the_files_that_were_written():
+    from thot.improve import PartRound, Session
+
+    session = Session(rounds=[[
+        PartRound(part="hermes", findings=9, judged=1, touched=("src/a.py",)),
+        PartRound(part="prime", findings=2, judged=1, touched=("lib/b.js",)),
+    ]])
+    text = session.summary()
+
+    assert "src/a.py" in text and "lib/b.js" in text, text
+    assert "modifié" in text
+
+
+def test_the_summary_stays_silent_when_nothing_was_written():
+    from thot.improve import PartRound, Session
+
+    session = Session(rounds=[[PartRound(part="thot", findings=4, judged=1)]])
+
+    assert "modifié" not in session.summary()
+
+
+def test_one_round_carries_the_write_up_from_the_audit_result(monkeypatch):
+    """The wiring itself, not a PartRound built by hand in a test.
+
+    Written after the first version of these tests passed while the line that
+    reads `part.result.touched` was deleted: every assertion constructed its
+    own PartRound, so none of them ever crossed the real path.
+    """
+    from thot.improve import one_round
+
+    class _Result:
+        findings: list = []
+        touched = ("hermes/cron/monitor.py",)
+
+    class _Part:
+        def __init__(self, name):
+            self.name, self.result, self.error = name, _Result(), ""
+            self.ok = True
+
+    monkeypatch.setattr("thot.fusion.audit.audit_all",
+                        lambda **kwargs: [_Part("hermes")])
+
+    round_, = one_round(budget=1, parallel=1)
+
+    assert round_.touched == ("hermes/cron/monitor.py",)
+    assert "modifié" in round_.line()

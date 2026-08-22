@@ -44,6 +44,10 @@ class PartRound:
     # mean opposite things about whether running again is worth anything.
     failed: int = 0
     backlog: int = 0  # still unjudged after this round
+    # Files the probe changed in the audited tree. Two of the three agents can
+    # write and no flag stops them, so an unattended loop that stayed silent
+    # about this would be the worst place in the program to stay silent.
+    touched: tuple[str, ...] = ()
     error: str = ""
 
     @property
@@ -60,9 +64,10 @@ class PartRound:
         # line is the only thing anyone sees; it has to name which one it is.
         if self.quiet:
             if not self.findings:
-                return f"{self.part:<8} aucun finding à juger"
+                return f"{self.part:<8} aucun finding à juger" + self._wrote()
             return (f"{self.part:<8} rien à juger — "
-                    f"{self.findings} finding(s), tous déjà décidés")
+                    f"{self.findings} finding(s), tous déjà décidés"
+                    + self._wrote())
         detail = f"{self.refuted} réfuté · {self.confirmed} confirmé"
         if self.contested:
             detail += f" · {self.contested} réfutation(s) contestée(s)"
@@ -70,8 +75,13 @@ class PartRound:
             detail += f" · {self.failed} échec(s)"
         return (
             f"{self.part:<8} {self.judged:>3} jugé(s) ({detail}) · "
-            f"{self.backlog} en attente"
+            f"{self.backlog} en attente" + self._wrote()
         )
+
+    def _wrote(self) -> str:
+        if not self.touched:
+            return ""
+        return f"  ⚠ {len(self.touched)} fichier(s) modifié(s) par la sonde"
 
 
 @dataclass
@@ -118,6 +128,21 @@ class Session:
             f"{len(self.rounds)} tour(s) · {self.judged} jugement(s) "
             f"({detail}) · {self.backlog} candidat(s) encore sans décision"
         )
+        written: list[str] = []
+        for run in self.rounds:
+            for part in run:
+                for name in part.touched:
+                    if name not in written:
+                        written.append(name)
+        if written:
+            # Before everything else: a night that edited the audited code is
+            # not a night whose finding counts are the headline.
+            shown = ", ".join(written[:10])
+            more = f" (+{len(written) - 10})" if len(written) > 10 else ""
+            line += (f"\n⚠ {len(written)} fichier(s) modifié(s) pendant "
+                     f"l'analyse : {shown}{more}\n"
+                     "  Deux des trois agents peuvent écrire et aucun drapeau "
+                     "ne l'empêche — vérifie ces fichiers avant de continuer.")
         if not self.judged and not self.backlog and not self.failed:
             total = sum(p.findings for run in self.rounds for p in run)
             line += (
@@ -202,6 +227,7 @@ def one_round(
             PartRound(
                 part=part.name,
                 findings=len(part.result.findings),
+                touched=tuple(getattr(part.result, "touched", ()) or ()),
                 judged=len(mine),
                 refuted=sum(
                     1 for f in mine if f.confidence is Confidence.REFUTED
