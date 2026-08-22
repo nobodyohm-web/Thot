@@ -401,3 +401,58 @@ def test_a_call_with_no_local_namesake_still_resolves(tmp_path):
     found = find_candidates(tmp_path, graph)
 
     assert any(c.sink.path == "helpers.py" for c in found), found
+
+
+# --- pourquoi la teinte suit ce que le graphe refuse -----------------------
+#
+# `CodeGraph.build` s'abstient quand un nom court a plusieurs définitions non
+# locales : « recording no edge is right; concluding unreachable is not ». Le
+# moteur de teinte, lui, les suit toutes. L'écart est délibéré et les coûts
+# sont inverses : une arête fausse dans le graphe *augmente* une sévérité en
+# rapprochant un finding d'un point d'entrée, tandis qu'une arête manquante
+# dans la teinte *cache* une vulnérabilité.
+#
+# Mesuré avant de trancher : sur Hermes, 53 % des résolutions d'appels sont
+# ambiguës (122 589 sur 232 404 — `close` a 235 définitions, `_run` 246).
+# S'abstenir ramènerait Hermes de 412 findings à 358 et Thot de 4 à 2. Mais
+# des deux que Thot perdrait, l'un est réel — `report(new_findings)` →
+# `broadcast(text)` → le POST HTTP — et l'autre non. Un vrai pour un faux
+# n'est pas un gain, donc rien n'est changé et ce test dit pourquoi.
+
+
+def test_an_ambiguous_import_is_still_followed(tmp_path):
+    """Two namesakes elsewhere, none here: the call is followed, not dropped."""
+    from thot.codemap.graph import CodeGraph
+    from thot.codemap.index import index_files
+    from thot.taint.engine import find_candidates
+
+    (tmp_path / "sender.py").write_text(
+        "import subprocess\n"
+        "\n"
+        "\n"
+        "def deliver(payload):\n"
+        "    subprocess.run(payload, shell=True)\n",
+        encoding="utf-8",
+    )
+    # A second `deliver`, so the short name is ambiguous tree-wide.
+    (tmp_path / "other.py").write_text(
+        "def deliver(payload):\n    return payload\n", encoding="utf-8"
+    )
+    (tmp_path / "app.py").write_text(
+        "import sys\n"
+        "from sender import deliver\n"
+        "\n"
+        "\n"
+        "def run():\n"
+        "    value = sys.argv[1]\n"
+        "    deliver(value)\n",
+        encoding="utf-8",
+    )
+    files = ["sender.py", "other.py", "app.py"]
+    graph = CodeGraph.build(index_files(tmp_path, files))
+
+    found = find_candidates(tmp_path, graph)
+
+    assert any(c.sink.path == "sender.py" for c in found), (
+        "la teinte s'est abstenue sur un nom ambigu et a perdu un vrai chemin"
+    )
