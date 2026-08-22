@@ -11,6 +11,11 @@ Two locations, merged in order:
 - ``~/.thot/rules/*.yaml`` — what you know, everywhere you work.
 - ``<repo>/.thot/rules/*.yaml`` — what this codebase knows, committed with it.
 
+The same files carry the JavaScript rules, under a ``js:`` key. Keeping them
+in one file rather than two is deliberate: a team's shell wrapper usually
+exists in both languages, and splitting the declaration is how one half goes
+stale.
+
 A rule reusing a built-in id replaces it rather than adding a duplicate, so a
 team can downgrade a sink they have deliberately accepted.
 """
@@ -167,3 +172,72 @@ def load_catalog(root: Path, *, user_dir: Path | None = None) -> Catalog:
         sources=tuple(sources.values()),
         sanitizers=frozenset(sanitizers),
     )
+
+
+# -- the same files, for the JavaScript engine -------------------------------
+
+
+def _js_sink(entry: dict, path: Path):
+    from thot.taint.js_catalog import JsSink
+
+    identifier = str(_require(entry, "id", path, "sink js"))
+    names = entry.get("names") or entry.get("patterns")
+    if isinstance(names, str):
+        names = [names]
+    if not names:
+        raise RuleError(f"{path.name} : un sink js n'a pas de `names`")
+    needs = entry.get("needs") or ()
+    if isinstance(needs, str):
+        needs = [needs]
+    args = entry.get("dangerous_args", (0,))
+    if isinstance(args, int):
+        args = (args,)
+    return JsSink(
+        id=identifier,
+        names=tuple(str(n) for n in names),
+        impact=_severity(entry, path),
+        description=str(entry.get("description", identifier)),
+        needs=tuple(str(n) for n in needs),
+        dangerous_args=tuple(int(a) for a in args),
+    )
+
+
+def _js_source(entry: dict, path: Path):
+    from thot.taint.js_catalog import JsSource
+
+    identifier = str(_require(entry, "id", path, "source js"))
+    return JsSource(
+        id=identifier,
+        patterns=_patterns(entry, path, "source js"),
+        description=str(entry.get("description", identifier)),
+    )
+
+
+def load_js_catalog(root: Path, *, user_dir: Path | None = None):
+    """The JavaScript catalog, built-ins plus what the repository declares."""
+    from thot.taint.js_catalog import DEFAULT_JS_CATALOG
+
+    catalog = DEFAULT_JS_CATALOG
+    directories = [
+        user_dir if user_dir is not None else user_rules_dir(),
+        Path(root) / ".thot" / RULES_DIRNAME,
+    ]
+    for directory in directories:
+        for file in _rule_files(directory):
+            section = _load_document(file).get("js") or {}
+            if not isinstance(section, dict):
+                raise RuleError(f"{file.name} : `js` doit être un dictionnaire")
+            sanitizers = section.get("sanitizers") or []
+            if isinstance(sanitizers, str):
+                sanitizers = [sanitizers]
+            catalog = catalog.merged(
+                sinks=tuple(
+                    _js_sink(entry, file) for entry in _entries(section, "sinks", file)
+                ),
+                sources=tuple(
+                    _js_source(entry, file)
+                    for entry in _entries(section, "sources", file)
+                ),
+                sanitizers=frozenset(str(s) for s in sanitizers),
+            )
+    return catalog

@@ -33,13 +33,7 @@ from pathlib import Path
 
 from thot.codemap.ts_indexer import EXTENSIONS, _line_of, _mask
 from thot.contracts import CodeRef, Symbol
-from thot.taint.js_catalog import (
-    ASSIGNMENT_SINKS,
-    SANITIZERS,
-    SINKS,
-    SOURCES,
-    imports,
-)
+from thot.taint.js_catalog import active, imports, using
 
 _IDENT = r"[A-Za-z_$][A-Za-z0-9_$]*"
 _DOTTED = re.compile(rf"{_IDENT}(?:\.{_IDENT})*")
@@ -137,7 +131,7 @@ def _names(text: str) -> list[str]:
 def _source_in(text: str) -> str | None:
     """The first untrusted source a fragment reads, as its dotted name."""
     for name in _names(text):
-        for rule in SOURCES:
+        for rule in active().sources:
             for pattern in rule.patterns:
                 if name == pattern or name.startswith(pattern + "."):
                     return pattern
@@ -150,7 +144,7 @@ def _sanitised(text: str) -> bool:
     match = re.match(rf"({_IDENT}(?:\.{_IDENT})*)\s*\(", head)
     if not match:
         return False
-    return match.group(1).split(".")[-1] in SANITIZERS
+    return match.group(1).split(".")[-1] in active().sanitizers
 
 
 def _arguments(text: str, start: int) -> str:
@@ -199,11 +193,12 @@ def _reads_tainted(text: str, tainted: dict[str, str]) -> str | None:
 
 def _applicable(source: str) -> tuple[list, list]:
     """The rules this file can trigger, given what it imports."""
+    catalog = active()
     calls = [
-        rule for rule in SINKS
+        rule for rule in catalog.sinks
         if not rule.needs or any(imports(source, m) for m in rule.needs)
     ]
-    return calls, list(ASSIGNMENT_SINKS)
+    return calls, list(catalog.assignment_sinks)
 
 
 def _scan_body(
@@ -363,7 +358,14 @@ def find_candidates(root: Path, symbols: list[Symbol]) -> list:
     the case it over-approximates, and reassignment clears taint, so the
     common shape of that collision heals itself.
     """
+    from thot.codemap.rules import load_js_catalog
+
     root = Path(root)
+    with using(load_js_catalog(root)):
+        return _find_candidates(root, symbols)
+
+
+def _find_candidates(root: Path, symbols: list[Symbol]) -> list:
     by_file: dict[str, list[Symbol]] = {}
     for symbol in symbols:
         if symbol.path.lower().endswith(EXTENSIONS):

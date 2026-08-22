@@ -190,3 +190,101 @@ def test_the_document_s_own_write_is_still_a_sink(tmp_path):
         }
         """)
     assert [c.rule for c in found] == ["sink.js.html"]
+
+
+# -- rules the repository declares for itself ---------------------------------
+
+
+def _rules(tmp_path: Path, body: str) -> None:
+    directory = tmp_path / ".thot" / "rules"
+    directory.mkdir(parents=True, exist_ok=True)
+    (directory / "maison.yaml").write_text(body, encoding="utf-8")
+
+
+def test_a_repository_can_declare_its_own_shell_wrapper(tmp_path):
+    """The built-ins know Node. They cannot know your `runShell`."""
+    _rules(tmp_path, """
+js:
+  sinks:
+    - id: sink.js.maison
+      names: [runShell]
+      impact: critical
+      description: notre wrapper shell
+""")
+    found = scan(tmp_path, """
+        function handler(req, res) {
+          runShell("ping " + req.query.host);
+        }
+        """)
+    assert [c.rule for c in found] == ["sink.js.maison"]
+    assert found[0].impact.value == "critical"
+
+
+def test_a_repository_can_declare_its_own_source(tmp_path):
+    _rules(tmp_path, """
+js:
+  sinks:
+    - id: sink.js.maison
+      names: [runShell]
+      impact: high
+      description: wrapper
+  sources:
+    - id: source.js.file
+      patterns: [job.payload]
+      description: message de la file
+""")
+    found = scan(tmp_path, """
+        function worker(job) {
+          const cmd = job.payload.command;
+          runShell(cmd);
+        }
+        """)
+    assert [c.rule for c in found] == ["sink.js.maison"]
+
+
+def test_a_repository_can_declare_its_own_escaper(tmp_path):
+    _rules(tmp_path, """
+js:
+  sinks:
+    - id: sink.js.maison
+      names: [runShell]
+      impact: high
+      description: wrapper
+  sanitizers: [escapeArg]
+""")
+    found = scan(tmp_path, """
+        function handler(req, res) {
+          runShell(escapeArg(req.query.host));
+        }
+        """)
+    assert found == []
+
+
+def test_a_repository_rule_replaces_a_built_in_of_the_same_id(tmp_path):
+    """What lets a team downgrade a sink they have deliberately accepted."""
+    _rules(tmp_path, """
+js:
+  sinks:
+    - id: sink.js.exec
+      names: [exec]
+      impact: low
+      description: accepté chez nous
+""")
+    found = scan(tmp_path, REQUIRE + """
+        function handler(req, res) {
+          exec("ping " + req.query.host);
+        }
+        """)
+    assert [c.impact.value for c in found] == ["low"]
+
+
+def test_a_broken_rules_file_names_itself(tmp_path):
+    from thot.codemap.rules import RuleError, load_js_catalog
+
+    _rules(tmp_path, "js:\n  sinks:\n    - names: [x]\n      impact: high\n")
+    try:
+        load_js_catalog(tmp_path)
+    except RuleError as exc:
+        assert "maison.yaml" in str(exc)
+    else:
+        raise AssertionError("un sink sans `id` doit être refusé")

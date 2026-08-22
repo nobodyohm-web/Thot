@@ -15,7 +15,8 @@ A rule with `needs` only fires in a file that actually imports that module.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from contextlib import contextmanager
+from dataclasses import dataclass, replace
 
 from thot.contracts import Severity
 
@@ -175,3 +176,68 @@ def imports(source: str, module: str) -> bool:
         if shape.format(name=f"node:{module}") in source:
             return True
     return False
+
+
+@dataclass(frozen=True)
+class JsCatalog:
+    """What counts as dangerous here, built-ins plus whatever the repo adds.
+
+    The built-in rules know Node and the browser. They cannot know the
+    `runShell` your team wrote, the queue your service consumes, or the
+    escaper that makes a value safe in your codebase — and without somewhere
+    to say so, every audit of a real system is wrong in the same places.
+    """
+
+    sinks: tuple[JsSink, ...] = SINKS
+    assignment_sinks: tuple[JsSink, ...] = ASSIGNMENT_SINKS
+    sources: tuple[JsSource, ...] = SOURCES
+    sanitizers: frozenset[str] = SANITIZERS
+
+    def merged(
+        self,
+        *,
+        sinks: tuple[JsSink, ...] = (),
+        sources: tuple[JsSource, ...] = (),
+        sanitizers: frozenset[str] = frozenset(),
+    ) -> "JsCatalog":
+        """Add rules, replacing built-ins that share an id.
+
+        Replacing rather than appending is what lets a team downgrade a sink
+        they have deliberately accepted, instead of only ever adding noise.
+        """
+        def fold(base, extra):
+            by_id = {rule.id: rule for rule in base}
+            for rule in extra:
+                by_id[rule.id] = rule
+            return tuple(by_id.values())
+
+        return replace(
+            self,
+            sinks=fold(self.sinks, sinks),
+            sources=fold(self.sources, sources),
+            sanitizers=self.sanitizers | sanitizers,
+        )
+
+
+DEFAULT_JS_CATALOG = JsCatalog()
+_ACTIVE = DEFAULT_JS_CATALOG
+
+
+def active() -> JsCatalog:
+    return _ACTIVE
+
+
+@contextmanager
+def using(catalog: JsCatalog):
+    """Install a catalog for the duration of a block, then restore it.
+
+    Scoped rather than assigned, so one repository's rules can never leak
+    into the next analysis in the same process.
+    """
+    global _ACTIVE
+    previous = _ACTIVE
+    _ACTIVE = catalog
+    try:
+        yield catalog
+    finally:
+        _ACTIVE = previous

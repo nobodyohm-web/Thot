@@ -996,6 +996,25 @@ sources:
 sanitizers: [validate_host, team.escape]
 ```
 
+Le **même fichier** porte les règles JavaScript, sous une clé `js:` — un
+wrapper d'équipe existe en général dans les deux langages, et séparer la
+déclaration est la façon dont une moitié devient obsolète.
+
+```yaml
+js:
+  sinks:
+    - id: sink.js.team
+      names: [runShell, sh]     # comparés au dernier segment, ou qualifiés
+      impact: critical
+      description: Notre wrapper shell
+      needs: [child_process]    # ne se déclenche que si le fichier l'importe
+  sources:
+    - id: source.js.queue
+      patterns: [job.payload]
+      description: File de messages
+  sanitizers: [escapeArg]
+```
+
 Une règle qui reprend un `id` intégré le **remplace** — de quoi dégrader un
 sink que l'équipe a délibérément accepté, sans patcher Thot. Un fichier mal
 formé arrête l'audit en nommant le fichier et la clé fautive, plutôt que de
