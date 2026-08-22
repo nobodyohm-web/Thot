@@ -75,7 +75,11 @@ SINKS: tuple[JsSink, ...] = (
     ),
     JsSink(
         id="sink.js.html",
-        names=("insertAdjacentHTML", "write", "writeln"),
+        # `write` bare is not a sink, it is a verb: `socket.write`,
+        # `process.stderr.write`, `stream.write`. Only the document's is one,
+        # so this rule is written qualified — the matcher takes the whole
+        # dotted name when the pattern carries a dot.
+        names=("insertAdjacentHTML", "document.write", "document.writeln"),
         impact=Severity.HIGH,
         description="Écriture de HTML non échappé",
     ),

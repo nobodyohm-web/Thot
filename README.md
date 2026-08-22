@@ -386,9 +386,15 @@ de modules, `tsconfig` et vue du typeur sur `this`. Un second niveau bâti sur
 des suppositions transformerait un outil qui rapporte des chemins *prouvés*
 en un outil qui rapporte des chemins *plausibles*.
 
-Mesuré sur les deux corpus : **6 chemins sur Prime, 4 sur Hermes**, sur
-3 400 fichiers JS/TS. Dix, pas trois cents — c'est la forme qu'a un moteur de
-teinte, et pas celle d'un scanner de motifs.
+Le moteur balaie le **fichier**, pas les corps de fonctions nommées. La forme
+ordinaire d'un handler web est une flèche anonyme passée à une route —
+`app.get("/x", (req, res) => { … })` — qu'aucun indexeur ne nomme : mesuré,
+**24 454** fonctions de cette forme sur les deux arbres, toutes invisibles à
+un moteur qui suivrait les symboles.
+
+Mesuré sur les deux corpus : **7 chemins sur Prime, 12 sur Hermes**, sur
+3 400 fichiers JS/TS. Dix-neuf, pas trois cents — c'est la forme qu'a un
+moteur de teinte, et pas celle d'un scanner de motifs.
 
 Le rapport le dit lui-même plutôt que de laisser croire à une couverture
 uniforme :

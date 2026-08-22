@@ -168,3 +168,25 @@ def test_the_sink_line_is_the_call_not_the_statement(tmp_path):
     assert len(found) == 1
     line = (tmp_path / "app.ts").read_text().splitlines()[found[0].sink.line - 1]
     assert "exec(" in line
+
+
+def test_writing_to_a_socket_is_not_writing_to_the_document(tmp_path):
+    """`write` bare is a verb, not a sink: socket.write, stderr.write, stream.write."""
+    found = scan(tmp_path, """
+        function relay(socket) {
+          const raw = location.hash;
+          socket.write(raw);
+          process.stderr.write(raw);
+        }
+        """)
+    assert found == []
+
+
+def test_the_document_s_own_write_is_still_a_sink(tmp_path):
+    found = scan(tmp_path, """
+        function render() {
+          const raw = location.hash;
+          document.write(raw);
+        }
+        """)
+    assert [c.rule for c in found] == ["sink.js.html"]
