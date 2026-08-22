@@ -35,8 +35,19 @@ def _finding(identifier="abc", path="a.py"):
     )
 
 
+# A fixed instant. `Verdict.of` stamps `decided_at` from the clock at second
+# precision, so two verdicts built from the same finding differ whenever the
+# two calls straddle a second boundary — which a loaded 27-second suite does
+# now and then. The stability test below compares bytes, so that flake made it
+# fail once in a while and pass on every rerun.
+FIXED_INSTANT = "2026-01-02T03:04:05+00:00"
+
+
 def _verdict(identifier="abc", author="dev", reason="commande littérale"):
-    return Verdict.of(_finding(identifier), Decision.REFUTED, reason, author)
+    import dataclasses
+
+    made = Verdict.of(_finding(identifier), Decision.REFUTED, reason, author)
+    return dataclasses.replace(made, decided_at=FIXED_INSTANT)
 
 
 # -- the file a team commits -------------------------------------------------
