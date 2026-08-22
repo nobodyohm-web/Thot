@@ -107,3 +107,67 @@ def test_a_corrupt_file_is_an_empty_harness_not_a_crash(tmp_path):
 
 def test_an_unknown_kind_falls_back_rather_than_raising(harness):
     assert harness.remember(title="a", content="x", kind="licorne").kind == "memory"
+
+
+# --- réécrire la même note n'est pas la mettre à jour ----------------------
+#
+# `.thot/harness.json` est suivi par git — c'est le seul fichier de `.thot/`
+# qui le soit, l'autorisation étant explicitement ignorée. Réenregistrer une
+# note identique déplaçait `updated_at`, qui veut pourtant dire « dernière
+# mise à jour ». Mesuré en franchissant une frontière de seconde :
+#   -  "updated_at": "2026-08-22T18:54:41+00:00"
+#   +  "updated_at": "2026-08-22T18:54:42+00:00"
+# Même famille que le fichier de verdicts, même remède.
+
+
+def _harness(tmp_path):
+    from thot.harness import Harness
+
+    return Harness(local=tmp_path / "h.json", glob=tmp_path / "g.json")
+
+
+def test_re_saving_an_identical_note_leaves_the_file_alone(tmp_path, monkeypatch):
+    """The clock is forced forward: without it this test passes by luck.
+
+    Both calls land in the same second on a fast machine, which is exactly the
+    coincidence that hid the defect in the first place.
+    """
+    import thot.harness as harness
+
+    monkeypatch.setattr(harness, "_now", lambda: "2026-01-01T00:00:00+00:00")
+    _harness(tmp_path).remember(title="team.shell.run",
+                                content="échappe ses arguments", source="dev")
+    before = (tmp_path / "h.json").read_text()
+
+    monkeypatch.setattr(harness, "_now", lambda: "2026-06-30T12:00:00+00:00")
+    _harness(tmp_path).remember(title="team.shell.run",
+                                content="échappe ses arguments", source="dev")
+
+    assert (tmp_path / "h.json").read_text() == before
+
+
+def test_a_changed_content_still_moves_the_updated_stamp(tmp_path):
+    import json
+
+    first = _harness(tmp_path).remember(title="t", content="avant", source="dev")
+    body = json.loads((tmp_path / "h.json").read_text())["entries"][0]
+    created = body["created_at"]
+
+    _harness(tmp_path).remember(title="t", content="après", source="dev")
+
+    body = json.loads((tmp_path / "h.json").read_text())["entries"][0]
+    assert body["content"] == "après"
+    assert body["created_at"] == created, "la création ne bouge pas"
+    assert body["id"] == first.id, "c'est la même note, mise à jour"
+
+
+def test_a_changed_kind_is_an_update_too(tmp_path):
+    import json
+
+    _harness(tmp_path).remember(title="t", content="c", kind="memory",
+                                source="dev")
+    _harness(tmp_path).remember(title="t", content="c", kind="policy",
+                                source="dev")
+
+    body = json.loads((tmp_path / "h.json").read_text())["entries"][0]
+    assert body["kind"] == "policy"

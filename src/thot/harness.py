@@ -153,6 +153,13 @@ class Harness:
         existing = next((e for e in store.values()
                          if e.title.lower() == title.lower()), None)
         if existing is not None:
+            # `updated_at` means "last updated". Re-saving the identical note
+            # is not an update, and this file is tracked by git — the only one
+            # in `.thot/` that is — so bumping the stamp put a diff line in a
+            # committed file for a change nobody made. Same family as the
+            # verdicts store, same remedy.
+            if existing.content == content and existing.kind == _valid(kind):
+                return existing
             existing.content = content
             existing.kind = _valid(kind)
             existing.updated_at = _now()
