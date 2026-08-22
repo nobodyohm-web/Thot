@@ -355,3 +355,48 @@ def test_a_public_key_read_is_not_reclassified_by_a_later_path(tmp_path):
     line = ("ssh ubuntu@host \"echo '$(cat ~/.ssh/lambda_key_new.pub)' "
             ">> ~/.ssh/authorized_keys\"\n")
     assert _ssh_private(tmp_path, line) == []
+
+
+# --- lire un secret d'environnement est la pratique recommandée ------------
+#
+# Mesuré sur la bibliothèque livrée : 7 skills sur 117 bloqués DANGEROUS pour
+# la seule ligne `api_key = os.environ.get("PINECONE_API_KEY")` — la manière
+# dont on est censé fournir une clé d'API. L'un d'eux porte le commentaire
+# « # Use get() to handle missing ». Un verdict dangereux n'est pas
+# franchissable par `--force`.
+#
+# L'exfiltration est l'envoi, pas la lecture, et l'envoi garde ses règles
+# CRITICAL — `env_exfil_httpx` sur un secret parti en HTTP, `env_exfil_curl`
+# sur un en-tête d'autorisation. La lecture descend à HIGH : la confirmation
+# reste demandée, elle devient franchissable.
+
+
+def _secret(tmp_path, source: str):
+    from thot.guard.skill_guard import scan_file
+
+    target = tmp_path / "app.py"
+    target.write_text(source, encoding="utf-8")
+    found = scan_file(target, "app.py")
+    for level in ("critical", "high", "medium", "low"):
+        if any(f.severity == level for f in found):
+            return level
+    return "none"
+
+
+def test_reading_an_api_key_from_the_environment_is_not_critical(tmp_path):
+    assert _secret(tmp_path, 'api_key = os.environ.get("PINECONE_API_KEY")\n') == "high"
+
+
+def test_getenv_of_a_secret_is_not_critical_either(tmp_path):
+    assert _secret(tmp_path, 'api_key = os.getenv("OPENROUTER_API_KEY")\n') == "high"
+
+
+def test_sending_a_secret_over_http_is_still_critical(tmp_path):
+    assert _secret(
+        tmp_path,
+        'httpx.post(url, headers={"Authorization": os.getenv("API_KEY")})\n',
+    ) == "critical"
+
+
+def test_an_ordinary_config_read_is_still_silent(tmp_path):
+    assert _secret(tmp_path, 'level = os.environ.get("LOG_LEVEL")\n') == "none"

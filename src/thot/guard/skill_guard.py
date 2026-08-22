@@ -168,11 +168,22 @@ THREAT_PATTERNS = [
     (r'os\.environ\b(?!\s*\.get\s*\(\s*["\'](?![^"\']*(?:KEY|TOKEN|SECRET|PASSWORD|CREDENTIAL)))',
      "python_os_environ", "high", "exfiltration",
      "accesses os.environ (potential env dump)"),
+    # Reading a secret from the environment is how you are *supposed* to pass
+    # one — it is the recommendation these two rules were rating as the worst
+    # thing a skill can do. Measured on the shipped library, 7 skills of 117
+    # were blocked DANGEROUS on that line alone (`api_key =
+    # os.environ.get("PINECONE_API_KEY")`, one of them with the comment
+    # "# Use get() to handle missing"), and a dangerous verdict is not
+    # overridable by --force.
+    #
+    # Exfiltration is the send, and the send keeps CRITICAL: `env_exfil_httpx`
+    # for a secret going out over HTTP, `env_exfil_curl` for an authorization
+    # header. HIGH here still asks for confirmation; it no longer forbids.
     (r'os\.environ\s*\.get\s*\(\s*["\'][^"\']*(?:KEY|TOKEN|SECRET|PASSWORD|CREDENTIAL)',
-     "python_environ_get_secret", "critical", "exfiltration",
+     "python_environ_get_secret", "high", "exfiltration",
      "reads secret via os.environ.get()"),
     (r'os\.getenv\s*\(\s*[^\)]*(?:KEY|TOKEN|SECRET|PASSWORD|CREDENTIAL)',
-     "python_getenv_secret", "critical", "exfiltration",
+     "python_getenv_secret", "high", "exfiltration",
      "reads secret via os.getenv()"),
     (r'process\.env\[',
      "node_process_env", "high", "exfiltration",
