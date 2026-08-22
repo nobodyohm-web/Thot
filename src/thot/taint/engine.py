@@ -356,8 +356,28 @@ def _find_candidates(
     for name in facts_by_name:
         by_short.setdefault(name.rsplit(".", 1)[-1], []).append(name)
 
-    def resolve(short: str) -> list[_Facts]:
-        return [facts_by_name[n] for n in by_short.get(short, [])]
+    def resolve(short: str, caller: str = "") -> list[_Facts]:
+        """Definitions a bare call name can mean, the caller's module first.
+
+        Matching on the short name alone across the whole tree links any two
+        functions that happen to share one. Found on Hermes, and refuted by
+        the panel with the reason spelled out: `agent/command_token_source.py`
+        defines `_mint(command, label)` running `subprocess.run(..., shell=
+        True)`, `tests/plugins/test_chronos_verify.py` defines its own
+        `_mint(priv, claims)` signing a JWT, and the test calls its own. The
+        engine reported a HIGH path from attacker data to a shell.
+
+        Python resolves the local definition, so this does too; the tree-wide
+        match stays as the fallback for an imported helper, which has no
+        definition in the caller's module.
+        """
+        names = by_short.get(short, [])
+        module = caller.rsplit(".", 1)[0] if "." in caller else ""
+        if module:
+            local = [n for n in names if n.rsplit(".", 1)[0] == module]
+            if local:
+                names = local
+        return [facts_by_name[n] for n in names]
 
     # Fixed point: propagate tainted return values and tainted parameters
     # across call edges until nothing changes, bounded by max_depth.
@@ -367,14 +387,14 @@ def _find_candidates(
             for target, callee_short, ref in facts.assigns_from_call:
                 if target in facts.tainted:
                     continue
-                if any(c.returns_taint for c in resolve(callee_short)):
+                if any(c.returns_taint for c in resolve(callee_short, facts.symbol.name)):
                     facts.tainted[target] = ref
                     changed = True
 
             for callee_short, arg, _ref in facts.calls_out:
                 if arg not in set(facts.symbol.params):
                     continue
-                for callee in resolve(callee_short):
+                for callee in resolve(callee_short, facts.symbol.name):
                     # Snapshot: a self-recursive call would otherwise mutate the
                     # very dict being iterated.
                     for sinks in list(callee.param_sinks.values()):
@@ -423,9 +443,17 @@ def _find_candidates(
     for facts in facts_by_name.values():
         for callee_short, arg, call_ref in facts.calls_out:
             origin = facts.tainted.get(arg)
+            if origin is None and match_source(arg):
+                # A source handed straight to the callee, without being stored
+                # first. Case 1 has always accepted the same shape into a sink
+                # in its own body — "source read straight into the sink" — and
+                # the omission here made `launch(sys.argv[1])` invisible while
+                # `cmd = sys.argv[1]; launch(cmd)` was reported. The inline
+                # form is the more common of the two.
+                origin = call_ref
             if origin is None:
                 continue
-            for callee in resolve(callee_short):
+            for callee in resolve(callee_short, facts.symbol.name):
                 for sinks in list(callee.param_sinks.values()):
                     for rule_id, sink_ref in list(sinks):
                         emit(rule_id, origin, sink_ref, (origin, call_ref, sink_ref))

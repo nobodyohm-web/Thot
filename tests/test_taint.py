@@ -321,3 +321,83 @@ def test_a_site_that_moves_keeps_its_verdict(tmp_path):
     after = {Finding.compute_id(c.rule, c.sink)
              for c in analyse(repo) if c.rule == "sink.os.system"}
     assert before == after
+
+
+# --- deux fonctions homonymes ne sont pas la même fonction -----------------
+#
+# Trouvé en vérifiant une réfutation du panel sur Hermes, et elle avait
+# raison : `agent/command_token_source.py` définit `_mint(command, label)` qui
+# fait `subprocess.run(command, shell=True)`, et `tests/plugins/
+# test_chronos_verify.py` définit son propre `_mint(priv, claims)` qui signe un
+# JWT. Le test appelle le sien ; le moteur a relié l'appel à l'autre module
+# parce que le dernier segment du nom correspondait, et a rapporté un chemin
+# HIGH d'une donnée d'attaquant jusqu'à `shell=True`.
+#
+# `resolve` rendait toutes les fonctions de l'arbre partageant un nom court.
+# La définition du module appelant l'emporte désormais, et la correspondance
+# globale ne sert plus que de repli — ce que le moteur JS fait déjà.
+
+
+def test_a_local_definition_wins_over_a_namesake_elsewhere(tmp_path):
+    from thot.codemap.index import index_files
+    from thot.taint.engine import find_candidates
+
+    (tmp_path / "dangerous.py").write_text(
+        "import subprocess\n"
+        "\n"
+        "\n"
+        "def _mint(command):\n"
+        "    subprocess.run(command, shell=True)\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "harmless.py").write_text(
+        "import sys\n"
+        "\n"
+        "\n"
+        "def _mint(value):\n"
+        "    return value.upper()\n"
+        "\n"
+        "\n"
+        "def run():\n"
+        "    return _mint(sys.argv[1])\n",
+        encoding="utf-8",
+    )
+    from thot.codemap.graph import CodeGraph
+
+    files = ["dangerous.py", "harmless.py"]
+    graph = CodeGraph.build(index_files(tmp_path, files))
+    found = find_candidates(tmp_path, graph)
+
+    culprits = [c for c in found if c.sink.path == "dangerous.py"]
+    assert culprits == [], culprits
+
+
+def test_a_call_with_no_local_namesake_still_resolves(tmp_path):
+    """The fallback stays: an imported helper has no definition here."""
+    from thot.codemap.index import index_files
+    from thot.taint.engine import find_candidates
+
+    (tmp_path / "helpers.py").write_text(
+        "import subprocess\n"
+        "\n"
+        "\n"
+        "def launch(command):\n"
+        "    subprocess.run(command, shell=True)\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "app.py").write_text(
+        "import sys\n"
+        "from helpers import launch\n"
+        "\n"
+        "\n"
+        "def run():\n"
+        "    launch(sys.argv[1])\n",
+        encoding="utf-8",
+    )
+    from thot.codemap.graph import CodeGraph
+
+    files = ["helpers.py", "app.py"]
+    graph = CodeGraph.build(index_files(tmp_path, files))
+    found = find_candidates(tmp_path, graph)
+
+    assert any(c.sink.path == "helpers.py" for c in found), found
