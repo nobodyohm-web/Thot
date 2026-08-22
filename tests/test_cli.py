@@ -672,3 +672,42 @@ def test_deps_does_not_fail_below_the_threshold(toy_repo, capsys, monkeypatch):
     capsys.readouterr()
 
     assert code == 0
+
+
+# --- le docteur est fait pour tenir dans une chaîne ------------------------
+#
+# Sa docstring énonce le contrat : « non nul en cas d'échec, pour qu'il puisse
+# tenir dans un job d'intégration ou une chaîne `&&` — un diagnostic sur
+# lequel personne ne peut agir automatiquement est un diagnostic qu'on cesse
+# de lancer ». Rien ne le tenait. Sur cette machine il rend bien 4 avec un
+# contrôle en échec, mais personne ne l'avait vérifié dans l'autre sens.
+
+
+def _check(name, ok):
+    from thot.doctor import Check
+
+    return Check(name, ok, "peu importe")
+
+
+def test_the_doctor_fails_the_shell_when_a_check_fails(capsys, monkeypatch):
+    from thot import doctor
+
+    monkeypatch.setattr(doctor, "run",
+                        lambda root: [_check("a", True), _check("b", False)])
+
+    code = cli.main(["doctor"])
+    capsys.readouterr()
+
+    assert code != 0
+
+
+def test_the_doctor_says_nothing_is_wrong_by_exiting_zero(capsys, monkeypatch):
+    from thot import doctor
+
+    monkeypatch.setattr(doctor, "run",
+                        lambda root: [_check("a", True), _check("b", True)])
+
+    code = cli.main(["doctor"])
+    capsys.readouterr()
+
+    assert code == 0
