@@ -754,6 +754,41 @@ Trois sont livrés :
 | `regression-alert` | un défaut marqué `fixed` qui réapparaît passe en CRITICAL : une régression vaut plus qu'un candidat neuf. |
 | `audit-log` | un journal JSONL local de chaque audit, verdict et écriture, dans `~/.thot/journal.jsonl`. Aucun réseau. |
 
+## Vérifier que tout est là
+
+« Ça marche » est une affirmation, et sur un programme fait de trois
+programmes, ce n'est pas une affirmation à croire sur parole — surtout venant
+de l'outil lui-même.
+
+```bash
+thot doctor
+```
+
+```
+✓ fusion                 thot · hermes · prime
+✓ moteurs                claude, hermes, prime
+✓ panel                  claude-cli contre hermes contre prime · cascade oui
+✓ indexeurs              python 9 symbole(s) · typescript 1
+✓ teinte                 python 1 chemin(s) · javascript 1
+✓ règles                 python 7 sinks · javascript 8
+✓ skills                 91 chargée(s) · 8 refusée(s)
+✓ plugins                4 chargé(s) · 0 refusé(s)
+✓ mémoire                232 décision(s)
+✓ mcp                    6 outil(s) exposé(s)
+✓ amélioration           daily, 8 candidats par arbre
+
+11/11 vérification(s) passées en 0.87 s
+```
+
+Chaque ligne exécute une vraie opération et rapporte ce qu'elle a **mesuré** :
+pas « skills : configuré » mais « 91 chargées, 8 refusées ». Le moteur de
+teinte cherche un chemin dans un échantillon des deux langages, le serveur MCP
+répond à son propre protocole. Une vérification qui ne peut pas tourner
+échoue au lieu de passer en silence : une ligne verte qui veut dire « non
+testé » est pire qu'une rouge. Rien ne touche au réseau ni à un modèle —
+`thot doctor` dans un avion donne la même réponse qu'à un bureau. Sortie non
+nulle en cas d'échec, pour tenir dans un `&&` ou une CI.
+
 ## L'amélioration permanente
 
 Un audit qui argumente vingt candidats et s'arrête laisse le reste sans

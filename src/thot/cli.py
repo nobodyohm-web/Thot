@@ -263,6 +263,10 @@ def build_parser() -> argparse.ArgumentParser:
     skills_scan.add_argument("--source", default="community",
                              choices=["builtin", "trusted", "community"])
 
+    subparsers.add_parser(
+        "doctor", help="Vérifier que l'installation est entière, hors ligne"
+    )
+
     improve = subparsers.add_parser(
         "improve",
         help="Faire juger au programme ce qu'il n'a pas encore jugé, en boucle",
@@ -1202,6 +1206,31 @@ def _deep_progress():
     return show
 
 
+def _cmd_doctor(args) -> int:
+    """Run every self-check and return non-zero if any of them failed.
+
+    Non-zero on failure so it can sit in a CI job or a shell `&&` chain: a
+    diagnostic nobody can act on automatically is a diagnostic people stop
+    running.
+    """
+    import time
+
+    from thot.doctor import run as run_checks
+
+    started = time.monotonic()
+    checks = run_checks(Path.cwd().resolve())
+    for check in checks:
+        print(check.line())
+
+    failed = [check for check in checks if not check.ok]
+    print()
+    print(
+        f"{len(checks) - len(failed)}/{len(checks)} vérification(s) passées "
+        f"en {time.monotonic() - started:.2f} s"
+    )
+    return 0 if not failed else EXIT_ERROR
+
+
 def _cmd_improve(args) -> int:
     """Judge what has not been judged, and keep doing it.
 
@@ -1538,6 +1567,8 @@ def main(argv: list[str] | None = None) -> int:
             return _cmd_plugins(args)
         if args.command == "improve":
             return _cmd_improve(args)
+        if args.command == "doctor":
+            return _cmd_doctor(args)
         if args.command == "sessions":
             return _cmd_sessions(args)
         if args.command == "search":
