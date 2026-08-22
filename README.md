@@ -875,6 +875,24 @@ que quelqu'un le corrige — donc la boucle porte son propre jeu d'identifiants
 déjà jugés. Sans ça, chaque tour après le premier dépenserait tout son budget
 à ré-argumenter ce que le premier venait de confirmer.
 
+Elle finit par ce qu'il y a à faire, avant les totaux :
+
+```
+À REGARDER — 2 finding(s) :
+  [hermes] plugins/platforms/a2a/tools.py:83 — confirmé · prime
+      L'URL vient d'un argument d'outil, donc du modèle…
+  [prime] packages/coding-agent/…/state-snapshot.ts:163 — réfutation contestée · hermes
+      Le chemin dit fixe est construit depuis un identifiant non validé…
+
+4 tour(s) · 83 jugement(s) (80 réfuté · 1 confirmé) · 157 candidat(s) sans décision
+```
+
+Une réfutation est de l'intendance ; une confirmation est une nouvelle. Une
+réfutation **contestée** aussi : c'est le programme qui dit s'être rattrapé
+avant d'enterrer quelque chose. Les compter sans les nommer envoie le lecteur
+grepper le journal — ce qui est exactement ce qui s'est passé, chaque fois,
+pendant une journée.
+
 Elle ne modifie jamais de code. « Amélioration » veut dire ici que le jugement
 du programme sur lui-même devient plus net et moins cher : moins de candidats
 sans décision, plus de décisions sur disque, chacune attribuable à l'agent qui

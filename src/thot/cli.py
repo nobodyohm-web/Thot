@@ -1315,6 +1315,30 @@ def _cmd_improve(args) -> int:
         on_decided=_deep_progress(),
     )
     print()
+    if session.news:
+        # Ahead of the totals, because this is the part somebody has to do
+        # something about. Everything else is bookkeeping.
+        print(f"À REGARDER — {len(session.news)} finding(s) :")
+        for part, finding in session.news:
+            provenance = finding.provenance or {}
+            state = (
+                "réfutation contestée"
+                if provenance.get("réfutation contestée")
+                else "confirmé"
+            )
+            who = (
+                provenance.get("relecture")
+                or provenance.get("second contradicteur")
+                or provenance.get("contradicteur")
+                or provenance.get("moteur")
+                or "?"
+            )
+            print(f"  [{part}] {finding.location} — {state} · {who}")
+            first = (finding.failure_scenario or "").strip().splitlines()
+            if first:
+                print(f"      {first[0][:150]}")
+        print()
+
     print(session.summary())
     if session.backlog:
         print(f"`thot improve --rounds {max(2, args.rounds)}` pour continuer, "

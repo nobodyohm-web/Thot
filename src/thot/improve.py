@@ -66,6 +66,10 @@ class Session:
 
     rounds: list[list[PartRound]] = field(default_factory=list)
     seen: set[str] = field(default_factory=set)
+    # A refutation is housekeeping; a confirmation is news. Kept whole rather
+    # than counted, because "3 confirmé" sends the reader to grep the log —
+    # which is what happened, every time, for a day.
+    news: list = field(default_factory=list)
 
     @property
     def judged(self) -> int:
@@ -120,6 +124,20 @@ def backlog_of(findings: list) -> int:
     return len(select_for_analysis(findings, limit=len(findings) or 1))
 
 
+def _is_news(finding) -> bool:
+    """What a reader has to act on: a confirmation, or a refutation refused.
+
+    The second belongs here as much as the first — it is the program saying
+    it caught itself about to bury something, which nobody should have to
+    find in a log.
+    """
+    from thot.contracts import Confidence
+
+    if finding.confidence is Confidence.CONFIRMED:
+        return True
+    return bool((finding.provenance or {}).get("réfutation contestée"))
+
+
 def one_round(
     *,
     budget: int,
@@ -127,6 +145,7 @@ def one_round(
     engine_name: str = "",
     seen: set[str] | None = None,
     on_decided: Callable | None = None,
+    news: list | None = None,
 ) -> list[PartRound]:
     """One bounded pass over every tree of the fused program."""
     from thot.contracts import Confidence
@@ -138,6 +157,8 @@ def one_round(
     def record(part: str, finding) -> None:
         decided.setdefault(part, []).append(finding)
         seen.add(finding.id)
+        if news is not None and _is_news(finding):
+            news.append((part, finding))
         if on_decided is not None:
             on_decided(finding)
 
@@ -205,6 +226,7 @@ def improve(
             engine_name=engine_name,
             seen=session.seen,
             on_decided=on_decided,
+            news=session.news,
         )
         session.rounds.append(done)
         if on_round is not None:

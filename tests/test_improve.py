@@ -132,3 +132,49 @@ def test_a_failure_is_not_reported_as_an_undecided_finding():
     line = PartRound(part="prime", judged=2, failed=2, backlog=9).line()
 
     assert "2 échec(s)" in line
+
+
+def _judged(confidence, provenance=None):
+    from thot.contracts import CodeRef, Finding, Severity
+
+    location = CodeRef(path="a.py", line=1, symbol="f", ast_hash="h")
+    return Finding(
+        id=Finding.compute_id("r", location), rule="r", severity=Severity.HIGH,
+        confidence=confidence, location=location, provenance=provenance,
+    )
+
+
+def test_a_confirmation_is_news_and_a_refutation_is_not():
+    """A refutation is housekeeping. A confirmation is the product."""
+    from thot.contracts import Confidence
+    from thot.improve import _is_news
+
+    assert _is_news(_judged(Confidence.CONFIRMED)) is True
+    assert _is_news(_judged(Confidence.REFUTED)) is False
+    assert _is_news(_judged(Confidence.PLAUSIBLE)) is False
+
+
+def test_a_contested_refutation_is_news_too():
+    """It is the program saying it caught itself about to bury something."""
+    from thot.contracts import Confidence
+    from thot.improve import _is_news
+
+    finding = _judged(Confidence.PLAUSIBLE,
+                      {"réfutation contestée": "la ligne est bien là"})
+    assert _is_news(finding) is True
+
+
+def test_the_session_keeps_the_news_whole_not_counted(monkeypatch):
+    """Counting sends the reader to grep the log — which is what happened."""
+    from thot.contracts import Confidence
+
+    def _round(*, news, **kwargs):
+        if news is not None and not news:
+            news.append(("hermes", _judged(Confidence.CONFIRMED)))
+        return [PartRound(part="hermes", judged=1, confirmed=1, backlog=0)]
+
+    monkeypatch.setattr("thot.improve.one_round", _round)
+    session = improve(rounds=1)
+
+    assert len(session.news) == 1
+    assert session.news[0][0] == "hermes"
