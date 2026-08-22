@@ -617,13 +617,16 @@ def test_code_quoted_inside_a_template_literal_is_not_a_finding():
 
 
 def test_a_real_call_in_typescript_is_still_found():
-    findings = scan_text("clip.ts", "execSync(command, options);\n")
-    assert [f.rule for f in findings] == ["pattern.child_process_exec"]
+    source = ('import { execSync } from "child_process";\n'
+              "execSync(command, options);\n")
+    assert [f.rule for f in scan_text("clip.ts", source)] \
+        == ["pattern.child_process_exec"]
 
 
 def test_masking_keeps_the_line_of_a_real_call():
     """Blanking must preserve offsets, or every line number shifts."""
     source = (
+        'import { execSync } from "child_process";\n'
         "/* a comment\n"
         "   spanning\n"
         "   four\n"
@@ -631,7 +634,7 @@ def test_masking_keeps_the_line_of_a_real_call():
         "execSync(command);\n"
     )
     findings = scan_text("clip.ts", source)
-    assert [f.location.line for f in findings] == [5]
+    assert [f.location.line for f in findings] == [6]
 
 
 def test_the_whole_javascript_family_is_masked():
@@ -655,3 +658,51 @@ def test_a_file_the_masker_chokes_on_is_scanned_as_is():
     """
     source = "const x = " + "`${" * 1500 + "1" + "}`" * 1500 + ";\n"
     assert code_only("deep.ts", source) == source  # unmasked, not a crash
+
+
+# -- a bare name is not a module ------------------------------------------
+#
+# `exec(` matches a local helper, a method definition and an interface
+# signature as readily as `child_process.exec`. The taint engine has gated
+# this on the file's imports since it was written; the sweep had no gate at
+# all, and on the two shipped trees that was three HIGH findings out of
+# eight: `surface: exec()`, a method named `exec`, and a TypeScript
+# interface declaring one.
+
+
+def test_exec_is_a_finding_where_the_module_is_imported():
+    source = ('import { exec } from "child_process";\n'
+              "export function run(q) { exec(q); }\n")
+    assert [f.rule for f in scan_text("run.ts", source)] \
+        == ["pattern.child_process_exec"]
+
+
+def test_exec_without_the_module_is_not_a_finding():
+    """A local helper of the same name runs nothing."""
+    source = ("const commands = [\n"
+              "  { name: '/approvals', surface: exec() },\n"
+              "];\n")
+    assert scan_text("commands.ts", source) == []
+
+
+def test_a_method_named_exec_is_not_a_finding():
+    source = ("export class Connection {\n"
+              "  async exec(remoteCommand, options = {}) {\n"
+              "    return this.send(remoteCommand);\n"
+              "  }\n"
+              "}\n")
+    assert scan_text("ssh.ts", source) == []
+
+
+def test_every_import_spelling_opens_the_gate():
+    call = "\nexec(command);\n"
+    for line in ('import { exec } from "child_process";',
+                 'import { exec } from "node:child_process";',
+                 'const { exec } = require("child_process");',
+                 "const { exec } = require('node:child_process');"):
+        assert scan_text("run.ts", line + call) != [], line
+
+
+def test_a_rule_that_needs_no_module_is_unaffected():
+    findings = scan_text("ui.jsx", "el.innerHTML = userInput;\n")
+    assert [f.rule for f in findings] == ["pattern.innerHTML_xss"]

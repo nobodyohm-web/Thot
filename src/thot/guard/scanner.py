@@ -19,6 +19,7 @@ import tokenize
 from pathlib import Path
 
 from thot.contracts import CodeRef, Confidence, Finding, Severity
+from thot.taint.js_catalog import imports
 from thot.guard.patterns import _JS_EXTS as _JS_SUFFIXES
 from thot.guard.patterns import SECURITY_PATTERNS
 from thot.scoring.role import Role, role_of
@@ -27,6 +28,21 @@ from thot.scoring.severity import compute_severity
 # Impact per rule. The upstream data carries a reminder but no severity, and
 # treating a disabled TLS check like an eval() of user input would make the
 # whole sweep unreadable.
+# The module a rule's call has to come from, when its bare name is ordinary.
+# `exec(` matches a local helper, a method definition and an interface
+# signature as readily as `child_process.exec`, and the sweep had no way to
+# tell them apart. The taint engine has gated this on the file's imports
+# since it was written; the same gate, from the same helper, applies here.
+#
+# The price is a call reached through a local wrapper — `import { exec } from
+# "./shell"` — which the gate now skips. The taint engine already pays it,
+# and it buys back three of the eight HIGH `exec` findings on the two
+# shipped trees, every one of which was prose or a declaration.
+_NEEDS_IMPORT: dict[str, tuple[str, ...]] = {
+    "child_process_exec": ("child_process",),
+}
+
+
 _IMPACT: dict[str, Severity] = {
     "eval_injection": Severity.CRITICAL,
     "new_function_injection": Severity.CRITICAL,
@@ -194,6 +210,11 @@ def scan_text(relative: str, text: str) -> list[Finding]:
     scannable = code_only(relative, text)
     for pattern in SECURITY_PATTERNS:
         name = pattern.get("ruleName", "?")
+        needed = _NEEDS_IMPORT.get(name)
+        # Asked of the raw text, never the masked one: the module name lives
+        # inside a string literal, which masking blanks.
+        if needed and not any(imports(text, module) for module in needed):
+            continue
         try:
             if not _applies(pattern, relative, scannable):
                 continue
