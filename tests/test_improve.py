@@ -178,3 +178,52 @@ def test_the_session_keeps_the_news_whole_not_counted(monkeypatch):
 
     assert len(session.news) == 1
     assert session.news[0][0] == "hermes"
+
+
+# --- « 0 jugement » a deux causes opposées, et une seule ligne ------------
+#
+# Mesuré en lançant une ronde réelle une fois le backlog vide : les trois
+# arbres impriment « 0 jugé(s) · 0 en attente », mot pour mot ce qu'imprimait
+# la boucle nocturne quand son PATH était cassé et qu'elle ne jugeait rien du
+# tout. C'est la seule ligne que voit une boucle qui tourne sans témoin ;
+# elle doit séparer « tout est décidé » de « rien n'a pu être fait ».
+
+
+def test_a_quiet_round_says_the_tree_is_settled_not_merely_silent():
+    from thot.improve import PartRound
+
+    line = PartRound(part="hermes", findings=416, judged=0, backlog=0).line()
+
+    assert "416" in line, line
+    assert "décidé" in line or "réglé" in line, line
+
+
+def test_a_tree_with_nothing_to_audit_is_not_called_settled():
+    from thot.improve import PartRound
+
+    line = PartRound(part="vide", findings=0, judged=0, backlog=0).line()
+
+    assert "aucun finding" in line.lower(), line
+
+
+def test_a_round_that_judged_something_keeps_its_ordinary_line():
+    from thot.improve import PartRound
+
+    line = PartRound(part="thot", findings=10, judged=3, refuted=3, backlog=2).line()
+
+    assert "3 jugé(s)" in line
+    assert "2 en attente" in line
+    assert "décidé" not in line
+
+
+def test_the_session_summary_separates_settled_from_broken():
+    from thot.improve import PartRound, Session
+
+    settled = Session(rounds=[[PartRound(part="thot", findings=4, judged=0, backlog=0)]])
+    assert "Rien à juger" in settled.summary(), settled.summary()
+    assert "4 finding(s)" in settled.summary(), settled.summary()
+
+    broken = Session(rounds=[[PartRound(part="thot", findings=4, judged=0,
+                                        failed=3, backlog=4)]])
+    assert "Rien à juger" not in broken.summary(), broken.summary()
+    assert "échec" in broken.summary(), broken.summary()

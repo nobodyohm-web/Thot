@@ -46,9 +46,23 @@ class PartRound:
     backlog: int = 0  # still unjudged after this round
     error: str = ""
 
+    @property
+    def quiet(self) -> bool:
+        """Nothing judged, nothing left — and nothing went wrong doing it."""
+        return not self.judged and not self.backlog and not self.failed
+
     def line(self) -> str:
         if self.error:
             return f"{self.part:<8} — {self.error}"
+        # "0 jugé(s) · 0 en attente" is what a settled tree prints, and it is
+        # also, word for word, what the nightly loop printed while its PATH
+        # was broken and it could not reach a single agent. Unattended, that
+        # line is the only thing anyone sees; it has to name which one it is.
+        if self.quiet:
+            if not self.findings:
+                return f"{self.part:<8} aucun finding à juger"
+            return (f"{self.part:<8} rien à juger — "
+                    f"{self.findings} finding(s), tous déjà décidés")
         detail = f"{self.refuted} réfuté · {self.confirmed} confirmé"
         if self.contested:
             detail += f" · {self.contested} réfutation(s) contestée(s)"
@@ -104,6 +118,13 @@ class Session:
             f"{len(self.rounds)} tour(s) · {self.judged} jugement(s) "
             f"({detail}) · {self.backlog} candidat(s) encore sans décision"
         )
+        if not self.judged and not self.backlog and not self.failed:
+            total = sum(p.findings for run in self.rounds for p in run)
+            line += (
+                f"\nRien à juger : les {total} finding(s) portent tous une "
+                "décision. La boucle reprendra quand du code changera — un "
+                "verdict expire avec le corps qu'il visait."
+            )
         if self.failed and not self.settled:
             line += (
                 "\nAucun verdict : toutes les tâches ont échoué. Regarde la "
