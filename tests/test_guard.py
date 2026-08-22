@@ -1028,3 +1028,28 @@ def test_a_loader_passed_positionally_is_read_too():
               'loader = getattr(yaml, "CSafeLoader", None) or yaml.SafeLoader\n'
               "doc = yaml.load(value, loader)\n")
     assert scan_text("cfg.py", source) == []
+
+
+def test_a_yaml_that_is_not_the_module_is_not_pyyaml():
+    """`xai_retirement.py` binds the name to a ruamel round-trip loader.
+
+    PyYAML is never imported there, so `yaml.load(fh)` is a method call on
+    an object, not the unsafe module function the rule is named for.
+    """
+    source = ("from ruamel.yaml import YAML\n"
+              "def apply(config_path):\n"
+              '    yaml = YAML(typ="rt")\n'
+              "    yaml.preserve_quotes = True\n"
+              '    with config_path.open("r") as fh:\n'
+              "        return yaml.load(fh)\n")
+    assert scan_text("xai_retirement.py", source) == []
+
+
+def test_a_file_that_never_imports_pyyaml_reports_nothing():
+    assert scan_text("cfg.py", "doc = yaml.load(fh)\n") == []
+
+
+def test_a_yaml_imported_from_another_library_is_not_pyyaml():
+    """`from ruamel import yaml` binds the same name to something else."""
+    source = "from ruamel import yaml\ndoc = yaml.load(fh)\n"
+    assert scan_text("cfg.py", source) == []

@@ -375,6 +375,21 @@ def _local_bindings(tree: ast.AST) -> tuple[dict, dict]:
     return env, returns
 
 
+def _imports_pyyaml(tree: ast.AST) -> bool:
+    """Whether the name `yaml` in this file is PyYAML itself.
+
+    `import yaml` only. `from ruamel import yaml` binds the same name to a
+    different library, and an alias — `import yaml as y` — binds a name the
+    rule's own `yaml.load(` never matches, so it needs no clause of its own.
+    """
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import) and any(
+            alias.name == "yaml" for alias in node.names
+        ):
+            return True
+    return False
+
+
 def _unsafe_yaml_lines(source: str) -> set[int] | None:
     """The lines where `yaml.load` is called without a loader that is safe.
 
@@ -385,6 +400,13 @@ def _unsafe_yaml_lines(source: str) -> set[int] | None:
         tree = ast.parse(source)
     except (SyntaxError, ValueError, MemoryError, RecursionError):
         return None
+    if not _imports_pyyaml(tree):
+        # The rule is named for one module function. `xai_retirement.py`
+        # binds `yaml` to a ruamel round-trip loader and never imports
+        # PyYAML at all, so `yaml.load(fh)` there is a method on an object.
+        # The limit this leaves: a file that imports PyYAML and shadows the
+        # name locally is read as the module's.
+        return set()
     env, returns = _local_bindings(tree)
     lines: set[int] = set()
     for node in ast.walk(tree):
