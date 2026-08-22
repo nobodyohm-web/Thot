@@ -38,6 +38,10 @@ class AuditResult:
     engine: str | None = None  # None when the run stayed deterministic
     remembered: int = 0  # findings a stored verdict applied to
     supply_error: str = ""  # set when a dependency lookup could not happen
+    # Files the audit itself changed. Empty is the normal answer and the only
+    # one worth trusting: two of the three agents can write, and no flag
+    # stops them, so what cannot be prevented is made impossible to miss.
+    touched: tuple[str, ...] = ()
 
     @property
     def confirmed(self) -> list[Finding]:
@@ -183,8 +187,12 @@ def run_audit(
         )
 
     engine_name = None
+    touched_files: tuple[str, ...] = ()
     if engine is not None and findings:
         engine_name = engine.capabilities.name
+        from thot.analysis import tripwire
+
+        before = tripwire.snapshot(root, manifest.files)
 
         from thot.analysis import attempts
 
@@ -212,6 +220,9 @@ def run_audit(
             root, findings, engine, limit=budget, on_decided=settled, skip=skip,
             demote=attempts.demoted(),
         )
+        touched_files = tripwire.touched(
+            before, tripwire.snapshot(root, manifest.files)
+        )
 
     # Plugins see the finished findings, before anything is written down.
     findings = annotate_findings(findings, root)
@@ -231,4 +242,5 @@ def run_audit(
         engine=engine_name,
         remembered=remembered,
         supply_error=supply_error,
+        touched=touched_files,
     )

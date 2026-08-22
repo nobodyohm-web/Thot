@@ -563,6 +563,18 @@ def _cmd_audit(args) -> int:
             file=sys.stderr,
         )
 
+    if result.touched:
+        # Loud, and on stderr so it survives `--json`. An audit that edited
+        # the code it was auditing is not a detail of the report.
+        print(
+            f"\n⚠ L'audit a modifié {len(result.touched)} fichier(s) du dépôt "
+            f"— ce n'est pas normal :",
+            file=sys.stderr,
+        )
+        for name in result.touched[:10]:
+            print(f"   {name}", file=sys.stderr)
+        print("   `git diff` avant toute autre chose.", file=sys.stderr)
+
     if result.remembered:
         print(
             f"{result.remembered} finding(s) portent une décision mémorisée.",
