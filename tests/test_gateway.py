@@ -376,3 +376,35 @@ def test_the_token_file_is_created_private_not_chmodded_afterwards(
         os.umask(previous)
 
     assert oct(path.stat().st_mode & 0o777) == "0o600"
+
+
+def test_the_phone_can_audit_a_whole_program_job(tmp_path, monkeypatch):
+    """A job may target the fused program, whose `root` is a token.
+
+    `Path("fusion")` is not a directory, so the one job most people register
+    answered "that is not a folder" from a phone.
+    """
+    from thot.gateway.commands import Board, handle
+    from thot.schedule.jobs import FUSION, Job
+    from thot.scope.authorization import write_authorization
+
+    first, second = tmp_path / "un", tmp_path / "deux"
+    for root in (first, second):
+        root.mkdir()
+        (root / "app.py").write_text(
+            "import os, sys\n\ndef run():\n    os.system('ls ' + sys.argv[1])\n"
+        )
+        write_authorization(root, owner="tester")
+
+    monkeypatch.setattr(
+        "thot.fusion.audit.parts", lambda: [("un", first), ("deux", second)]
+    )
+    monkeypatch.setattr(
+        "thot.gateway.commands._jobs",
+        lambda: [Job(name="tout", root=FUSION, deep=True)],
+    )
+
+    answer = handle("audit", "", board=Board(), author="dev")
+
+    assert "n'est pas un dossier" not in answer
+    assert "échoué" not in answer

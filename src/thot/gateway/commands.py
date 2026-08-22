@@ -93,21 +93,39 @@ def _audit(name: str, board: Board) -> str:
         known = ", ".join(j.name for j in jobs)
         return f"Aucun audit nommé « {name} ». Connus : {known}."
 
+    # A job may target the whole fused program, in which case its `root` is a
+    # token and not a directory — `Path("fusion")` would simply not exist,
+    # and the phone would get "that is not a folder" for the one job most
+    # people register. Deterministic on purpose either way: a chat message
+    # must not be able to spend a subscription.
+    from thot.schedule.runner import roots_for
+
+    findings: list = []
+    failures: list[str] = []
     store = Store.open(run_store())
-    memory = build_memory(chosen.root)
     try:
-        result = run_audit(
-            Path(chosen.root), store,
-            require_authorization=True, memory=memory,
-        )
-    except Exception as exc:  # a broken repo must not take the gateway down
-        return f"L'audit de {chosen.name} a échoué : {exc}"
+        for root in roots_for(chosen):
+            memory = build_memory(root)
+            try:
+                result = run_audit(
+                    root, store, require_authorization=True, memory=memory,
+                )
+                findings.extend(result.findings)
+            except Exception as exc:  # one tree must not cost the others
+                failures.append(f"{root.name} : {exc}")
+            finally:
+                getattr(memory, "close", lambda: None)()
     finally:
         store.close()
-        getattr(memory, "close", lambda: None)()
 
-    board.remember(result.findings, chosen.root)
-    return render.report(result.findings, root=chosen.root, title=chosen.name)
+    if not findings and failures:
+        return f"L'audit de {chosen.name} a échoué — " + " · ".join(failures)
+
+    board.remember(findings, chosen.root)
+    report = render.report(findings, root=chosen.root, title=chosen.name)
+    if failures:
+        report += "\n\n⚠ " + " · ".join(failures)
+    return report
 
 
 def _findings(argument: str, board: Board) -> str:
