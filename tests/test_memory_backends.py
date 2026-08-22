@@ -403,3 +403,75 @@ def test_a_failure_leaves_something_to_diagnose():
     working = _http_memory(lambda request: httpx.Response(200, json={"verdicts": []}))
     working.all_verdicts()
     assert working.last_error == ""
+
+
+# --- réaffirmer une décision n'est pas en prendre une nouvelle -------------
+#
+# Le fichier porte `format: thot.verdicts` et sa docstring dit qu'un fichier
+# dont le diff est du bruit est un fichier que personne ne relit. Or
+# réenregistrer exactement la même décision réécrivait `decided_at` : même
+# finding, même verdict, même raison, même auteur, et pourtant une ligne de
+# diff. Vérifié en franchissant une frontière de seconde, avant correction :
+#   -  "decided_at": "2026-08-22T18:51:06+00:00"
+#   +  "decided_at": "2026-08-22T18:51:07+00:00"
+
+
+def _dated(identifier, instant, **kw):
+    import dataclasses
+
+    from thot.memory.base import Decision, Verdict
+
+    made = Verdict.of(_finding(identifier), kw.pop("decision", Decision.REFUTED),
+                      kw.pop("reason", "commande littérale"),
+                      kw.pop("author", "dev"))
+    return dataclasses.replace(made, decided_at=instant)
+
+
+def test_re_recording_the_same_decision_leaves_the_file_alone(tmp_path):
+    path = tmp_path / "verdicts.json"
+    JsonMemory.open(path).remember(_dated("aaa", "2026-01-01T00:00:00+00:00"))
+    before = path.read_text()
+
+    JsonMemory.open(path).remember(_dated("aaa", "2026-06-30T12:00:00+00:00"))
+
+    assert path.read_text() == before, "une réaffirmation a bougé le fichier"
+
+
+def test_a_changed_decision_is_written_with_its_new_instant(tmp_path):
+    from thot.memory.base import Decision
+
+    path = tmp_path / "verdicts.json"
+    JsonMemory.open(path).remember(_dated("aaa", "2026-01-01T00:00:00+00:00"))
+
+    JsonMemory.open(path).remember(
+        _dated("aaa", "2026-06-30T12:00:00+00:00", decision=Decision.ACCEPTED)
+    )
+
+    body = json.loads(path.read_text())["verdicts"][0]
+    assert body["decision"] == "accepted"
+    assert body["decided_at"] == "2026-06-30T12:00:00+00:00"
+
+
+def test_a_changed_reason_is_a_new_decision(tmp_path):
+    path = tmp_path / "verdicts.json"
+    JsonMemory.open(path).remember(_dated("aaa", "2026-01-01T00:00:00+00:00"))
+
+    JsonMemory.open(path).remember(
+        _dated("aaa", "2026-06-30T12:00:00+00:00", reason="entrée constante")
+    )
+
+    body = json.loads(path.read_text())["verdicts"][0]
+    assert body["reason"] == "entrée constante"
+    assert body["decided_at"] == "2026-06-30T12:00:00+00:00"
+
+
+def test_a_different_author_is_a_new_decision(tmp_path):
+    path = tmp_path / "verdicts.json"
+    JsonMemory.open(path).remember(_dated("aaa", "2026-01-01T00:00:00+00:00"))
+
+    JsonMemory.open(path).remember(
+        _dated("aaa", "2026-06-30T12:00:00+00:00", author="hermes")
+    )
+
+    body = json.loads(path.read_text())["verdicts"][0]
+    assert body["author"] == "hermes"

@@ -111,6 +111,27 @@ class JsonMemory:
         )
 
     def remember(self, verdict: Verdict) -> None:
+        """Write the decision — unless it is the one already written.
+
+        This file is meant to be committed, and its own stability test says a
+        file whose diff is noise is a file nobody reviews. Re-affirming an
+        identical decision — same finding, same verdict, same reason, same
+        author — used to rewrite `decided_at` and produce a diff line for a
+        decision nobody took. `decided_at` answers "when was this decided",
+        and re-recording is not deciding again.
+
+        Anything else changing — the verdict, the reason, the author — is a
+        new decision and carries its new instant, which is what the three
+        tests beside the stability one pin.
+        """
+        import dataclasses
+
+        existing = self._verdicts.get(verdict.finding_id)
+        if existing is not None and (
+            dataclasses.replace(existing, decided_at="")
+            == dataclasses.replace(verdict, decided_at="")
+        ):
+            return
         self._verdicts[verdict.finding_id] = verdict
         self._flush()
 
