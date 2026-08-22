@@ -1026,10 +1026,27 @@ function blobMarkup(shape, name, size) {
   }
 
   try {
-    return blobatarSvg(seed, opts).replace('<svg ', '<svg data-bot-face=' + JSON.stringify(name) + ' ')
+    return blobatarSvg(seed, opts).replace('<svg ', '<svg data-bot-face="' + escapeAttribute(name) + '" ')
   } catch {
     return null
   }
+}
+
+/** Escape a value for an HTML attribute. `JSON.stringify` is not this.
+ *
+ *  It escapes a quote as `\"`, which is a JavaScript convention that HTML
+ *  does not honour: a parser reads the value as ending at that quote and
+ *  takes what follows as further attributes. Verified on this exact string —
+ *  `bot" onload="alert(1)` produced `data-bot-face="bot\"` followed by a
+ *  live `onload` attribute, and the result goes through
+ *  `dangerouslySetInnerHTML`. */
+function escapeAttribute(value) {
+  return String(value == null ? '' : value)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;')
 }
 
 /** The colored body of the avatar (no eyes). Platonic solids are a filled

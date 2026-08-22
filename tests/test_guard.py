@@ -549,3 +549,35 @@ def test_the_hop_handler_refuses_a_private_destination(monkeypatch):
         socket, "getaddrinfo", lambda *a, **kw: [(2, 1, 6, "", ("10.0.0.5", 0))]
     )
     assert utils.refuse_internal_url("http://interne.example/")
+
+
+def test_a_bot_name_cannot_open_an_attribute_in_the_desktop_app():
+    """`JSON.stringify` is not an HTML attribute escaper.
+
+    It escapes a quote as a backslash-quote, which is a JavaScript convention
+    HTML does not honour: the parser ends the value at that quote and reads
+    what follows as further attributes. Verified in node on the exact string
+    — `bot" onload="alert(1)` produced a live `onload` — and the markup goes
+    through `dangerouslySetInnerHTML`.
+
+    The finding the panel could not settle: four attempts, three timeouts and
+    a "no verdict", on a 1 660-line file. Judged by hand instead.
+    """
+    from thot.fusion.locate import hermes_root
+
+    root = hermes_root()
+    if root is None:
+        pytest.skip("Hermes n'est pas installé ici")
+    plugin = (root / "apps" / "desktop" / "src" / "plugins" / "hermes-bots"
+              / "plugin.js")
+    if not plugin.is_file():
+        pytest.skip("cette version de Hermes n'a pas l'application de bureau")
+
+    source = plugin.read_text(encoding="utf-8")
+    markup = source.split("function blobMarkup")[1].split("\nfunction ")[0]
+
+    assert "JSON.stringify(name)" not in markup, (
+        "JSON.stringify n'échappe pas pour un attribut HTML"
+    )
+    assert "escapeAttribute(name)" in markup
+    assert "&quot;" in source, "l'échappeur doit couvrir le guillemet"
