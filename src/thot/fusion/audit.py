@@ -16,7 +16,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 
-from thot.contracts import Severity
+from thot.contracts import Confidence, Severity
 
 
 @dataclass
@@ -40,6 +40,23 @@ class Part:
             found[finding.severity] = found.get(finding.severity, 0) + 1
         return found
 
+    def refuted(self) -> int:
+        """How many of this row's findings a stored verdict argued away.
+
+        Without this number the row lies by omission. A tree whose findings
+        were all refuted prints `416 finding(s) — 416 info`, which reads as
+        "nothing serious here" when the sentence is "an agent dismissed all
+        of it". The single-tree report has said this since `_confidence_note`;
+        the fused view — the one that exists to look at all three trees — had
+        not, and that is where the panel's work went invisible.
+        """
+        if self.result is None:
+            return 0
+        return sum(
+            1 for finding in self.result.findings
+            if finding.confidence is Confidence.REFUTED
+        )
+
     def line(self) -> str:
         if not self.ok:
             return f"{self.name:<8} —      {self.error}"
@@ -49,8 +66,10 @@ class Part:
             f"{counts[s]} {s.value}" for s in Severity if counts.get(s)
         )
         files = len(self.result.manifest.files)
+        dismissed = self.refuted()
         return (f"{self.name:<8} {files:>5} fichiers  {total:>4} finding(s)"
-                + (f" — {breakdown}" if breakdown else ""))
+                + (f" — {breakdown}" if breakdown else "")
+                + (f" · {dismissed} réfuté(s) en mémoire" if dismissed else ""))
 
 
 def parts() -> list[tuple[str, Path]]:
@@ -160,4 +179,8 @@ def summary(done: list[Part]) -> str:
     )
     failed = [part.name for part in done if not part.ok]
     tail = f" · {len(failed)} partie(s) non auditée(s) : {', '.join(failed)}" if failed else ""
-    return f"{total} finding(s) sur l'ensemble" + (f" — {breakdown}" if breakdown else "") + tail
+    dismissed = sum(part.refuted() for part in done)
+    # Said before the failures, because it changes how the whole count reads.
+    settled = f" · dont {dismissed} réfuté(s) en mémoire" if dismissed else ""
+    return (f"{total} finding(s) sur l'ensemble"
+            + (f" — {breakdown}" if breakdown else "") + settled + tail)

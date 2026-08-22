@@ -243,12 +243,18 @@ thot fusion audit             # auditer les trois arbres en une passe
 programme : trois commandes et une fusion mentale de trois rapports.
 
 ```
-thot       163 fichiers     4 finding(s) — 1 low · 3 info
-hermes    6924 fichiers   365 finding(s) — 13 high · 52 medium · 300 low
-prime      938 fichiers    14 finding(s) — 5 high · 8 medium · 1 low
+thot       186 fichiers     4 finding(s) — 4 info · 4 réfuté(s) en mémoire
+hermes    6924 fichiers   416 finding(s) — 416 info · 416 réfuté(s) en mémoire
+prime      938 fichiers    22 finding(s) — 22 info · 22 réfuté(s) en mémoire
 
-383 finding(s) sur l'ensemble — 18 high · 60 medium · 302 low · 3 info
+442 finding(s) sur l'ensemble — 442 info · dont 442 réfuté(s) en mémoire
 ```
+
+La colonne des réfutations est ce qui sépare « rien à signaler » de « tout a
+été écarté ». Sur cette machine, un panel a argumenté les trois arbres et
+retenu 450 réfutations ; sans mémoire les mêmes arbres donnent encore 2 high
+et 2 low pour Thot seul. Une ligne qui n'afficherait que `416 info` mentirait
+par omission — et c'est exactement ce qu'elle faisait avant.
 
 Une partie qui ne peut pas être auditée coûte sa ligne et jamais la passe :
 un Prime absent ne doit pas cacher ce que Hermes a dit.

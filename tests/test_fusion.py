@@ -722,3 +722,73 @@ def test_a_tree_with_nothing_to_judge_hands_its_share_to_the_next(monkeypatch,
 
     assert budgets[0] == 5
     assert budgets[1] == 10, "l'arbre vide n'a rien dépensé, sa part doit suivre"
+
+
+# --- ce que la mémoire a écarté doit se voir dans la vue fusionnée ---------
+#
+# Mesuré sur les trois arbres après une journée de panel : 450 verdicts, tous
+# des réfutations, et le rapport fusionné affichait « 442 finding(s) sur
+# l'ensemble — 442 info ». Un lecteur y lit « rien à signaler » alors que la
+# phrase exacte est « tout a été écarté par un agent ». Le simple audit le
+# disait déjà (`_confidence_note`) ; la vue qui sert à regarder les trois
+# arbres l'avait perdu.
+
+
+def _refuted_part(name, *, refuted, plausible=0):
+    from pathlib import Path
+    from types import SimpleNamespace
+
+    from thot.contracts import CodeRef, Confidence, Finding, Severity
+    from thot.fusion.audit import Part
+
+    def _finding(index, confidence, severity):
+        location = CodeRef(path=f"src/m{index}.py", line=index + 1)
+        return Finding(
+            id=Finding.compute_id("sink.eval", location),
+            rule="sink.eval",
+            severity=severity,
+            confidence=confidence,
+            location=location,
+            failure_scenario="peu importe",
+        )
+
+    findings = [
+        _finding(i, Confidence.REFUTED, Severity.INFO) for i in range(refuted)
+    ] + [
+        _finding(100 + i, Confidence.PLAUSIBLE, Severity.HIGH)
+        for i in range(plausible)
+    ]
+    result = SimpleNamespace(
+        findings=findings, manifest=SimpleNamespace(files=["a", "b"])
+    )
+    return Part(name=name, root=Path("/nowhere"), result=result)
+
+
+def test_a_row_says_how_many_of_its_findings_memory_dismissed():
+    part = _refuted_part("hermes", refuted=416)
+    line = part.line()
+
+    assert "416 finding(s)" in line
+    # « 416 info » seul se lit comme un arbre propre ; il faut la raison.
+    assert "réfut" in line
+
+
+def test_the_program_wide_line_does_not_read_as_a_clean_bill():
+    from thot.fusion.audit import summary
+
+    done = [_refuted_part("hermes", refuted=416), _refuted_part("thot", refuted=4)]
+
+    assert "réfut" in summary(done)
+
+
+def test_nothing_is_added_when_no_verdict_applies():
+    from thot.fusion.audit import summary
+
+    done = [_refuted_part("thot", refuted=0, plausible=3)]
+
+    assert "réfut" not in part_line(done[0])
+    assert "réfut" not in summary(done)
+
+
+def part_line(part):
+    return part.line()
