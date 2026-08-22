@@ -58,7 +58,12 @@ def print_report(result, hidden: int = 0) -> None:
     table = Table(show_lines=False, header_style="bold")
     table.add_column("Sévérité", no_wrap=True)
     table.add_column("Règle", no_wrap=True)
-    table.add_column("Emplacement")
+    # Folded, not ellipsised. Rich truncates by default, and this column was
+    # the only one left at that default — so `packages/coding-agent/src/tools/
+    # terminal/session-runner.ts:412` printed as `packages/codi…` while the
+    # symbol beside it wrapped in full. The one field a reader needs in order
+    # to open the file was the one being cut.
+    table.add_column("Emplacement", overflow="fold")
     table.add_column("Symbole", overflow="fold")
 
     rank = {severity: index for index, severity in enumerate(_ORDER)}
