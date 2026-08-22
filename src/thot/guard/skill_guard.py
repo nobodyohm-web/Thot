@@ -92,11 +92,25 @@ class ScanResult:
 
 THREAT_PATTERNS = [
     # ── Exfiltration: shell commands leaking secrets ──
+    # A secret in the request *body* is not authentication. This is the shape
+    # that actually leaks one, and it keeps CRITICAL.
+    (r'(?:curl|wget)\s+[^\n]*'
+     r'(?:-d\b|--data(?:-raw|-binary|-urlencode)?\b|-F\b|--form\b'
+     r'|--post-data\b|--post-file\b)'
+     r'[^\n]*\$\{?\w*(KEY|TOKEN|SECRET|PASSWORD|CREDENTIAL)',
+     "secret_in_request_body", "critical", "exfiltration",
+     "envoie un secret dans le corps d'une requête"),
+    # `curl -H "Authorization: Bearer $TOKEN"` is how an authenticated API is
+    # called, not how a secret is stolen — three shipped skills were blocked
+    # DANGEROUS for calling *their own* API, one of them with
+    # $CANVAS_API_TOKEN against the Canvas API. The guard cannot know whether
+    # the host owns the token, so it asks instead of forbidding: HIGH still
+    # requires a confirmation, and --force can pass it.
     (r'curl\s+[^\n]*\$\{?\w*(KEY|TOKEN|SECRET|PASSWORD|CREDENTIAL|API)',
-     "env_exfil_curl", "critical", "exfiltration",
+     "env_exfil_curl", "high", "exfiltration",
      "curl command interpolating secret environment variable"),
     (r'wget\s+[^\n]*\$\{?\w*(KEY|TOKEN|SECRET|PASSWORD|CREDENTIAL|API)',
-     "env_exfil_wget", "critical", "exfiltration",
+     "env_exfil_wget", "high", "exfiltration",
      "wget command interpolating secret environment variable"),
     (r'fetch\s*\([^\n]*\$\{?\w*(KEY|TOKEN|SECRET|PASSWORD|API)',
      "env_exfil_fetch", "critical", "exfiltration",
