@@ -466,3 +466,60 @@ def test_the_template_catalog_checks_the_address_it_was_handed():
     assert not any("fixed https catalog" in line for line in suppressions), (
         "la justification de la suppression était fausse"
     )
+
+
+def _hermes_package(dotted: str):
+    """Import a module from the vendored tree the way Hermes imports it.
+
+    As a package, not a file: these modules use relative imports, and a
+    loader that reads the file alone fails on `from . import security` —
+    which is how a source-reading test ends up standing in for a real one.
+    """
+    import importlib
+    import sys
+
+    from thot.fusion.locate import hermes_root
+
+    root = hermes_root()
+    if root is None:
+        pytest.skip("Hermes n'est pas installé ici")
+    if str(root) not in sys.path:
+        sys.path.insert(0, str(root))
+    try:
+        return importlib.import_module(dotted)
+    except Exception as exc:  # a tree that will not import is not this test
+        pytest.skip(f"{dotted} n'est pas importable ici : {exc}")
+
+
+def test_a2a_refuses_a_model_supplied_internal_url_when_run(monkeypatch):
+    """Run the guard rather than read it.
+
+    The previous version of this test asserted that a function was called,
+    and passed on a version that accepted `http://127.0.0.1:8080` — because
+    the function it named allows loopback while no token is configured.
+    """
+    tools = _hermes_package("plugins.platforms.a2a.tools")
+
+    for url in ("http://127.0.0.1:8080", "http://localhost/x",
+                "http://169.254.169.254/latest/"):
+        assert tools._resolve_peer(url) is None, url
+
+    kept = tools._resolve_peer("https://example.com")
+    assert kept and kept["url"] == "https://example.com"
+
+
+def test_the_template_catalog_refuses_an_internal_address_when_run():
+    """Second-order: the remote catalog picks the next URL through urljoin."""
+    templates = _hermes_package("plugins.memory.hindsight.templates")
+
+    with pytest.raises(ValueError) as raised:
+        templates._get_json("http://127.0.0.1:9/catalog.json")
+    assert "refused template catalog" in str(raised.value)
+
+
+def test_the_image_plugin_refuses_an_internal_source_when_run():
+    plugin = _hermes_package("plugins.image_gen.openai")
+
+    with pytest.raises(ValueError) as raised:
+        plugin._load_image_bytes("http://169.254.169.254/latest/meta-data/")
+    assert "refused image source" in str(raised.value)
