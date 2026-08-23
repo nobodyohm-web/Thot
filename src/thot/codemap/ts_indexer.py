@@ -130,8 +130,13 @@ def _interpolation_end(source: str, index: int) -> int:
     return length
 
 
-def _mask(source: str) -> str:
+def _mask(source: str, *, strings: bool = True) -> str:
     """Blank out comments and string bodies, keeping every offset and newline.
+
+    `strings=False` keeps the bodies and blanks only the comments, for a
+    caller that reads what a literal says rather than where it ends. A
+    comment can never run; a template literal can hold a program that does,
+    and `state-snapshot.ts` holds a Python one that Prime executes.
 
     Everything downstream works on offsets: braces inside a template literal
     would otherwise close a function three lines early, and a `//` inside a
@@ -192,24 +197,27 @@ def _mask(source: str) -> str:
                 continue
             if quote == "`" and current == "$" and index + 1 < length \
                     and source[index + 1] == "{":
-                out.append(_blank(source[segment_start:index]))
+                out.append(_blank(source[segment_start:index])
+                           if strings else source[segment_start:index])
                 out.append("${")
                 inner = index + 2
                 closing = _interpolation_end(source, inner)
-                out.append(_mask(source[inner:closing]))
+                out.append(_mask(source[inner:closing], strings=strings))
                 if closing < length:
                     out.append("}")
                 index = closing + 1
                 segment_start = index
                 continue
             if current == quote:
-                out.append(_blank(source[segment_start:index]))
+                out.append(_blank(source[segment_start:index])
+                           if strings else source[segment_start:index])
                 out.append(quote)
                 index += 1
                 break
             index += 1
         else:
-            out.append(_blank(source[segment_start:index]))
+            out.append(_blank(source[segment_start:index])
+                       if strings else source[segment_start:index])
 
     return "".join(out)
 

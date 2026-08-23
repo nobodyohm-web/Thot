@@ -604,8 +604,11 @@ def test_a_mention_in_a_typescript_comment_is_not_a_finding():
     assert scan_text("commands.ts", source) == []
 
 
-def test_code_quoted_inside_a_template_literal_is_not_a_finding():
-    """A generator holding Python in a backtick string is not running it."""
+def test_a_program_held_in_a_template_literal_is_still_code():
+    """Written the other way round first, and this project's own record
+    caught it: `state-snapshot.ts:163` holds a Python program Prime runs,
+    its `dill.load` is real, and the panel had confirmed it. A comment can
+    never run; a literal can be handed to an interpreter."""
     source = (
         "const program = `\n"
         "import dill\n"
@@ -613,7 +616,8 @@ def test_code_quoted_inside_a_template_literal_is_not_a_finding():
         "    payload = dill.load(fh)\n"
         "`;\n"
     )
-    assert scan_text("snapshot.ts", source) == []
+    assert [f.rule for f in scan_text("snapshot.ts", source)] \
+        == ["pattern.pickle_variants_load"]
 
 
 def test_a_real_call_in_typescript_is_still_found():
@@ -1053,3 +1057,17 @@ def test_a_yaml_imported_from_another_library_is_not_pyyaml():
     """`from ruamel import yaml` binds the same name to something else."""
     source = "from ruamel import yaml\ndoc = yaml.load(fh)\n"
     assert scan_text("cfg.py", source) == []
+
+
+def test_a_literal_inside_an_interpolation_is_kept_too():
+    """`state-snapshot.ts` interpolates into the program it builds.
+
+    The recursion has to carry the choice: a string nested inside `${…}` is
+    as much part of the program as the text around it.
+    """
+    source = ("const program = `\n"
+              "import dill\n"
+              "${prelude('payload = dill.load(fh)')}\n"
+              "`;\n")
+    assert [f.rule for f in scan_text("snapshot.ts", source)] \
+        == ["pattern.pickle_variants_load"]

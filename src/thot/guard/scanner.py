@@ -94,22 +94,23 @@ def code_only(relative: str, text: str) -> str:
     with spaces rather than deleting keeps every line number intact, so a real
     finding still points at the right line.
 
-    JavaScript and TypeScript are masked by the same routine the taint
-    engine uses, which is where this was measured: on the two shipped trees,
-    a JSDoc line reading "prefer this over `exec()`" and a Python snippet
-    held in a TypeScript template literal both became HIGH findings — ranked
-    above findings that had a traced path behind them.
+    JavaScript and TypeScript get their comments blanked and their string
+    bodies kept, by the routine the taint engine already uses. Comments,
+    because a JSDoc line reading "prefer this over `exec()`" was a HIGH
+    finding on Hermes, ranked above findings with a traced path behind them.
+    Bodies kept, because blanking them too was an over-reach that this
+    project's own record caught: `state-snapshot.ts:163` holds a Python
+    program in a template literal, Prime runs it, its `dill.load` is real,
+    and the panel had confirmed it before the blanking silenced it.
 
     Every other language is scanned as-is, and so is a file that will not
-    tokenise — a syntax error must never silently disable the sweep. Blanking
-    literals is safe only while no rule needs to match inside one; none of
-    the 25 looks for a secret or a URL.
+    tokenise — a syntax error must never silently disable the sweep.
     """
     if relative.endswith(_JS_SUFFIXES):
         from thot.codemap.ts_indexer import _mask
 
         try:
-            return _mask(text)
+            return _mask(text, strings=False)
         except RecursionError:
             # Nested template literals exhaust the masker's mutual recursion.
             # Until now the only caller was the indexer, which catches per
@@ -225,7 +226,7 @@ def _literal_python_argument(fragment: str) -> bool:
 
 
 def _constant_command(
-    relative: str, masked: str, source: str, span: tuple[int, int]
+    relative: str, structural: str, source: str, span: tuple[int, int]
 ) -> bool:
     """Whether the call at this match is handed a literal command.
 
@@ -236,16 +237,16 @@ def _constant_command(
     at `cli_commands_mixin.py:3198` would read as constant.
     """
     start, end = span
-    opening = masked.find("(", start)
+    opening = structural.find("(", start)
     if opening == -1 or opening > end + 2:
         # The match is not a call — `from os import system` is the rule's own
         # substring, and the next `(` in the file belongs to something else.
         return False
-    argument = _first_argument(masked, opening)
+    argument = _first_argument(structural, opening)
     if argument is None:
         return False
     left, right = argument
-    if _IDENTIFIER.search(masked[left:right]):
+    if _IDENTIFIER.search(structural[left:right]):
         # A name is read — which does not settle it where the language can
         # be parsed and the names might only pick between literals.
         #
@@ -259,7 +260,7 @@ def _constant_command(
     return "{" not in source[left:right]
 
 
-def _is_declaration(masked: str, span: tuple[int, int]) -> bool:
+def _is_declaration(structural: str, span: tuple[int, int]) -> bool:
     """Whether this match declares a function rather than calling one.
 
     The last shape the sweep could not tell apart: a method named `exec` in
@@ -279,13 +280,13 @@ def _is_declaration(masked: str, span: tuple[int, int]) -> bool:
     the wrong place and the declaration would read as a call.
     """
     start, end = span
-    opening = masked.find("(", start)
+    opening = structural.find("(", start)
     if opening == -1 or opening > end + 2:
         return False
-    after = _skip_balanced(masked, opening, "(", ")")
+    after = _skip_balanced(structural, opening, "(", ")")
     if after == opening:
         return False  # unclosed: not something to draw a conclusion from
-    tail = masked[after:after + 200].lstrip()
+    tail = structural[after:after + 200].lstrip()
     return tail.startswith("{") or tail.startswith(":")
 
 
@@ -295,6 +296,25 @@ def _is_declaration(masked: str, span: tuple[int, int]) -> bool:
 # resolving to `getattr(yaml, "CSafeLoader", None) or yaml.SafeLoader`.
 _YAML_RULE = "unsafe_yaml_load"
 _SAFE_LOADER = "SafeLoader"
+
+
+def _structural(relative: str, text: str) -> str:
+    """The same text with literals opaque, for reasoning about offsets.
+
+    `code_only` keeps JavaScript string bodies on purpose — a rule has to
+    read what a literal says. Balancing brackets is the opposite need: the
+    comma in `execSync("a,b", opts)` is not an argument separator, and the
+    brace in a template holding a program is not a body. Same offsets, two
+    readings, and the structural one is never matched against.
+    """
+    if relative.endswith(_JS_SUFFIXES):
+        from thot.codemap.ts_indexer import _mask
+
+        try:
+            return _mask(text)
+        except RecursionError:
+            return text
+    return code_only(relative, text)
 
 
 def _is_none(node: ast.AST) -> bool:
@@ -448,7 +468,8 @@ def _is_foreign_name(
 
 
 def _fire_line(
-    pattern: dict, name: str, relative: str, masked: str, source: str
+    pattern: dict, name: str, relative: str,
+    masked: str, structural: str, source: str,
 ) -> int | None:
     """The line to report, or None when every match on the rule is inert."""
     module = _BOUND_FROM.get(name)
@@ -467,11 +488,11 @@ def _fire_line(
         line = masked.count("\n", 0, span[0]) + 1
         if yaml_lines is not None and line not in yaml_lines:
             continue
-        if module and _is_foreign_name(source, masked, span, module):
+        if module and _is_foreign_name(source, structural, span, module):
             continue
-        if judged and _constant_command(relative, masked, source, span):
+        if judged and _constant_command(relative, structural, source, span):
             continue
-        if judged and _is_declaration(masked, span):
+        if judged and _is_declaration(structural, span):
             continue
         return line
     return None
@@ -539,6 +560,7 @@ def scan_text(relative: str, text: str) -> list[Finding]:
     """Every rule that fires in one file, at most once each."""
     findings: list[Finding] = []
     scannable = code_only(relative, text)
+    structural = _structural(relative, text)
     for pattern in SECURITY_PATTERNS:
         name = pattern.get("ruleName", "?")
         try:
@@ -548,7 +570,8 @@ def scan_text(relative: str, text: str) -> list[Finding]:
             continue
 
         impact = _IMPACT.get(name, _DEFAULT_IMPACT)
-        line = _fire_line(pattern, name, relative, scannable, text)
+        line = _fire_line(pattern, name, relative,
+                          scannable, structural, text)
         if line is None:
             continue  # every match is a literal: nothing to inject into
         location = CodeRef(
