@@ -75,7 +75,7 @@ def _analyse_source(tmp_path, code, filename="v.py"):
 def test_sql_injection_through_concatenation_is_found(tmp_path):
     candidates = _analyse_source(
         tmp_path,
-        "import sys\n\n\ndef main():\n"
+        "import sqlite3\nimport sys\n\n\ndef main():\n"
         "    name = sys.argv[1]\n"
         "    cursor.execute(\"SELECT * FROM t WHERE n = '\" + name + \"'\")\n",
     )
@@ -125,7 +125,7 @@ def test_shlex_quote_breaks_the_taint(tmp_path):
 def test_tainted_parameter_through_concatenation_crosses_functions(tmp_path):
     candidates = _analyse_source(
         tmp_path,
-        "import sys\n\n\ndef lookup(conn, name):\n"
+        "import sqlite3\nimport sys\n\n\ndef lookup(conn, name):\n"
         "    conn.execute('SELECT * FROM t WHERE n = ' + name)\n\n\n"
         "def main():\n"
         "    value = sys.argv[1]\n"
@@ -505,3 +505,75 @@ def test_an_ordinary_parameter_still_does(tmp_path):
     found = _two_files(tmp_path, "def launch(command):", "    launch(cmd)")
 
     assert any(c.sink.path == "helpers.py" for c in found), found
+
+
+# -- `execute` is a method name, not a database ---------------------------
+#
+# `sink.sql` matches any method called `execute`, whatever holds it. On
+# Hermes that was 110 candidates, none ever confirmed, and among them
+# `relay_llm.execute(kwargs)`, `pipeline.execute(ctx)`, `env.execute(cmd)`
+# and a console engine's `engine.execute("cron pause 4")`.
+
+
+def _tree(tmp_path, source: str):
+    (tmp_path / "src").mkdir(parents=True, exist_ok=True)
+    (tmp_path / "src" / "app.py").write_text(source, encoding="utf-8")
+    return tmp_path
+
+
+QUERY = '''\
+import sys
+{importation}
+
+def handler():
+    name = sys.argv[1]
+    run(name)
+
+
+def run(name):
+    {receveur}.execute(f"SELECT * FROM t WHERE n = '{{name}}'")
+'''
+
+
+def test_execute_is_a_sink_where_a_database_is_imported(tmp_path):
+    repo = _tree(tmp_path, QUERY.format(importation="import sqlite3",
+                                        receveur="conn"))
+    assert "sink.sql" in {c.rule for c in analyse(repo)}
+
+
+def test_execute_without_a_database_is_not_a_sink(tmp_path):
+    """A console engine, an LLM relay and a pipeline all have one."""
+    repo = _tree(tmp_path, QUERY.format(importation="", receveur="engine"))
+    assert "sink.sql" not in {c.rule for c in analyse(repo)}
+
+
+def test_a_driver_reached_through_a_package_still_counts(tmp_path):
+    repo = _tree(tmp_path, QUERY.format(importation="from django.db import connection",
+                                        receveur="conn"))
+    assert "sink.sql" in {c.rule for c in analyse(repo)}
+
+
+def test_a_rule_that_needs_no_module_is_unaffected(tmp_path):
+    repo = _tree(tmp_path, "import sys, os\n\n"
+                           "def handler():\n"
+                           "    os.system(sys.argv[1])\n")
+    assert "sink.os.system" in {c.rule for c in analyse(repo)}
+
+
+def test_a_connection_handed_in_without_a_driver_goes_unseen(tmp_path):
+    """The gate's price, pinned rather than left to be discovered.
+
+    A file that receives a connection and imports no driver is real — one
+    production site on Hermes out of 110 candidates — and this is the cost
+    of not reporting the twenty-eight `execute` calls that were a console
+    engine, an LLM relay and a pipeline.
+    """
+    candidates = _analyse_source(
+        tmp_path,
+        "import sys\n\n\ndef lookup(conn, name):\n"
+        "    conn.execute('SELECT * FROM t WHERE n = ' + name)\n\n\n"
+        "def main():\n"
+        "    value = sys.argv[1]\n"
+        "    lookup(None, value)\n",
+    )
+    assert {c.rule for c in candidates} == set()

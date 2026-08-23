@@ -20,6 +20,8 @@ in the call graph.
 from __future__ import annotations
 
 import ast
+import re
+from functools import lru_cache
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -179,7 +181,38 @@ def _ordered_nodes(node: ast.AST) -> list[ast.AST]:
                                                  getattr(n, "col_offset", 0)))
 
 
-def _analyse_body(symbol: Symbol, node: ast.AST) -> _Facts:
+_IMPORT_LINE = re.compile(r"^\s*(?:import|from)\s+([A-Za-z_][\w.]*)", re.M)
+
+
+@lru_cache(maxsize=8192)
+def _imported_modules(path: Path) -> frozenset[str]:
+    """The modules a file imports, read from its import lines.
+
+    Textual rather than parsed, for the reason the JavaScript catalog gives
+    for the same gate: the indexer has already paid for one parse of every
+    file, and an import sitting in a comment costs a gate that fires once too
+    often — never one that fires too rarely.
+    """
+    try:
+        text = Path(path).read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return frozenset()
+    return frozenset(_IMPORT_LINE.findall(text))
+
+
+def _available(rule, imported: frozenset[str]) -> bool:
+    """Whether a rule that names required modules can fire in this file."""
+    if not rule.needs:
+        return True
+    return any(
+        name == need or name.startswith(need + ".")
+        for need in rule.needs
+        for name in imported
+    )
+
+
+def _analyse_body(symbol: Symbol, node: ast.AST,
+                  imported: frozenset[str] = frozenset()) -> _Facts:
     facts = _Facts(symbol=symbol)
     params = set(symbol.params)
 
@@ -268,6 +301,8 @@ def _analyse_body(symbol: Symbol, node: ast.AST) -> _Facts:
                           site=f"{called}#{seen_before}")
 
             rule = match_sink(called)
+            if rule is not None and not _available(rule, imported):
+                rule = None
 
             if rule is not None and rule.dangerous_args:
                 considered = [
@@ -350,7 +385,9 @@ def _find_candidates(
         node = node_index.get((symbol.path, symbol.lineno))
         if node is None:
             continue
-        facts_by_name[symbol.name] = _analyse_body(symbol, node)
+        facts_by_name[symbol.name] = _analyse_body(
+            symbol, node, _imported_modules(root / symbol.path)
+        )
 
     by_short: dict[str, list[str]] = {}
     for name in facts_by_name:

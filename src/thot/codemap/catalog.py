@@ -24,6 +24,12 @@ class SinkRule:
     description: str
     dangerous_args: tuple[int, ...] = (0,)
     match_mode: str = "qualified"
+    # Modules the file must import for this rule to mean anything. Only a
+    # rule matching a bare method name needs it: `execute` belongs to a
+    # database cursor, an LLM relay, a pipeline and a console engine alike,
+    # and the JavaScript catalog has gated its own bare names this way from
+    # the start.
+    needs: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -100,6 +106,13 @@ DEFAULT_SINKS: tuple[SinkRule, ...] = (
         impact=Severity.HIGH,
         description="Exécution d'une requête SQL",
         match_mode="method",
+        # The price, measured on Hermes: a connection handed to a file that
+        # imports no driver goes unseen — one production site out of 110
+        # candidates, against 28 that were never SQL at all.
+        needs=("sqlite3", "aiosqlite", "psycopg", "psycopg2", "pymysql",
+               "MySQLdb", "mysql", "mariadb", "sqlalchemy", "asyncpg",
+               "duckdb", "oracledb", "cx_Oracle", "pyodbc", "django",
+               "peewee", "tortoise", "databases", "sqlmodel"),
     ),
     SinkRule(
         id="sink.fs.write",
