@@ -745,3 +745,47 @@ def test_the_readme_shows_every_check_the_doctor_runs(tmp_path):
     assert listed == [c.name for c in checks], (
         f"README : {listed}\n`doctor.run` : {[c.name for c in checks]}"
     )
+
+
+# -- the scheduler that runs inside the session ---------------------------
+
+
+def test_a_running_session_scheduler_settles_the_loop(monkeypatch):
+    """launchd's troubles stop deciding once something else serves the job.
+
+    On this machine the unit cannot start at all — macOS refuses the tree to
+    a launchd agent — so a check that only ever asked about the unit called
+    the loop broken while it was running.
+    """
+    from thot import doctor
+    from thot.schedule import daemon
+    from thot.schedule.jobs import Job
+
+    monkeypatch.setattr(
+        "thot.schedule.jobs.load",
+        lambda: [Job(name="improve", root="fusion", schedule="daily",
+                     deep=True, budget=8)],
+    )
+    monkeypatch.setattr(daemon, "running", lambda: 4242)
+
+    ok, detail = doctor._loop()
+    assert ok
+    assert "4242" in detail
+
+
+def test_without_a_scheduler_the_unit_still_decides(monkeypatch):
+    from thot import doctor
+    from thot.schedule import daemon
+    from thot.schedule.jobs import Job
+
+    monkeypatch.setattr(
+        "thot.schedule.jobs.load",
+        lambda: [Job(name="improve", root="fusion", schedule="daily",
+                     deep=True, budget=8)],
+    )
+    monkeypatch.setattr(daemon, "running", lambda: None)
+    monkeypatch.setattr(doctor, "LAUNCH_AGENTS", Path("/nulle/part"),
+                        raising=False)
+
+    ok, detail = doctor._loop()
+    assert "planificateur de session" not in detail

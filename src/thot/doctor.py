@@ -314,6 +314,17 @@ def _loop():
 
     unit = LAUNCH_AGENTS / f"{label(job)}.plist"
     detail = f"{job.schedule}, {job.budget} candidats par arbre"
+
+    # A scheduler running in the user's session serves the same jobs, and on
+    # macOS it is the only thing that can when the tree lives under a folder
+    # TCC guards. Asked before the unit, because once it runs the unit's
+    # failings no longer decide whether anything gets audited.
+    from thot.schedule import daemon
+
+    live = daemon.running()
+    if live is not None:
+        return True, detail + f" · planificateur de session actif, pid {live}"
+
     if not unit.is_file():
         return True, detail + " · unité non écrite (cron ?)"
 

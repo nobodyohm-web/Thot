@@ -155,6 +155,17 @@ def build_parser() -> argparse.ArgumentParser:
     )
     sched_run.add_argument("name", nargs="?")
 
+    schedule_sub.add_parser(
+        "start",
+        help="Démarrer le planificateur dans ta session (macOS : le seul qui "
+             "puisse lire Desktop, Documents et Downloads)",
+    )
+    schedule_sub.add_parser("stop", help="Arrêter le planificateur")
+    schedule_sub.add_parser("status", help="Le planificateur tourne-t-il ?")
+    schedule_sub.add_parser(
+        "daemon", help="La boucle elle-même (appelée par « start »)"
+    )
+
     deps = subparsers.add_parser(
         "deps", help="Auditer les dépendances d'un dépôt contre OSV.dev"
     )
@@ -672,6 +683,9 @@ def _cmd_schedule(args) -> int:
     if action == "run":
         return _run_scheduled(args.name)
 
+    if action in {"start", "stop", "status", "daemon"}:
+        return _cmd_scheduler(action)
+
     programmed = jobs.load()
     if not programmed:
         print("Aucun audit programmé.")
@@ -680,6 +694,41 @@ def _cmd_schedule(args) -> int:
     for job in programmed:
         flag = " --deep" if job.deep else ""
         print(f"{job.name:<14} {job.schedule:<8} seuil {job.threshold:<8} {job.root}{flag}")
+    return EXIT_OK
+
+
+def _cmd_scheduler(action: str) -> int:
+    """Start, stop or report on the scheduler that runs in this session."""
+    from thot.schedule import daemon
+
+    if action == "daemon":
+        return daemon.serve()
+
+    if action == "stop":
+        stopped = daemon.stop()
+        print("Planificateur arrêté." if stopped
+              else "Aucun planificateur en cours.")
+        return EXIT_OK
+
+    if action == "status":
+        pid = daemon.running()
+        if pid is None:
+            print("Planificateur : arrêté.")
+            print("  thot schedule start")
+            return EXIT_OK
+        print(f"Planificateur : en cours, pid {pid}.")
+        for name, when in sorted(daemon.read_state().items()):
+            print(f"  {name:<14} dernier passage {when:%Y-%m-%d %H:%M}")
+        return EXIT_OK
+
+    try:
+        pid, destination = daemon.start()
+    except RuntimeError as exc:
+        print(f"Le planificateur n'a pas démarré : {exc}", file=sys.stderr)
+        return EXIT_ERROR
+    print(f"Planificateur démarré dans ta session · pid {pid}")
+    print(f"  journal : {destination}")
+    print("  Il s'arrête avec la machine ; relance-le après un redémarrage.")
     return EXIT_OK
 
 
