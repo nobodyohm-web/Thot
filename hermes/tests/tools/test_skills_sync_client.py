@@ -1113,3 +1113,52 @@ class TestEmptyActualConflict:
         assert result["ok"] is True
         assert result.get("recovered_stale_head") is True
         assert state.refs[ssc.user_head_ref(identity["owner"])] == result["head"]
+
+
+# ---------------------------------------------------------------------------
+# Org skill tree keys reach shutil.rmtree
+# ---------------------------------------------------------------------------
+
+class _TreeOnlyClient:
+    """Just enough client to walk a tree the server chose to return."""
+
+    def __init__(self, trees):
+        self.trees = trees
+
+    def get_tree_json(self, tree_hash, org_scope=False):
+        return self.trees[tree_hash]
+
+
+class TestOrgSkillTreeKeysAreSafe:
+    """`materialize_tree` refuses `..` and `/` in an entry name and says so
+    in its docstring. The walker that keys skills by path did not, and its
+    keys become the directory `pull_org_skills` hands to `shutil.rmtree`
+    before re-materialising — so a hostile or compromised org server could
+    name a subtree `..` and have a directory outside the mirror removed.
+    """
+
+    def _client(self, hostile_name):
+        return _TreeOnlyClient({
+            "root": {"entries": [
+                {"name": hostile_name, "kind": ssc.KIND_TREE, "hash": "bad"},
+                {"name": "normal", "kind": ssc.KIND_TREE, "hash": "good"},
+            ]},
+            "bad": {"entries": [
+                {"name": "SKILL.md", "kind": ssc.KIND_BLOB, "hash": "b"}]},
+            "good": {"entries": [
+                {"name": "SKILL.md", "kind": ssc.KIND_BLOB, "hash": "b"}]},
+        })
+
+    @pytest.mark.parametrize("hostile", ["..", ".", "../..", "/etc", "a/b", ""])
+    def test_an_unsafe_entry_name_never_becomes_a_key(self, hostile):
+        found = ssc._skill_trees_of_root(self._client(hostile), "root")
+        assert list(found) == ["normal"], found
+
+    def test_a_key_stays_inside_the_destination(self, tmp_path):
+        """The property that matters, stated as the caller uses it."""
+        from pathlib import PurePosixPath
+
+        found = ssc._skill_trees_of_root(self._client(".."), "root")
+        for rel_path in found:
+            dest = (tmp_path / PurePosixPath(rel_path)).resolve()
+            assert dest == tmp_path.resolve() or tmp_path.resolve() in dest.parents

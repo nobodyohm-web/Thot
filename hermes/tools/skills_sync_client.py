@@ -1206,7 +1206,17 @@ def _skill_trees_of_root(
             return
         for e in entries:
             if e.get("kind") == KIND_TREE:
-                child_prefix = f"{prefix}/{e['name']}" if prefix else e["name"]
+                name = e.get("name", "")
+                # Same refusal as materialize_tree, for the same reason one
+                # step later: these keys become the directory pull_org_skills
+                # hands to shutil.rmtree, so a subtree named ".." removes a
+                # directory outside the org mirror.
+                if not name or "/" in name or name in (".", ".."):
+                    logger.warning(
+                        "skills_sync_client: skipping unsafe tree entry %r", name
+                    )
+                    continue
+                child_prefix = f"{prefix}/{name}" if prefix else name
                 _walk(e["hash"], child_prefix)
 
     _walk(root_tree_hash, "")
