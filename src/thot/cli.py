@@ -384,6 +384,11 @@ def build_parser() -> argparse.ArgumentParser:
         help="Publier une décision dans .thot/verdicts.json, versionné avec le code",
     )
     verdicts.add_argument(
+        "--share-all", action="store_true",
+        help="Publier toutes les décisions qui concernent ce dépôt — la "
+             "mémoire est commune aux arbres, le fichier ne l'est pas",
+    )
+    verdicts.add_argument(
         "--where", action="store_true",
         help="Dire d'où viennent les décisions et où elles sont écrites",
     )
@@ -853,6 +858,9 @@ def _cmd_verdicts(args) -> int:
         if args.share:
             return _share_verdict(memory, args.share, root)
 
+        if getattr(args, "share_all", False):
+            return _share_all_verdicts(memory, root)
+
         if args.show:
             verdict = memory.recall(args.show)
             if verdict is None:
@@ -994,6 +1002,16 @@ def _share_verdict(memory, finding_id: str, root) -> int:
         print(f"Aucune décision pour {finding_id}.", file=sys.stderr)
         return EXIT_USAGE
 
+    from thot.memory.base import concerns
+
+    if not concerns(verdict, root):
+        # The memory is shared across trees; this file is committed with one
+        # of them. Published anyway, the decision would sit in a repository
+        # that holds no finding to match it and read as that repository's
+        # own judgement.
+        print(f"« {verdict.path} » n'est pas dans {root}.", file=sys.stderr)
+        return EXIT_USAGE
+
     shared = JsonMemory.for_repo(root)
     if not shared.is_available():
         print(f"Impossible d'écrire dans {repo_verdicts(root)}.", file=sys.stderr)
@@ -1001,6 +1019,32 @@ def _share_verdict(memory, finding_id: str, root) -> int:
     shared.remember(verdict)
     print(f"{verdict.rule} à {verdict.path} — {verdict.decision.value}")
     print(f"Publié dans {shared.path}. Commite-le pour le partager.")
+    return EXIT_OK
+
+
+def _share_all_verdicts(memory, root) -> int:
+    """Publish every decision that is about this repository's own code.
+
+    Sharing one identifier at a time is right for a judgement someone just
+    took. It is not a way to move a memory: this machine holds hundreds, and
+    a fresh clone that cannot read them argues every one of them again.
+    """
+    from thot.memory import JsonMemory
+    from thot.memory.base import concerns
+
+    mine = [v for v in memory.all_verdicts() if concerns(v, root)]
+    if not mine:
+        print(f"Aucune décision ne concerne {root}.")
+        return EXIT_OK
+
+    shared = JsonMemory.for_repo(root)
+    if not shared.is_available():
+        print(f"Impossible d'écrire dans {repo_verdicts(root)}.", file=sys.stderr)
+        return EXIT_USAGE
+    for verdict in mine:
+        shared.remember(verdict)
+    print(f"{len(mine)} décision(s) publiée(s) dans {shared.path}.")
+    print("Commite-le pour les partager.")
     return EXIT_OK
 
 

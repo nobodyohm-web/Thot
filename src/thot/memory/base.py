@@ -102,6 +102,28 @@ class Memory(Protocol):
     def forget(self, finding_id: str) -> bool: ...
 
 
+def concerns(verdict: "Verdict", root) -> bool:
+    """Whether this decision is about a file the repository actually holds.
+
+    The memory is shared across trees; `.thot/verdicts.json` is committed
+    with one of them. Without this the publish step happily wrote a decision
+    about Hermes into Prime's file, where nobody would ever match it to a
+    finding and everybody would read it as Prime's own judgement.
+
+    Resolved before comparing, so `../voisin/app.py` — which may well exist —
+    is not mistaken for something inside the tree.
+    """
+    from pathlib import Path
+
+    if not verdict.path:
+        return False
+    root = Path(root).resolve()
+    target = (root / verdict.path).resolve()
+    if not target.exists():
+        return False
+    return root == target or root in target.parents
+
+
 def apply_memory(findings: list[Finding], memory: Memory) -> list[Finding]:
     """Fold past decisions into a fresh run.
 

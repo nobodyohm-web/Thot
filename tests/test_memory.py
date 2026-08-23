@@ -509,3 +509,76 @@ def test_a_local_verdict_never_lands_in_the_committed_file(tmp_path):
         assert reread.recall("perso") is not None, "le verdict local est perdu"
     finally:
         getattr(reread, "close", lambda: None)()
+
+
+# -- a decision belongs to the code it is about ---------------------------
+#
+# The memory is shared across trees while `.thot/verdicts.json` is committed
+# with one repository. Publishing without asking which is which put a
+# decision about Hermes into Prime's file, and nothing said so.
+
+
+def test_a_decision_belongs_to_a_repository_that_holds_its_file(tmp_path):
+    from thot.memory.base import Decision, Verdict, concerns
+
+    (tmp_path / "src").mkdir()
+    (tmp_path / "src" / "app.py").write_text("x = 1\n")
+    mine = Verdict("a", Decision.REFUTED, path="src/app.py")
+    theirs = Verdict("b", Decision.REFUTED, path="autre/projet.py")
+
+    assert concerns(mine, tmp_path)
+    assert not concerns(theirs, tmp_path)
+
+
+def test_a_decision_without_a_path_belongs_nowhere(tmp_path):
+    from thot.memory.base import Decision, Verdict, concerns
+
+    assert not concerns(Verdict("a", Decision.REFUTED), tmp_path)
+
+
+def test_a_path_climbing_out_of_the_tree_does_not_belong(tmp_path):
+    """`../voisin/app.py` may well exist, and is not this repository's."""
+    from thot.memory.base import Decision, Verdict, concerns
+
+    neighbour = tmp_path.parent / "voisin"
+    neighbour.mkdir(exist_ok=True)
+    (neighbour / "app.py").write_text("x = 1\n")
+    escaped = Verdict("a", Decision.REFUTED, path="../voisin/app.py")
+
+    assert not concerns(escaped, tmp_path)
+
+
+def test_publishing_refuses_a_decision_about_another_tree(tmp_path, capsys):
+    from thot.cli import EXIT_USAGE, _share_verdict
+    from thot.memory.base import Decision, Verdict
+
+    class OneVerdict:
+        def recall(self, finding_id):
+            return Verdict("a", Decision.REFUTED, path="ailleurs/app.py",
+                           rule="sink.exec")
+
+    assert _share_verdict(OneVerdict(), "a", tmp_path) == EXIT_USAGE
+    assert "ailleurs/app.py" in capsys.readouterr().err
+    assert not (tmp_path / ".thot" / "verdicts.json").exists()
+
+
+def test_publishing_everything_takes_only_this_tree_s_decisions(tmp_path):
+    import json
+
+    from thot.cli import EXIT_OK, _share_all_verdicts
+    from thot.memory.base import Decision, Verdict
+
+    (tmp_path / "src").mkdir()
+    (tmp_path / "src" / "app.py").write_text("x = 1\n")
+
+    class Everything:
+        def all_verdicts(self):
+            return [
+                Verdict("ici", Decision.REFUTED, path="src/app.py", rule="r1"),
+                Verdict("ailleurs", Decision.REFUTED, path="autre/x.py",
+                        rule="r2"),
+            ]
+
+    assert _share_all_verdicts(Everything(), tmp_path) == EXIT_OK
+    published = json.loads((tmp_path / ".thot" / "verdicts.json").read_text())
+    assert [v["finding_id"] for v in published["verdicts"]] == ["ici"]
