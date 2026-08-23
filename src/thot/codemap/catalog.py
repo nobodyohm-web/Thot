@@ -120,6 +120,11 @@ DEFAULT_SINKS: tuple[SinkRule, ...] = (
                   "shutil.rmtree"),
         impact=Severity.MEDIUM,
         description="Accès au système de fichiers",
+        # Same profile as `sink.network` below and the same cause — read its
+        # note. 68 refutations, qualified patterns, and the taint arriving
+        # through a parameter. Worth its noise all the same: this is the rule
+        # whose candidate the panel confirmed into a real path traversal, a
+        # tree entry named `..` reaching `shutil.rmtree` in Hermes.
     ),
     SinkRule(
         id="sink.network",
