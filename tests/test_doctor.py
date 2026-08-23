@@ -844,3 +844,26 @@ def test_a_session_scheduler_is_not_announced_over_a_working_unit(monkeypatch):
     _, detail = doctor._loop()
     assert "4242" not in detail
     assert "1 passage(s)" in detail
+
+
+def test_the_remedy_that_needs_nothing_is_named_first(monkeypatch, tmp_path):
+    """Two remedies were offered and both ask something of the machine —
+    move the tree, or open Full Disk Access in System Settings. The third
+    asks nothing and is the one this session had to discover."""
+    from thot import doctor
+    from thot.schedule.jobs import FUSION, Job
+
+    monkeypatch.setattr(
+        "thot.schedule.jobs.load",
+        lambda: [Job(name="improve", root=FUSION, deep=True, budget=8)],
+    )
+    monkeypatch.setattr("thot.schedule.install.launchd_runs", lambda label: 0)
+    monkeypatch.setattr("thot.schedule.daemon.running", lambda: None)
+    monkeypatch.setattr(
+        doctor, "unreachable_from_launchd",
+        lambda paths, home=None: ["/Users/qui/Desktop/Thot/src"],
+    )
+
+    ok, detail = doctor._loop()
+    assert not ok
+    assert "thot schedule start" in detail

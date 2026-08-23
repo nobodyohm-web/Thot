@@ -347,11 +347,12 @@ def _loop():
     )
     if guarded:
         return False, (
-            detail + f" · l'import passe par {guarded[0]}, que macOS refuse à "
-            "un agent launchd — le job se bloque au démarrage de "
-            "l'interpréteur, sans écrire une ligne. Installe Thot hors de "
-            "Desktop/Documents/Downloads, ou donne l'accès complet au disque "
-            "à l'interpréteur qui exécute l'unité."
+            detail + f" · l'import passe par {guarded[0]}, que macOS peut "
+            "refuser à un agent launchd — le job se bloque alors au démarrage "
+            "de l'interpréteur, sans écrire une ligne. Trois remèdes : "
+            "`thot schedule start`, qui ne demande rien au système ; installer "
+            "Thot hors de Desktop/Documents/Downloads ; ou donner l'accès "
+            "complet au disque à l'interpréteur qui exécute l'unité."
         )
 
 
@@ -388,10 +389,11 @@ def _loop():
     )
     if blind:
         return False, (
-            detail + f" · l'arbre audité {blind[0]} est refusé à un agent "
-            "launchd : la tâche démarrera et ne lira rien. Même remède — "
-            "sortir l'arbre de Desktop/Documents/Downloads, ou accorder "
-            "l'accès complet au disque."
+            detail + f" · l'arbre audité {blind[0]} peut être refusé à un "
+            "agent launchd : la tâche démarrerait et ne lirait rien. Mêmes "
+            "remèdes — `thot schedule start`, sortir l'arbre de "
+            "Desktop/Documents/Downloads, ou accorder l'accès complet au "
+            "disque."
         )
     # Last, because it is the symptom: every check above names a cause, and a
     # cause is more useful than "nothing happened". When none of them fires
