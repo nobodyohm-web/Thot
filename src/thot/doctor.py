@@ -315,9 +315,10 @@ def _loop():
     unit = LAUNCH_AGENTS / f"{label(job)}.plist"
     detail = f"{job.schedule}, {job.budget} candidats par arbre"
 
-    # Asked of launchd rather than inferred. A unit sat here for weeks while
-    # nothing ran, so "a unit exists" answers nothing; `runs` is what
-    # actually happened.
+    # Asked of launchd rather than inferred. This unit was loaded and
+    # aborted at interpreter start on the night of 2026-08-22 — no run
+    # recorded — and completed on the 23rd, so "a unit exists" answers
+    # nothing; `runs` is what actually happened.
     executed = launchd_runs(label(job)) or 0
     if executed:
         detail += f" · unité launchd, {executed} passage(s)"

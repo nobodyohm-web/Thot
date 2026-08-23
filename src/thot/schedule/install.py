@@ -191,8 +191,9 @@ def launchd_runs(unit_label: str) -> int | None:
 def already_served(job) -> bool:
     """Whether launchd is already running this job, demonstrably.
 
-    Not "is a unit installed" — one was installed here for weeks while
-    nothing ran. The question is whether launchd has ever executed it, which
+    Not "is a unit installed" — this one was loaded and aborted at
+    interpreter start, leaving no run behind, and completed the following
+    night. The question is whether launchd has ever executed it, which
     launchd itself answers. A second scheduler serving the same job would
     double the work and the tokens it spends, which is exactly what happened
     the first night both existed.

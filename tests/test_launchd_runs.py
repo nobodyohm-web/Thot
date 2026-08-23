@@ -1,7 +1,8 @@
 """Whether launchd is already running a job, asked of launchd.
 
-A unit was installed here for weeks while nothing ran, so "a unit exists"
-never answered it. `launchctl print` reports what actually happened.
+A unit was loaded here and aborted at interpreter start, leaving no run
+behind, so "a unit exists" never answered it. `launchctl print` reports
+what actually happened.
 """
 
 from __future__ import annotations
@@ -41,7 +42,7 @@ def test_a_key_that_merely_ends_in_runs_is_not_it():
 
 
 def test_a_job_launchd_has_run_is_already_served(monkeypatch):
-    """Installed is not served: a unit sat here for weeks without running."""
+    """Installed is not served: this one aborted before it could run."""
     from thot.schedule import install
     from thot.schedule.jobs import FUSION, Job
 

@@ -218,7 +218,7 @@ def start() -> tuple[int, str]:
 
     # Wait for the loop to claim the pidfile. Announcing a start that did not
     # happen is worse than failing: the whole point of this scheduler is that
-    # the last one failed silently for weeks.
+    # the last one failed silently, and its log was the only witness.
     for _ in range(STARTUP_CHECKS):
         if running() is not None:
             return process.pid, str(destination)
