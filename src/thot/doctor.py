@@ -310,29 +310,38 @@ def _loop():
     # pass that finds none of them judges nothing and exits 0 — a success
     # recorded every night while nothing happens. That failure is invisible
     # until someone reads a log, so it is checked here instead.
-    from thot.schedule.install import LAUNCH_AGENTS, label
+    from thot.schedule.install import LAUNCH_AGENTS, label, launchd_runs
 
     unit = LAUNCH_AGENTS / f"{label(job)}.plist"
     detail = f"{job.schedule}, {job.budget} candidats par arbre"
 
-    # A scheduler running in the user's session serves the same jobs, and on
-    # macOS it is the only thing that can when the tree lives under a folder
-    # TCC guards. Asked before the unit, because once it runs the unit's
-    # failings no longer decide whether anything gets audited.
-    from thot.schedule import daemon
+    # Asked of launchd rather than inferred. A unit sat here for weeks while
+    # nothing ran, so "a unit exists" answers nothing; `runs` is what
+    # actually happened.
+    executed = launchd_runs(label(job)) or 0
+    if executed:
+        detail += f" · unité launchd, {executed} passage(s)"
 
-    live = daemon.running()
-    if live is not None:
-        return True, detail + f" · planificateur de session actif, pid {live}"
+    # A scheduler running in the user's session serves the same jobs, and it
+    # is the answer when launchd genuinely cannot. Reported only when
+    # launchd has never run — otherwise the honest line is launchd's own
+    # record, and a session scheduler that defers to it.
+    if not executed:
+        from thot.schedule import daemon
+
+        live = daemon.running()
+        if live is not None:
+            return True, detail + f" · planificateur de session actif, pid {live}"
 
     if not unit.is_file():
         return True, detail + " · unité non écrite (cron ?)"
 
-    # Before the PATH: a job that cannot even start its interpreter will
-    # never reach the point where the PATH matters. Asked of the job's own
-    # interpreter, never of this process — `thot doctor` is usually run from
-    # a checkout that launchd will never touch.
-    guarded = unreachable_from_launchd(
+    # A guarded import path is a reason to suspect a block, never proof of
+    # one: TCC grants are per binary. `/bin/sh` under launchd is refused this
+    # tree while the unit's own interpreter reads it — measured both ways,
+    # after this check had already condemned the job on the shape of a path
+    # alone. It condemns nothing that launchd has actually run.
+    guarded = [] if executed else unreachable_from_launchd(
         job_import_paths(unit), home=Path.home()
     )
     if guarded:
@@ -370,7 +379,10 @@ def _loop():
     # found on the PATH, and only then is the tree opened.
     from thot.schedule.runner import roots_for
 
-    blind = unreachable_from_launchd(
+    # Gated on the same evidence as the import path, and for the same
+    # reason: this unit audited all three trees from inside the folder this
+    # check calls unreadable. A shape is a suspicion; a run is a fact.
+    blind = [] if executed else unreachable_from_launchd(
         [str(root) for root in roots_for(job)], home=Path.home()
     )
     if blind:

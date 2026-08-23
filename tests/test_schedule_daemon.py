@@ -187,3 +187,35 @@ def test_a_job_added_while_running_waits_for_its_next_turn(tmp_path, monkeypatch
 
     assert daemon.serve(tick=0, clock=clock) == 0
     assert ran == ["ancien"]
+
+
+def test_a_job_launchd_already_serves_is_left_alone(tmp_path, monkeypatch):
+    """Both schedulers fired the same audit the first night they coexisted.
+
+    Six runs where three belonged, twice the wall clock and twice the
+    tokens. Whoever launchd is already running, this one does not.
+    """
+    from thot.schedule import daemon
+
+    monkeypatch.setattr(daemon, "home", lambda: tmp_path)
+    monkeypatch.setattr(daemon, "ensure_home", lambda: tmp_path)
+    monkeypatch.setattr(
+        "thot.schedule.jobs.load",
+        lambda: [Job(name="nuit", root=str(tmp_path), schedule="daily")],
+    )
+    monkeypatch.setattr(daemon, "already_served", lambda job: True)
+
+    ran: list[str] = []
+    monkeypatch.setattr(daemon, "_run", ran.append)
+    ticks = iter([at("2026-08-23 02:00"), at("2026-08-23 03:00")])
+
+    def clock():
+        try:
+            return next(ticks)
+        except StopIteration:
+            raise KeyboardInterrupt
+
+    assert daemon.serve(tick=0, clock=clock) == 0
+    assert ran == []
+    # Marked as served, so the next tick does not ask launchd all over again.
+    assert daemon.read_state()["nuit"] == at("2026-08-23 03:00")

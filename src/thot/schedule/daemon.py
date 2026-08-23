@@ -27,6 +27,7 @@ from datetime import datetime, timedelta
 from pathlib import Path
 
 from thot.paths import ensure_home, home, log_file
+from thot.schedule.install import already_served
 
 TICK_SECONDS = 60
 STARTUP_CHECKS = 40
@@ -128,8 +129,9 @@ def serve(*, tick: int = TICK_SECONDS, clock=datetime.now) -> int:
     print(f"[thot] planificateur de session démarré · pid {os.getpid()}",
           flush=True)
     for job in jobs.load():
+        owner = " · déjà servi par launchd" if already_served(job) else ""
         print(f"[thot]   {job.name} : {job.schedule}, {job.root} — "
-              f"{_reachable(job.root)}", flush=True)
+              f"{_reachable(job.root)}{owner}", flush=True)
 
     state = seed(read_state(), [j.name for j in jobs.load()], clock())
     write_state(state)
@@ -144,6 +146,15 @@ def serve(*, tick: int = TICK_SECONDS, clock=datetime.now) -> int:
             state = seed(state, [j.name for j in current], now)
             for job in current:
                 if not due(job, now, state.get(job.name)):
+                    continue
+                if already_served(job):
+                    # launchd has this one and has demonstrably run it.
+                    # Two schedulers on one job double the work and the
+                    # tokens, which is what the first night with both cost.
+                    print(f"[thot] {job.name} : servi par launchd, ignoré",
+                          flush=True)
+                    state[job.name] = now
+                    write_state(state)
                     continue
                 print(f"[thot] {now:%Y-%m-%d %H:%M} — {job.name}", flush=True)
                 try:

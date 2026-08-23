@@ -549,6 +549,10 @@ def test_the_loop_check_itself_fails_on_a_guarded_import_path(tmp_path, monkeypa
         encoding="utf-8",
     )
 
+    # Never this machine's launchd: the suite must answer the same on a
+    # laptop whose unit has run and on a build box that has none.
+    monkeypatch.setattr("thot.schedule.install.launchd_runs",
+                        lambda label: 0)
     ok, detail = doctor._loop()
 
     assert ok is False, detail
@@ -590,6 +594,10 @@ def test_the_loop_check_also_guards_the_trees_it_audits(tmp_path, monkeypatch):
         encoding="utf-8",
     )
 
+    # Never this machine's launchd: the suite must answer the same on a
+    # laptop whose unit has run and on a build box that has none.
+    monkeypatch.setattr("thot.schedule.install.launchd_runs",
+                        lambda label: 0)
     ok, detail = doctor._loop()
 
     assert ok is False, detail
@@ -767,6 +775,7 @@ def test_a_running_session_scheduler_settles_the_loop(monkeypatch):
                      deep=True, budget=8)],
     )
     monkeypatch.setattr(daemon, "running", lambda: 4242)
+    monkeypatch.setattr("thot.schedule.install.launchd_runs", lambda label: 0)
 
     ok, detail = doctor._loop()
     assert ok
@@ -784,8 +793,54 @@ def test_without_a_scheduler_the_unit_still_decides(monkeypatch):
                      deep=True, budget=8)],
     )
     monkeypatch.setattr(daemon, "running", lambda: None)
+    monkeypatch.setattr("thot.schedule.install.launchd_runs", lambda label: 0)
     monkeypatch.setattr(doctor, "LAUNCH_AGENTS", Path("/nulle/part"),
                         raising=False)
 
     ok, detail = doctor._loop()
     assert "planificateur de session" not in detail
+
+
+def test_a_unit_that_has_run_is_not_condemned_by_its_path(monkeypatch):
+    """The check called this loop broken on the shape of a path alone.
+
+    TCC grants are per binary: `/bin/sh` under launchd is refused a tree
+    that the unit's own interpreter reads without trouble — measured both
+    ways, after the job had already run a full audit from the folder this
+    check said it could never reach.
+    """
+    from thot import doctor
+    from thot.schedule.jobs import FUSION, Job
+
+    monkeypatch.setattr(
+        "thot.schedule.jobs.load",
+        lambda: [Job(name="improve", root=FUSION, deep=True, budget=8)],
+    )
+    monkeypatch.setattr("thot.schedule.install.launchd_runs", lambda label: 3)
+
+    def never_asked(*args, **kwargs):
+        raise AssertionError("le chemin ne doit plus être interrogé")
+
+    monkeypatch.setattr(doctor, "unreachable_from_launchd", never_asked)
+
+    ok, detail = doctor._loop()
+    assert "3 passage(s)" in detail
+
+
+def test_a_session_scheduler_is_not_announced_over_a_working_unit(monkeypatch):
+    """Two schedulers on one job doubled the work the first night. The
+    honest line is launchd's record, not a second mechanism's pid."""
+    from thot import doctor
+    from thot.schedule import daemon
+    from thot.schedule.jobs import FUSION, Job
+
+    monkeypatch.setattr(
+        "thot.schedule.jobs.load",
+        lambda: [Job(name="improve", root=FUSION, deep=True, budget=8)],
+    )
+    monkeypatch.setattr("thot.schedule.install.launchd_runs", lambda label: 1)
+    monkeypatch.setattr(daemon, "running", lambda: 4242)
+
+    _, detail = doctor._loop()
+    assert "4242" not in detail
+    assert "1 passage(s)" in detail

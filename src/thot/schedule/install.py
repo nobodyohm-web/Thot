@@ -151,3 +151,50 @@ def uninstall_hint(job: Job) -> str:
         target = LAUNCH_AGENTS / f"{label(job)}.plist"
         return f"launchctl unload {target} && rm {target}"
     return "Retire la ligne correspondante de `crontab -e`."
+
+
+def parse_runs(text: str) -> int | None:
+    """How many times launchd has actually executed a unit, from its print.
+
+    `launchctl print` reports `runs = N` for a unit it knows. None means the
+    question could not be answered — the unit is not loaded, or launchctl
+    said something this does not recognise — and that is different from
+    zero, which means loaded and never executed.
+    """
+    for line in text.splitlines():
+        key, _, value = line.strip().partition("=")
+        if key.strip() == "runs":
+            try:
+                return int(value.strip())
+            except ValueError:
+                return None
+    return None
+
+
+def launchd_runs(unit_label: str) -> int | None:
+    """Ask launchd how many times it has run this unit."""
+    import os
+    import subprocess
+
+    try:
+        done = subprocess.run(
+            ["launchctl", "print", f"gui/{os.getuid()}/{unit_label}"],
+            capture_output=True, text=True, timeout=10,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if done.returncode != 0:
+        return None
+    return parse_runs(done.stdout)
+
+
+def already_served(job) -> bool:
+    """Whether launchd is already running this job, demonstrably.
+
+    Not "is a unit installed" — one was installed here for weeks while
+    nothing ran. The question is whether launchd has ever executed it, which
+    launchd itself answers. A second scheduler serving the same job would
+    double the work and the tokens it spends, which is exactly what happened
+    the first night both existed.
+    """
+    return (launchd_runs(label(job)) or 0) >= 1
