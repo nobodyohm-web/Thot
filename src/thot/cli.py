@@ -9,6 +9,7 @@ from pathlib import Path
 
 from thot import __version__
 from thot.contracts import Severity
+from thot.output import local_time
 from thot.schedule.jobs import SCHEDULES
 from thot.analysis.probe import DEFAULT_LIMIT
 from thot.errors import AuthorizationError, ThotError
@@ -862,7 +863,8 @@ def _cmd_verdicts(args) -> int:
             print(f"{verdict.finding_id}  {verdict.decision.value}")
             print(f"règle    {verdict.rule}")
             print(f"lieu     {where}")
-            print(f"décidé   {verdict.author or '—'}  {verdict.decided_at or ''}")
+            print(f"décidé   {verdict.author or '—'}  "
+                  f"{local_time(verdict.decided_at)}")
             print()
             print(verdict.reason or "sans raison consignée")
             return EXIT_OK
@@ -1640,7 +1642,7 @@ def _cmd_sessions(args) -> int:
                 return EXIT_USAGE
             info = store.info(resolved)
             print(f"{info.id}  {info.title or '(sans titre)'}")
-            print(f"{info.root}  ·  {info.started_at}")
+            print(f"{info.root}  ·  {local_time(info.started_at, seconds=True)}")
             print()
             for turn in store.turns(resolved):
                 print(f"— {turn.role} —")
@@ -1669,7 +1671,7 @@ def _cmd_sessions(args) -> int:
             title = info.title or "(sans titre)"
             marker = " " if info.ended_at else "*"
             print(f"{marker}{info.id[:8]}  {info.message_count:>4} msg  "
-                  f"{info.started_at[:16]}  {title[:60]}")
+                  f"{local_time(info.started_at)}  {title[:60]}")
         if silent:
             print(f"\n{len(silent)} session(s) vide(s) non listée(s) — "
                   f"un processus tué ne peut pas se ranger. "

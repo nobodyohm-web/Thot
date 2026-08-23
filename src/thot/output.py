@@ -130,3 +130,30 @@ def truncate_tail(text: str, *, max_lines: int = DEFAULT_MAX_LINES,
 
     return Truncation("\n".join(kept), True, by, total_lines, total_bytes,
                       len(kept), partial)
+
+
+def local_time(stamp: str, *, zone=None, seconds: bool = False) -> str:
+    """A stored timestamp as the reader's own clock shows it.
+
+    Two conventions reach here and only one of them says so. SQLite's
+    `datetime('now')` writes UTC with no marker at all — a run started at
+    02:36 is filed as 00:36 and was printed that way — while `decided_at`
+    writes an ISO string carrying its offset. A stamp that names no zone is
+    read as UTC, which is what both of them mean.
+
+    Anything unparseable comes back untouched: a timestamp nobody can read
+    is still worth more on screen than an empty column.
+    """
+    from datetime import datetime, timezone
+
+    text = (stamp or "").strip()
+    if not text:
+        return ""
+    try:
+        parsed = datetime.fromisoformat(text)
+    except ValueError:
+        return stamp
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    shape = "%Y-%m-%d %H:%M:%S" if seconds else "%Y-%m-%d %H:%M"
+    return parsed.astimezone(zone).strftime(shape)

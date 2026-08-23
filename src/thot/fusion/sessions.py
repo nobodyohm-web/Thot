@@ -20,6 +20,8 @@ the listing.
 
 from __future__ import annotations
 
+from thot.output import local_time
+
 import json
 import sqlite3
 from dataclasses import dataclass
@@ -43,7 +45,7 @@ class Session:
     title: str = ""
 
     def line(self, *, width: int = 34) -> str:
-        when = self.started_at[:16].replace("T", " ")
+        when = local_time(self.started_at)
         label = self.title or _shorten(self.where, width) or "—"
         return (f"{self.source:<7} {self.id[:12]:<13} {when}  "
                 f"{self.messages:>4} msg  {label}")
