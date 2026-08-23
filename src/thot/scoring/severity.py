@@ -50,6 +50,20 @@ def accessibility_weight(
         # to a framework, decorated — is reached by a route the graph
         # cannot follow. That is unknown reach, not absence of reach, and
         # it is the ordinary case in any web application.
+        #
+        # `entrypoints_known` is repository-wide, and entry-point detection
+        # is Python-only — `scope.detect._python_entrypoints` is its sole
+        # producer. So a repository holding one Python `main()` and nine
+        # hundred TypeScript files answers True here for its TypeScript
+        # symbols too, and buries them on the authority of entry points that
+        # could never reach them. Prime is exactly that shape.
+        #
+        # Left alone on purpose, and measured before deciding: recomputing
+        # every JavaScript and TypeScript candidate on both shipped trees
+        # with `entrypoints_known=False` moves not one severity. Those rules
+        # carry too little impact for 0.2 against 0.8 to cross a threshold.
+        # A per-language answer is the honest one and would be worth writing
+        # the day a JavaScript rule carries enough impact to notice.
         if escapes:
             return 0.8
         return 0.2 if entrypoints_known else 0.8
