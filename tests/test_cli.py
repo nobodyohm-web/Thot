@@ -484,8 +484,10 @@ def _advertised_commands() -> set[tuple[str, ...]]:
         if "__pycache__" not in path.parts
     ]
     # The README too: it is the first thing anyone reads, and a command that
-    # does not exist wastes their first minute. 29 distinct commands are
-    # quoted across the source and the README today.
+    # does not exist wastes their first minute. How many there are is not
+    # written here — the count drifted the moment five commands were added,
+    # and `test_the_sweep_actually_finds_commands` already holds the floor
+    # that matters, which is that this sweep finds anything at all.
     sources.append(root / "README.md")
     for path in sources:
         for match in quoted.findall(path.read_text(encoding="utf-8")):

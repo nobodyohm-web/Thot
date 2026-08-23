@@ -752,8 +752,13 @@ le code concerné, et présent dans un clone neuf avant même le réseau.
 
 ```bash
 thot verdicts --share <id>   # publier une décision locale dans le dépôt
+thot verdicts --share-all    # toutes celles qui concernent ce dépôt
 thot verdicts --where        # d'où viennent les décisions, où elles s'écrivent
 ```
+
+La mémoire est commune aux arbres, le fichier ne l'est pas : publier une
+décision qui porte sur un autre dépôt est refusé, et `--share-all` ne prend
+que celles dont le fichier existe ici.
 
 La chaîne par défaut, sans aucune configuration : **le dépôt d'abord, ta
 machine ensuite**. Une décision passée en revue prime sur une note que tu
@@ -833,6 +838,24 @@ Thot écrit l'unité `launchd` (macOS) ou te donne la ligne de crontab, et te
 laisse l'activer toi-même — un outil qui installe des tâches de fond en
 silence est un outil qu'on cesse de croire.
 
+**Quand `launchd` ne peut pas.** Sur macOS, les autorisations sont accordées
+par binaire : un agent `launchd` peut se voir refuser `~/Desktop`,
+`~/Documents` ou `~/Downloads`, et alors l'unité se bloque au démarrage de
+l'interpréteur sans écrire une ligne. Un processus lancé depuis ta session
+garde l'accès de cette session, même une fois orphelin — c'est le troisième
+remède, et il ne demande rien au système :
+
+```bash
+thot schedule start       # un planificateur dans ta session
+thot schedule status      # tourne-t-il, et quand est-il passé
+thot schedule stop
+thot schedule autostart   # le relever au premier terminal après un redémarrage
+```
+
+Il s'efface devant toute unité `launchd` que `launchctl` déclare avoir
+réellement exécutée : deux planificateurs sur un même job, c'est deux fois le
+travail et deux fois les jetons. `thot doctor` dit lequel des deux sert.
+
 **Un audit programmé ne dit rien tant que rien n'est nouveau.** Un rapport
 nocturne qui répète les mêmes trois cents findings finit dans un dossier que
 personne n'ouvre. Ce qui remonte, c'est le diff : ce qui est apparu depuis la
@@ -899,20 +922,26 @@ thot doctor
 ✓ plugins                4 chargé(s) · 0 refusé(s)
 ✓ mémoire                450 décision(s)
 ✓ mcp                    6 outil(s) exposé(s)
-✗ amélioration           daily, 8 candidats par arbre · l'import passe par
-                         /Users/dev/Desktop/Thot/src, que macOS refuse à un
-                         agent launchd — le job se bloque au démarrage de
-                         l'interpréteur, sans écrire une ligne.
+✓ amélioration           daily, 8 candidats par arbre · unité launchd,
+                         1 passage(s) · agents joignables depuis l'unité
 
-11/12 vérification(s) passées en 0.96 s
+12/12 vérification(s) passées en 0.93 s
 ```
 
 La dernière ligne est la sortie réelle sur la machine de développement, et
-elle est gardée telle quelle : c'est ce que le contrôle sert à produire. Un
-`launchctl list` montre l'unité chargée, son `LastExitStatus` vaut 0, et son
+elle est gardée telle quelle : c'est ce que le contrôle sert à produire. Le
+`1 passage(s)` vient de `launchctl` lui-même, et il n'est pas décoratif : un
+`launchctl list` montre l'unité chargée, son `LastExitStatus` vaut 0 et son
 journal n'existe pas — trois signaux qui disent « tout va bien » pour une
 tâche qui n'a jamais démarré. Nommer la cause vaut mieux que compter les
 lignes vertes.
+
+Cette vérification a elle-même dû être corrigée. Elle condamnait la tâche sur
+la forme d'un chemin — « l'arbre est sous `~/Desktop`, donc `launchd` ne
+pourra pas le lire » — alors que les autorisations macOS sont accordées par
+binaire : l'interpréteur de l'unité lisait l'arbre que `/bin/sh` se voyait
+refuser. Une forme est un soupçon, un passage est un fait, et c'est le fait
+qu'elle interroge désormais.
 
 Et une vérification qu'aucune inspection statique n'aurait pu faire :
 
