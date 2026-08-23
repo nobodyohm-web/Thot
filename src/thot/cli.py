@@ -165,6 +165,14 @@ def build_parser() -> argparse.ArgumentParser:
     schedule_sub.add_parser(
         "daemon", help="La boucle elle-même (appelée par « start »)"
     )
+    sched_auto = schedule_sub.add_parser(
+        "autostart",
+        help="Relancer le planificateur au premier terminal après un "
+             "redémarrage (une ligne dans ton fichier de démarrage)",
+    )
+    sched_auto.add_argument(
+        "--remove", action="store_true", help="Retirer cette ligne"
+    )
 
     deps = subparsers.add_parser(
         "deps", help="Auditer les dépendances d'un dépôt contre OSV.dev"
@@ -686,6 +694,9 @@ def _cmd_schedule(args) -> int:
     if action in {"start", "stop", "status", "daemon"}:
         return _cmd_scheduler(action)
 
+    if action == "autostart":
+        return _cmd_autostart(remove=args.remove)
+
     programmed = jobs.load()
     if not programmed:
         print("Aucun audit programmé.")
@@ -694,6 +705,34 @@ def _cmd_schedule(args) -> int:
     for job in programmed:
         flag = " --deep" if job.deep else ""
         print(f"{job.name:<14} {job.schedule:<8} seuil {job.threshold:<8} {job.root}{flag}")
+    return EXIT_OK
+
+
+def _cmd_autostart(*, remove: bool) -> int:
+    """Install or remove the line that revives the scheduler after a reboot."""
+    from thot.schedule import autostart
+
+    destination = autostart.startup_file()
+    try:
+        before = destination.read_text(encoding="utf-8")
+    except OSError:
+        before = ""
+
+    after = (autostart.remove_from(before) if remove
+             else autostart.install_into(before))
+    if after == before:
+        print("Rien à changer dans " + str(destination))
+        return EXIT_OK
+
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    destination.write_text(after, encoding="utf-8")
+    if remove:
+        print(f"Ligne retirée de {destination}")
+        return EXIT_OK
+    print(f"Ligne ajoutée à {destination}")
+    print("  Le premier terminal ouvert après un redémarrage relancera le "
+          "planificateur.")
+    print("  Pour l'enlever :  thot schedule autostart --remove")
     return EXIT_OK
 
 
