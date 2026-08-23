@@ -128,6 +128,17 @@ DEFAULT_SINKS: tuple[SinkRule, ...] = (
         impact=Severity.MEDIUM,
         description="Requête réseau sortante",
         dangerous_args=(),
+        # Measured and deliberately left alone. This rule produced 143
+        # candidates on Hermes and 149 refutations across the three trees,
+        # against no confirmation ever — the same shape that made `sink.sql`
+        # worth gating. It is not the same cause. Its patterns are already
+        # qualified, and the taint does not come from a misread name: it
+        # comes from the enclosing function's own parameter, which the
+        # engine holds untrusted until a caller proves otherwise. In a
+        # codebase where every HTTP helper takes a URL parameter, that is
+        # every helper. A `needs` gate would buy nothing here; what would is
+        # knowing which entry points actually reach those parameters, which
+        # is the call graph's job and not this catalog's.
     ),
 )
 
