@@ -94,8 +94,6 @@ class Finding:
     location: CodeRef
     taint_path: tuple[CodeRef, ...] = ()
     failure_scenario: str = ""
-    repro: object | None = None
-    patch: object | None = None
     provenance: dict | None = None
     schema_version: int = SCHEMA_VERSION
 

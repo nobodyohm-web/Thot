@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
+
 import subprocess
 import time
 from collections.abc import Callable
@@ -15,7 +17,7 @@ from thot.codemap.index import index_files
 from thot.guard.scanner import sweep_patterns
 from thot.memory.base import Memory, apply_memory, record_verdicts
 from thot.errors import ScopeError
-from thot.contracts import Confidence, Finding
+from thot.contracts import Confidence, Finding, Severity
 from thot.plugins import annotate_findings
 from thot.scope.authorization import load_authorization
 from thot.scope.detect import detect_scope
@@ -81,10 +83,41 @@ def _git_commit(root: Path) -> str | None:
         return None
 
 
+_RANK = {
+    Severity.CRITICAL: 4,
+    Severity.HIGH: 3,
+    Severity.MEDIUM: 2,
+    Severity.LOW: 1,
+    Severity.INFO: 0,
+}
+
+
+def _keep_stronger(kept: Finding, other: Finding) -> Finding:
+    """Fold a second path to the same sink into the finding already held.
+
+    `compute_id` leaves the taint path out on purpose, so a verdict survives
+    a refactor of the caller — which makes two sources reaching one sink one
+    finding, not two. Reported twice, they showed a reader the same row
+    twice, counted twice, and let the deep pass argue one identity twice.
+
+    The stronger score wins, because that is what a reader has to act on.
+    The count is kept rather than dropped: three inputs reaching one sink is
+    worth knowing.
+    """
+    winner = other if _RANK[other.severity] > _RANK[kept.severity] else kept
+    provenance = dict(winner.provenance or {})
+    provenance["chemins"] = int((kept.provenance or {}).get("chemins", 1)) + 1
+    return replace(winner, provenance=provenance)
+
+
 def findings_from_graph(root: Path, graph: CodeGraph) -> list[Finding]:
     """Turn taint candidates into scored findings. Shared by the CLI and the
     interactive session, so both see exactly the same analysis."""
-    findings: list[Finding] = []
+    # Keyed by identity: two sources reaching one sink are one finding. The
+    # dict carries the order too — insertion order is first sight, and
+    # merging into a key already there does not move it — so a separate list
+    # of identities was a second mechanism saying the same thing.
+    by_id: dict[str, Finding] = {}
     entrypoints_known = bool(graph.entrypoints)
 
     from thot.taint import js_engine
@@ -114,19 +147,21 @@ def findings_from_graph(root: Path, graph: CodeGraph) -> list[Finding]:
         provenance = None
         if role is not Role.PRODUCTION:
             provenance = {"rôle": role.value}
-        findings.append(
-            Finding(
-                id=Finding.compute_id(candidate.rule, candidate.sink),
-                rule=candidate.rule,
-                severity=severity,
-                confidence=Confidence.PLAUSIBLE,
-                location=candidate.sink,
-                taint_path=candidate.path,
-                failure_scenario=scenario,
-                provenance=provenance,
-            )
+        finding = Finding(
+            id=Finding.compute_id(candidate.rule, candidate.sink),
+            rule=candidate.rule,
+            severity=severity,
+            confidence=Confidence.PLAUSIBLE,
+            location=candidate.sink,
+            taint_path=candidate.path,
+            failure_scenario=scenario,
+            provenance=provenance,
         )
-    return findings
+        held = by_id.get(finding.id)
+        by_id[finding.id] = finding if held is None else _keep_stronger(
+            held, finding
+        )
+    return list(by_id.values())
 
 
 def run_audit(
