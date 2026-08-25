@@ -971,6 +971,12 @@ class _Facts:
     # sink, and an SSRF guard is not an argument-injection guard.
     destination_safe: dict[str, set[str]] = field(default_factory=dict)
     sink_calls: list[tuple[str, CodeRef, tuple[str, ...]]] = field(default_factory=list)
+    # Writes into a file the program itself named `secrets`, carrying
+    # something other than a literal and not sealed by a digest or a cipher.
+    # Held apart from `sink_calls` because there is no path to trace: what
+    # makes CWE-312 a finding is the destination and the absence of the seal,
+    # and the value's provenance decides nothing. `(open site, write site)`.
+    unsealed_stores: list[tuple[CodeRef, CodeRef]] = field(default_factory=list)
     calls_out: list[_Handoff] = field(default_factory=list)
     assigns_from_call: list[tuple[str, str, CodeRef]] = field(default_factory=list)
 
@@ -1454,8 +1460,9 @@ def _analyse_body(symbol: Symbol, node: ast.AST,
     # Handles opened on a spreadsheet. `with open('report.csv') as fh` is what
     # makes `fh.write` a cell rather than a line of text.
     sheet_handles: set[str] = set()
-    # Handles opened on a file whose name says it holds a secret.
-    store_handles: set[str] = set()
+    # Handles opened on a file whose name says it holds a secret, and where
+    # that name was written.
+    store_handles: dict[str, CodeRef] = {}
     # Nested callbacks that write into a name belonging to this scope:
     # callback name -> [(argument position, name it writes)]. The ordinary
     # shape of a callback in Python, and the chain used to break at the name
@@ -1592,7 +1599,7 @@ def _analyse_body(symbol: Symbol, node: ast.AST,
                             and isinstance(opened.args[0], ast.Constant) \
                             and isinstance(opened.args[0].value, str) \
                             and _SENSITIVE_NAME.search(opened.args[0].value):
-                        store_handles.add(item.optional_vars.id)
+                        store_handles[item.optional_vars.id] = ref_at(child)
 
         elif isinstance(child, (ast.ListComp, ast.SetComp, ast.DictComp,
                                 ast.GeneratorExp)):
@@ -1684,6 +1691,18 @@ def _analyse_body(symbol: Symbol, node: ast.AST,
                     "sink.cleartext", ref_at(child),
                     tuple(sorted(stored - under_guard())),
                 ))
+                written = list(child.args) + [k.value for k in child.keywords]
+                # A literal is what the program wrote itself — a header, a
+                # separator — and a sealed value is not the secret. Anything
+                # else put into this file is being kept in the clear, and the
+                # filename is the program saying what it is.
+                if any(not isinstance(one, ast.Constant)
+                       and not _sealed(one)
+                       and not (_referenced_names(one)
+                                & facts.destination_safe.get("storage", set()))
+                       for one in written):
+                    facts.unsealed_stores.append(
+                        (store_handles[holder_name], ref_at(child)))
 
             if holder_name in sheet_handles \
                     and method in ("write", "writerow", "writerows"):
@@ -2003,5 +2022,12 @@ def _find_candidates(
                     for rule_id, sink_ref in sinks:
                         emit(rule_id, origin, sink_ref,
                              (origin, call_ref, sink_ref), came_from)
+
+    # Case 3 — a store kept in the clear. Last, so that when the same write
+    # was also reached by a traced path, `emit` keeps the version that knows
+    # where the value came from.
+    for facts in facts_by_name.values():
+        for opened, written in facts.unsealed_stores:
+            emit("sink.cleartext", opened, written, (opened, written))
 
     return candidates
