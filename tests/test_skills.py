@@ -341,3 +341,48 @@ def test_the_unbroker_scanner_enforces_the_convention_it_claimed():
     assert any(type(h).__name__ == "_PublicOnly" for h in handlers), (
         "l'opener doit revalider chaque redirection"
     )
+
+
+# -- deux commandes écrivent dans `settings.skills` de Prime ----------------
+#
+# `thot fusion share` y ajoute les bibliothèques de Thot et de Hermes ;
+# `thot fusion wire` y ajoute le paquet de méthode que Thot livre pour Prime.
+# Ce sont deux gestes distincts sur la même clé d'un fichier qui appartient à
+# un troisième programme. Ce test épingle qu'ils s'additionnent au lieu de se
+# défaire l'un l'autre — et que débrancher ne reprend que ce que le
+# branchement avait posé.
+
+
+def test_sharing_and_wiring_do_not_undo_each_other(tmp_path, monkeypatch):
+    import json
+
+    from thot.fusion import skills as fusion_skills
+    from thot.fusion import wiring
+
+    prime = tmp_path / "prime-home"
+    monkeypatch.setenv("PRIME_AGENT_CONFIG_DIR", str(prime))
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes-home"))
+    monkeypatch.setenv("THOT_HOME", str(tmp_path / "thot-home"))
+    prime.mkdir(parents=True)
+    (prime / "settings.json").write_text(
+        json.dumps({"skills": ["/a/moi"], "defaultModel": "x"}), encoding="utf-8"
+    )
+
+    fusion_skills.share()
+    partagees = set(json.loads((prime / "settings.json").read_text())["skills"])
+
+    wiring.wire_prime()
+    apres = json.loads((prime / "settings.json").read_text())
+
+    assert partagees <= set(apres["skills"]), "le câblage a effacé un chemin partagé"
+    assert str(wiring.prime_skill_dir()) in apres["skills"]
+    assert apres["defaultModel"] == "x"
+
+    wiring.unwire()
+    final = json.loads((prime / "settings.json").read_text())["skills"]
+
+    assert str(wiring.prime_skill_dir()) not in final
+    assert "/a/moi" in final
+    assert partagees - {str(wiring.prime_skill_dir())} <= set(final), (
+        "débrancher a repris des chemins que le partage avait posés"
+    )

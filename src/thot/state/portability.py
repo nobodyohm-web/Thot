@@ -54,6 +54,10 @@ def export_session(store: SessionStore, session_id: str,
                         "created_at": turn.created_at,
                     }
                     for turn in store.turns(info.id)
+                    # The import note is provenance about *this* copy, not
+                    # part of the conversation: re-exporting it would make
+                    # every round trip grow by one message.
+                    if turn.role != "meta"
                 ],
             }
             for info in chain
@@ -91,11 +95,16 @@ def import_session(store: SessionStore, payload: dict,
     for record in payload.get("sessions") or []:
         old_id = str(record.get("id") or "")
         parent = remap.get(str(record.get("parent_id") or ""), "")
+        # The recorded moments are carried over rather than restamped: an
+        # export is a copy of a conversation, and a conversation that claims
+        # to have happened at import time has lost the only thing that made
+        # it findable in time.
         new_id = store.start(
             root if root is not None else record.get("root", ""),
             model=str(record.get("model") or ""),
             title=str(record.get("title") or ""),
             parent_id=parent,
+            at=str(record.get("started_at") or ""),
         )
         remap[old_id] = new_id
         created.append(new_id)
@@ -106,9 +115,10 @@ def import_session(store: SessionStore, payload: dict,
                 str(message.get("role") or "user"),
                 str(message.get("content") or ""),
                 tool_name=str(message.get("tool_name") or ""),
+                at=str(message.get("created_at") or ""),
             )
         if record.get("ended_at"):
-            store.end(new_id)
+            store.end(new_id, at=str(record.get("ended_at")))
         if old_id:
             store.note(new_id, f"importé depuis la session {old_id}", kind="meta")
 

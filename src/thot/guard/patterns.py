@@ -28,9 +28,13 @@ Modifications by NousResearch for the Hermes Agent plugin port:
     __init__.py.
 
 Ported into Thot from Hermes Agent (MIT, Copyright (c) 2025 Nous Research):
-  - pattern data unchanged. Thot uses it for two things Hermes does not: an
-    audit sweep over the whole repository, and a guard on the agent's own
-    writes. The wiring lives in scanner.py and guard.py.
+  - the upstream rules are unchanged. Thot uses them for two things Hermes
+    does not: an audit sweep over the whole repository, and a guard on the
+    agent's own writes. The wiring lives in scanner.py and guard.py.
+  - two rules are added at the end, `hardcoded_credential` and
+    `hardcoded_secret_assignment`. Upstream's catalogue is written for a
+    model mid-edit, where a leaked key is not the concern; a sweep over a
+    repository is exactly where it is.
 """
 from enum import IntEnum
 
@@ -135,6 +139,8 @@ Only use exec() if you absolutely need shell features and the input is guarantee
     },
     {
         "ruleName": "react_dangerously_set_html",
+        # Same reason as `tls_verification_disabled` below.
+        "path_filter": lambda p: not p.endswith(_DOC_EXTS),
         "substrings": ["dangerouslySetInnerHTML"],
         "reminder": "⚠️ Security Warning: dangerouslySetInnerHTML can lead to XSS vulnerabilities if used with untrusted content. Ensure all content is properly sanitized using an HTML sanitizer library like DOMPurify, or use safe alternatives.",
     },
@@ -220,6 +226,9 @@ Additionally, validate user inputs:
     },
     {
         "ruleName": "tls_verification_disabled",
+        # Prose naming the pattern is not the pattern: the plugin that warns
+        # against `verify=False` was reported for containing `verify=False`.
+        "path_filter": lambda p: not p.endswith(_DOC_EXTS),
         "regex": r"\bverify\s*=\s*False\b|rejectUnauthorized\s*:\s*false|InsecureSkipVerify\s*:\s*true|NODE_TLS_REJECT_UNAUTHORIZED\s*=\s*[\x22\x27]?0|ssl\._create_unverified_context|check_hostname\s*=\s*False",
         "reminder": "⚠️ Security Warning: Don't disable TLS verification. This allows MITM attacks. For self-signed dev certs, add the CA to your trust store or use a properly-issued cert.",
     },
@@ -235,7 +244,23 @@ Additionally, validate user inputs:
     },
     {
         "ruleName": "xml_unsafe_parse",
-        "regex": r"\b(xml\.etree\.ElementTree|ElementTree|ET)\.(parse|fromstring|XML)\s*\(|\bminidom\.(parse|parseString)\s*\(|\bxml\.sax\.(parse|make_parser)\b",
+        # Measured on 100 labelled XXE cases: this rule scored -100 % — it
+        # missed every vulnerable one and fired on every safe one. Two
+        # reasons, both here.
+        #
+        # `\bElementTree\.` matched inside `defusedxml.ElementTree.fromstring`,
+        # so the rule flagged the library whose only purpose is to prevent
+        # XXE — the very remedy its own reminder recommends. Hence the
+        # lookbehind. (`from defusedxml import ElementTree as ET` still slips
+        # through: the alias is resolved at import, which a line-wise regex
+        # cannot see.)
+        #
+        # And `lxml` was absent from the alternation altogether, though it is
+        # the XML library most Python code actually uses. Only the shapes
+        # that disable a defence outright are matched — `resolve_entities=True`
+        # and `no_network=False` — because a bare `etree.parse` depends on a
+        # default this rule cannot read from one line.
+        "regex": r"(?<!defusedxml\.)\b(xml\.etree\.ElementTree|ElementTree|ET)\.(parse|fromstring|XML)\s*\(|\bminidom\.(parse|parseString)\s*\(|\bxml\.sax\.(parse|make_parser)\b|\betree\.XMLParser\s*\([^)]*(resolve_entities\s*=\s*True|no_network\s*=\s*False)",
         "reminder": "⚠️ Security Warning: Use defusedxml.ElementTree. Python's stdlib XML parsers are vulnerable to XXE (external entity) and billion-laughs attacks by default.",
     },
     {
@@ -286,6 +311,85 @@ Additionally, validate user inputs:
         "regex": r"\bjoblib\.load\s*\(|\b(?:pd|pandas)\.read_pickle\s*\(|\.cloudpickle_load\s*\(|\b(?:np|numpy)\.load\s*\([^)\n]{0,200}allow_pickle\s*=\s*True",
         "reminder": _UNSAFE_DESERIALIZATION_REMINDER,
     },
+    {
+        # Two rules and not one, because they are believed to different
+        # degrees. `AKIA` followed by sixteen upper-case characters is an AWS
+        # key id and nothing else; `token = "…"` is a guess about a name, and
+        # is ranked and filtered accordingly.
+        #
+        # Every branch is written so `scanner._literal_gate` can derive a
+        # mandatory substring from it — `(?:ghp_|gho_|ghu_)` rather than
+        # `gh[pou]_`, which parses to a character class and gates nothing.
+        # Same language, and the rule is then pre-filtered like the rest.
+        "ruleName": "hardcoded_credential",
+        # Read before `code_only` blanks string literals: a credential lives
+        # inside the literal by definition, which is the one place this sweep
+        # is built not to look. Same reason `js_catalog.imports` reads raw.
+        "raw": True,
+        "regex": (
+            r"\b(?:AKIA|ASIA|AROA|AIDA|ANPA|AIPA)[0-9A-Z]{16}\b"
+            r"|\b(?:ghp_|gho_|ghu_|ghs_|ghr_)[0-9A-Za-z]{36}\b"
+            r"|\bgithub_pat_[0-9A-Za-z_]{60,}\b"
+            r"|\b(?:xoxb-|xoxa-|xoxp-|xoxr-|xoxs-)[0-9A-Za-z-]{10,}\b"
+            r"|\b(?:sk|rk)_live_[0-9A-Za-z]{20,}\b"
+            r"|\bAIza[0-9A-Za-z_\-]{35}\b"
+            # The header alone matches the module that redacts PEM blocks and
+            # the test that writes a stub file: measured on hermes/, both.
+            # Requiring the body that follows asks whether there is a key
+            # here, not whether the words are.
+            r"|-----BEGIN (?:RSA |DSA |EC |OPENSSH |PGP )?PRIVATE KEY-----"
+            r"(?:[\s\x22\x27]|\\[nrt])*[A-Za-z0-9+/]{16}"
+            r"|\beyJ[0-9A-Za-z_\-]{10,}\.eyJ[0-9A-Za-z_\-]{10,}\.[0-9A-Za-z_\-]{10,}\b"
+            r"|\b(?:postgres|postgresql|mysql|mariadb|mongodb|mongodb\+srv"
+            r"|redis|rediss|amqp|amqps)://[^\s:@/]+:[^\s:@/]+@"
+        ),
+        "reminder": """⚠️ Security Warning: This looks like a live credential written into the source.
+
+A key in the repository is a key in every clone, every fork, every CI log and every backup, and rotating it is the only remediation — removing the line is not, because the history keeps it.
+
+Read it from the environment or a secret manager at the point of use, and rotate whatever was committed. If this is a fixture, make it obviously one (the provider's documented example value, or a name containing EXAMPLE/PLACEHOLDER) so it stops being reported.""",
+    },
+    {
+        "ruleName": "hardcoded_secret_assignment",
+        "raw": True,
+        # Bare `key` is not a secret word. Measured on hermes/: it alone
+        # produced 373 findings, and the ones that were not `STORAGE_KEY =
+        # 'hermes.desktop.layoutTree.v2'` were `key: 'credits.grant_spent'`
+        # and a Japanese translation string. What is claimed here is a name
+        # that can only mean a credential.
+        #
+        # Written out in three casings rather than folded with `(?i:…)`, for
+        # two reasons that happen to agree: a reader sees exactly which names
+        # are claimed, and every alternative is four characters or more, so
+        # `scanner._literal_gate` can derive a pre-filter. Folded, this rule
+        # ran on every file in scope and cost 10.6 s of a 17 s sweep.
+        #
+        # An identifier prefix in front of the name — `[A-Za-z0-9_]*` — is
+        # what one writes first and it is quadratic: that spelling took the
+        # sweep past two minutes, backtracking against the alternation once
+        # per starting position. It is also unnecessary, since `API_KEY` is
+        # recognised by the `API_KEY` that ends it.
+        "regex": (
+            r"(?:secret|Secret|SECRET"
+            r"|token|Token|TOKEN"
+            r"|password|Password|PASSWORD"
+            r"|passwd|Passwd|PASSWD"
+            r"|passphrase|Passphrase|PASSPHRASE"
+            r"|credential|Credential|CREDENTIAL"
+            r"|api_key|API_KEY|apiKey|apikey|APIKEY"
+            r"|access_key|ACCESS_KEY|accessKey"
+            r"|private_key|PRIVATE_KEY|privateKey"
+            r"|signing_key|SIGNING_KEY|signingKey"
+            r"|encryption_key|ENCRYPTION_KEY|encryptionKey)s?"
+            r"[\x22\x27]?\s*[:=]\s*"
+            r"[\x22\x27][^\x22\x27\s\\]{16,80}[\x22\x27]"
+        ),
+        "reminder": """⚠️ Security Warning: A name that says "secret" is assigned a literal here.
+
+Read the value from the environment (os.environ / process.env) or from a secret manager, and keep the literal out of the repository — a clone, a CI log or a fork keeps it forever, and rotating is then the only remediation.
+
+If this value is not a secret, or is a placeholder, say so in the name or the value (EXAMPLE, PLACEHOLDER, <your-key-here>) and the rule stops reporting it.""",
+    },
 ]
 
 
@@ -323,6 +427,8 @@ class RuleId(IntEnum):
     TORCH_UNSAFE_LOAD = 23
     YAML_UNSAFE_LOAD_VARIANTS = 24
     PICKLE_WRAPPER_LOAD = 25
+    HARDCODED_CREDENTIAL = 26
+    HARDCODED_SECRET_ASSIGNMENT = 27
 
 
 _RULE_NAME_TO_ID = {
@@ -351,10 +457,24 @@ _RULE_NAME_TO_ID = {
     "torch_unsafe_load": RuleId.TORCH_UNSAFE_LOAD,
     "yaml_unsafe_load_variants": RuleId.YAML_UNSAFE_LOAD_VARIANTS,
     "pickle_wrapper_load": RuleId.PICKLE_WRAPPER_LOAD,
+    "hardcoded_credential": RuleId.HARDCODED_CREDENTIAL,
+    "hardcoded_secret_assignment": RuleId.HARDCODED_SECRET_ASSIGNMENT,
 }
 
 # Fail loudly at import time if a pattern is added without a RuleId.
 # This fires in pytest on every PR, so desync is caught before merge.
+# The rules an audit may report. A rule with neither a regex nor a substring
+# list has only a `path_check`, so it fires because a file exists rather than
+# because of anything written in it. That is a write-time reminder — the shape
+# `plugins/write-guard` wants, and gets, from `scan_text` — not a statement
+# about existing code: on Hermes it produced 28 of 30 findings, every one of
+# them saying "this repository has GitHub workflows".
+AUDIT_PATTERNS = [
+    rule for rule in SECURITY_PATTERNS
+    if rule.get("regex") or rule.get("substrings")
+]
+
+
 assert set(_RULE_NAME_TO_ID) == {p["ruleName"] for p in SECURITY_PATTERNS}, (
     f"RuleId enum out of sync with SECURITY_PATTERNS: "
     f"missing={set(p['ruleName'] for p in SECURITY_PATTERNS) - set(_RULE_NAME_TO_ID)}, "

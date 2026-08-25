@@ -541,9 +541,15 @@ def test_execute_is_a_sink_where_a_database_is_imported(tmp_path):
     assert "sink.sql" in {c.rule for c in analyse(repo)}
 
 
-def test_execute_without_a_database_is_not_a_sink(tmp_path):
-    """A console engine, an LLM relay and a pipeline all have one."""
-    repo = _tree(tmp_path, QUERY.format(importation="", receveur="engine"))
+def test_execute_with_neither_a_driver_nor_a_query_is_not_a_sink(tmp_path):
+    """A console engine, an LLM relay and a pipeline all have one.
+
+    This is what the gate is still for. No driver imported *and* no query
+    written anywhere in the file: nothing here says the word `execute` means
+    a database.
+    """
+    repo = _tree(tmp_path, "import sys\n\n\ndef handler():\n"
+                           "    engine.execute(sys.argv[1])\n")
     assert "sink.sql" not in {c.rule for c in analyse(repo)}
 
 
@@ -560,13 +566,19 @@ def test_a_rule_that_needs_no_module_is_unaffected(tmp_path):
     assert "sink.os.system" in {c.rule for c in analyse(repo)}
 
 
-def test_a_connection_handed_in_without_a_driver_goes_unseen(tmp_path):
-    """The gate's price, pinned rather than left to be discovered.
+def test_a_connection_handed_in_without_a_driver_is_seen_by_its_query(tmp_path):
+    """The gate's old price, and why it was too high to keep paying.
 
-    A file that receives a connection and imports no driver is real — one
-    production site on Hermes out of 110 candidates — and this is the cost
-    of not reporting the twenty-eight `execute` calls that were a console
-    engine, an LLM relay and a pipeline.
+    A file that receives a connection and imports no driver used to go
+    unseen. It was pinned here as a known cost — one production site on
+    Hermes out of 110 candidates — on the assumption that hiding the driver
+    was the exception.
+
+    It is the rule. Measured against 100 labelled SQL-injection cases whose
+    sink was `db.execute` behind `from app_runtime import db`, the import
+    gate scored **0 out of 100**. So the query itself now opens the gate: a
+    file that spells out `SELECT ... FROM` is composing SQL, whatever local
+    wrapper runs it.
     """
     candidates = _analyse_source(
         tmp_path,
@@ -576,4 +588,1030 @@ def test_a_connection_handed_in_without_a_driver_goes_unseen(tmp_path):
         "    value = sys.argv[1]\n"
         "    lookup(None, value)\n",
     )
-    assert {c.rule for c in candidates} == set()
+    assert "sink.sql" in {c.rule for c in candidates}
+
+
+def test_a_query_elsewhere_in_the_file_is_what_opens_the_gate(tmp_path):
+    """The residual cost, pinned in its turn.
+
+    The evidence is file-wide, not call-wide: an unrelated `pipeline.execute`
+    in a file that also holds a query will now be reported. That is the price
+    of not needing to resolve what `db` is bound to, and it is a far smaller
+    one than 0/100.
+    """
+    candidates = _analyse_source(
+        tmp_path,
+        "import sys\n\n"
+        "TEMPLATE = 'SELECT id FROM users'\n\n\n"
+        "def main():\n"
+        "    pipeline.execute(sys.argv[1])\n",
+    )
+    assert "sink.sql" in {c.rule for c in candidates}
+
+
+# --- toute forme d'affectation lie un nom, pas seulement `x = ...` ---------
+#
+# `ast.Assign` n'est qu'une des façons d'écrire la même vulnérabilité. Mesuré
+# sur un fichier où le même chemin `request.args` -> `os.system` est écrit de
+# quatorze façons : 2 sites détectés sur 14 avant, plus un faux positif. Un
+# faux négatif de classe, puisque c'est la syntaxe qui décide, pas le code.
+
+
+def _hit(candidates, symbol_suffix):
+    return any(c.sink.symbol.endswith(symbol_suffix) for c in candidates)
+
+
+def test_an_annotated_assignment_carries_taint(tmp_path):
+    candidates = _analyse_source(
+        tmp_path,
+        "import os\nfrom flask import request\n\n\ndef view():\n"
+        "    host: str = request.args.get('host')\n"
+        "    os.system('ping -c1 ' + host)\n",
+    )
+    assert {c.rule for c in candidates} == {"sink.os.system"}
+
+
+def test_a_for_target_carries_taint(tmp_path):
+    candidates = _analyse_source(
+        tmp_path,
+        "import os\nfrom flask import request\n\n\ndef view():\n"
+        "    for host in request.args.getlist('host'):\n"
+        "        os.system('ping -c1 ' + host)\n",
+    )
+    assert {c.rule for c in candidates} == {"sink.os.system"}
+
+
+def test_an_async_for_target_carries_taint(tmp_path):
+    candidates = _analyse_source(
+        tmp_path,
+        "import os\nfrom flask import request\n\n\nasync def view():\n"
+        "    async for host in request.args.getlist('host'):\n"
+        "        os.system('ping -c1 ' + host)\n",
+    )
+    assert {c.rule for c in candidates} == {"sink.os.system"}
+
+
+def test_a_tuple_unpacking_target_carries_taint(tmp_path):
+    candidates = _analyse_source(
+        tmp_path,
+        "import os\nfrom flask import request\n\n\ndef view():\n"
+        "    host, port = request.args.get('host'), 80\n"
+        "    os.system('ping -c1 ' + host)\n",
+    )
+    assert {c.rule for c in candidates} == {"sink.os.system"}
+
+
+def test_tuple_unpacking_pairs_element_to_element(tmp_path):
+    """`host, port = request.args.get('host'), 80` taints `host` and nothing
+    else — flattening both sides would call the literal 80 untrusted."""
+    candidates = _analyse_source(
+        tmp_path,
+        "import os\nfrom flask import request\n\n\ndef view():\n"
+        "    host, port = request.args.get('host'), 80\n"
+        "    os.system('ping -c1 ' + host)\n"
+        "    os.system('ping -p ' + str(port))\n",
+    )
+    assert [c.sink.line for c in candidates] == [7]
+
+
+def test_a_starred_target_carries_taint(tmp_path):
+    candidates = _analyse_source(
+        tmp_path,
+        "import os\nfrom flask import request\n\n\ndef view():\n"
+        "    first, *rest = request.args.getlist('host')\n"
+        "    os.system('ping -c1 ' + rest[0])\n",
+    )
+    assert {c.rule for c in candidates} == {"sink.os.system"}
+
+
+def test_a_walrus_target_carries_taint(tmp_path):
+    candidates = _analyse_source(
+        tmp_path,
+        "import os\nfrom flask import request\n\n\ndef view():\n"
+        "    if (host := request.args.get('host')):\n"
+        "        os.system('ping -c1 ' + host)\n",
+    )
+    assert {c.rule for c in candidates} == {"sink.os.system"}
+
+
+def test_an_augmented_assignment_carries_taint(tmp_path):
+    candidates = _analyse_source(
+        tmp_path,
+        "import os\nfrom flask import request\n\n\ndef view():\n"
+        "    host = ''\n"
+        "    host += request.args.get('host')\n"
+        "    os.system('ping -c1 ' + host)\n",
+    )
+    assert {c.rule for c in candidates} == {"sink.os.system"}
+
+
+def test_an_augmented_assignment_keeps_the_taint_of_its_own_target(tmp_path):
+    """`buffer += ' --now'` reads `buffer`; a constant right-hand side must not
+    launder what the target already carried."""
+    candidates = _analyse_source(
+        tmp_path,
+        "import os\nfrom flask import request\n\n\ndef view():\n"
+        "    command = request.args.get('cmd')\n"
+        "    command += ' --now'\n"
+        "    os.system(command)\n",
+    )
+    assert {c.rule for c in candidates} == {"sink.os.system"}
+
+
+def test_a_with_target_carries_taint(tmp_path):
+    candidates = _analyse_source(
+        tmp_path,
+        "import os\nfrom flask import request\n\n\ndef view():\n"
+        "    with request.args.get('host') as host:\n"
+        "        os.system('ping -c1 ' + host)\n",
+    )
+    assert {c.rule for c in candidates} == {"sink.os.system"}
+
+
+def test_an_async_with_target_carries_taint(tmp_path):
+    candidates = _analyse_source(
+        tmp_path,
+        "import os\nfrom flask import request\n\n\nasync def view():\n"
+        "    async with request.args.get('host') as host:\n"
+        "        os.system('ping -c1 ' + host)\n",
+    )
+    assert {c.rule for c in candidates} == {"sink.os.system"}
+
+
+def test_an_attribute_target_carries_taint(tmp_path):
+    candidates = _analyse_source(
+        tmp_path,
+        "import os\nfrom flask import request\n\n\ndef view(box):\n"
+        "    box.host = request.args.get('host')\n"
+        "    os.system('ping -c1 ' + box.host)\n",
+    )
+    assert {c.rule for c in candidates} == {"sink.os.system"}
+
+
+def test_a_comprehension_target_carries_taint(tmp_path):
+    """The sink is inside the comprehension, so the `for` clause is the only
+    place the name is ever bound."""
+    candidates = _analyse_source(
+        tmp_path,
+        "import os\nfrom flask import request\n\n\ndef view():\n"
+        "    [os.system('ping -c1 ' + h) for h in request.args.getlist('host')]\n",
+    )
+    assert {c.rule for c in candidates} == {"sink.os.system"}
+
+
+def test_an_except_target_drops_the_taint_the_name_carried(tmp_path):
+    """`except ... as host` rebinds `host` to an exception, exactly as
+    `host = 'safe'` would — the caught object is not what the request sent."""
+    candidates = _analyse_source(
+        tmp_path,
+        "import os\nfrom flask import request\n\n\ndef view():\n"
+        "    host = request.args.get('host')\n"
+        "    try:\n"
+        "        pass\n"
+        "    except Exception as host:\n"
+        "        os.system('ping -c1 ' + str(host))\n",
+    )
+    assert candidates == []
+
+
+def test_a_loop_over_an_untainted_iterable_taints_nothing(tmp_path):
+    candidates = _analyse_source(
+        tmp_path,
+        "import os\n\n\ndef view():\n"
+        "    for host in ('localhost', '127.0.0.1'):\n"
+        "        os.system('ping -c1 ' + host)\n",
+    )
+    assert candidates == []
+
+
+# --- ce que le moteur Python ouvre, et ce qu'il garde ouvert ---------------
+
+
+def test_a_typescript_symbol_is_left_to_the_javascript_engine(tmp_path):
+    """`graph.symbols` holds both languages, and this engine used to hand every
+    one of them to `ast.parse`: measured on hermes/, 1957 .ts/.tsx/.js files
+    read and parsed for 0 successes."""
+    (tmp_path / "app.ts").write_text(
+        "import os\nfrom flask import request\n\n\ndef view():\n"
+        "    host = request.args.get('host')\n"
+        "    os.system('ping -c1 ' + host)\n",
+        encoding="utf-8",
+    )
+    symbols = PythonIndexer().index_file(tmp_path, "app.ts")
+    graph = CodeGraph.build(symbols)
+    assert find_candidates(tmp_path, graph) == []
+
+
+def test_a_syntax_tree_does_not_outlive_the_file_it_came_from(tmp_path):
+    """Holding every function body of the repository at once costs 2035 MB of
+    peak RSS on hermes/ (4457 files, 75 243 bodies) against 136 MB one file at
+    a time. The engine parses a file, takes its facts, and lets the tree go."""
+    import gc
+    import weakref
+
+    from thot.taint import engine
+
+    for name in ("a", "b"):
+        (tmp_path / f"{name}.py").write_text(
+            f"import os\n\n\ndef {name}_view(value):\n"
+            "    os.system('echo ' + value)\n",
+            encoding="utf-8",
+        )
+
+    trees: list[weakref.ref] = []
+    survivors: list[int] = []
+    real = engine._analyse_body
+
+    def spy(symbol, node, imported=frozenset()):
+        gc.collect()
+        survivors.append(sum(1 for ref in trees if ref() is not None))
+        trees.append(weakref.ref(node))
+        return real(symbol, node, imported)
+
+    engine._analyse_body = spy
+    try:
+        symbols = PythonIndexer().index_file(tmp_path, "a.py")
+        symbols += PythonIndexer().index_file(tmp_path, "b.py")
+        find_candidates(tmp_path, CodeGraph.build(symbols))
+    finally:
+        engine._analyse_body = real
+
+    assert survivors == [0, 0], survivors
+
+
+def test_the_fixed_point_does_not_rescan_what_it_has_already_merged(tmp_path):
+    """Deduplicating by linear search through a list of frozen dataclasses is
+    quadratic in the sinks a parameter accumulates: measured on hermes/, 4.5 M
+    membership tests scanning 121 M entries."""
+    from thot.contracts import CodeRef
+
+    sinks = "".join(f"    os.system('echo {i} ' + cmd)\n" for i in range(120))
+    callers = "".join(
+        f"def caller{i}(value):\n    propagate(value)\n\n\n" for i in range(12)
+    )
+    (tmp_path / "wide.py").write_text(
+        f"import os\n\n\ndef propagate(cmd):\n{sinks}\n\n{callers}",
+        encoding="utf-8",
+    )
+    symbols = PythonIndexer().index_file(tmp_path, "wide.py")
+    graph = CodeGraph.build(symbols)
+
+    comparisons = [0]
+    real = CodeRef.__eq__
+
+    def counting(self, other):
+        comparisons[0] += 1
+        return real(self, other)
+
+    CodeRef.__eq__ = counting
+    try:
+        find_candidates(tmp_path, graph)
+    finally:
+        CodeRef.__eq__ = real
+
+    assert comparisons[0] < 5_000, comparisons[0]
+
+
+# Deux gardes sur les corrections apportées aux correctifs, pas sur les
+# défauts eux-mêmes : elles passaient déjà, et elles doivent continuer.
+
+
+def test_a_self_recursive_propagator_lists_its_own_sink_once(tmp_path):
+    """The membership index of the fixed point is seeded from the list, not
+    from the empty set: `_analyse_body` has already recorded this body's own
+    sinks, and a call to itself would otherwise append them a second time."""
+    from thot.codemap.catalog import using
+    from thot.codemap.rules import load_catalog
+    from thot.taint import engine
+
+    (tmp_path / "r.py").write_text(
+        "import os\n\n\ndef propagate(cmd):\n"
+        "    os.system(cmd)\n"
+        "    propagate(cmd)\n",
+        encoding="utf-8",
+    )
+    symbols = PythonIndexer().index_file(tmp_path, "r.py")
+    graph = CodeGraph.build(symbols)
+
+    captured: dict[str, object] = {}
+    real = engine._analyse_body
+
+    def spy(symbol, node, imported=frozenset()):
+        facts = real(symbol, node, imported)
+        captured[symbol.name] = facts
+        return facts
+
+    engine._analyse_body = spy
+    try:
+        with using(load_catalog(tmp_path)):
+            engine._find_candidates(tmp_path, graph, 3)
+    finally:
+        engine._analyse_body = real
+
+    sinks = captured["r.propagate"].param_sinks["cmd"]
+    assert len(sinks) == len(set(sinks)), sinks
+
+
+# --- reading *through* a tainted value ------------------------------------
+#
+# `handle.read()`, `payload.decode()`, `body.strip()` — the ordinary way a
+# value travels in Python. The engine rendered these as one dotted name,
+# `handle.read`, and looked *that* up in a map that only ever holds `handle`.
+# Measured before the fix: five of ten propagation forms lost, including
+# every method call on a tainted name.
+
+
+def _one(tmp_path, body: str) -> set[str]:
+    (tmp_path / "a.py").write_text("import os, sys, shlex\n" + body)
+    manifest = detect_scope(tmp_path)
+    symbols = [
+        s for relative in manifest.files
+        for s in PythonIndexer().index_file(tmp_path, relative)
+    ]
+    graph = CodeGraph.build(symbols, manifest.entrypoints)
+    return {c.rule for c in find_candidates(tmp_path, graph)}
+
+
+def test_a_method_call_on_a_tainted_value_keeps_the_taint(tmp_path):
+    assert "sink.os.system" in _one(tmp_path, """
+def main():
+    command = sys.argv[1]
+    os.system(command.strip())
+""")
+
+
+def test_an_attribute_of_a_tainted_value_keeps_the_taint(tmp_path):
+    assert "sink.os.system" in _one(tmp_path, """
+def main():
+    payload = sys.argv[1]
+    os.system(payload.data)
+""")
+
+
+def test_a_method_call_on_a_tainted_parameter_keeps_the_taint(tmp_path):
+    assert "sink.os.system" in _one(tmp_path, """
+def run(payload):
+    os.system(payload.decode())
+
+def main():
+    run(sys.argv[1])
+""")
+
+
+def test_a_source_read_through_a_method_is_a_path(tmp_path):
+    assert "sink.os.system" in _one(tmp_path, """
+def main():
+    os.system(sys.argv[1].strip())
+""")
+
+
+def test_a_file_opened_on_a_tainted_path_yields_tainted_content(tmp_path):
+    assert "sink.os.system" in _one(tmp_path, """
+def main():
+    with open(sys.argv[1]) as handle:
+        os.system(handle.read())
+""")
+
+
+def test_a_sibling_attribute_is_not_tainted(tmp_path):
+    """`box.host` tainted says nothing about `box.name`. Widening the lookup
+    the other way — root tainted implies attribute tainted — must not become
+    attribute tainted implies root tainted."""
+    assert _one(tmp_path, """
+def main():
+    box = Box()
+    box.host = sys.argv[1]
+    os.system(box.name)
+""") == set()
+
+
+def test_a_sanitiser_still_ends_the_path_through_a_method(tmp_path):
+    assert _one(tmp_path, """
+def main():
+    command = sys.argv[1]
+    os.system(shlex.quote(command.strip()))
+""") == set()
+
+
+def test_the_receiver_is_not_an_input_channel(tmp_path):
+    """`self` is a parameter the way a hand is a tool. A constant read off
+    the instance is a constant, whatever the method's signature says."""
+    assert _one(tmp_path, """
+class Store:
+    TABLES = ("notes", "tags")
+
+    def rebuild(self, conn):
+        for table in self.TABLES:
+            os.system("vacuum " + table)
+""") == set()
+
+
+def test_a_message_from_a_rejected_value_is_tainted(tmp_path):
+    """`int(x)` sanitises when it succeeds. When it fails it raises with the
+    text it refused — which is how the value leaves the try block."""
+    assert "sink.os.system" in _one(tmp_path, """
+def main():
+    try:
+        int(sys.argv[1])
+    except ValueError as failure:
+        os.system(str(failure))
+""")
+
+
+def test_an_exception_from_a_clean_block_is_not_tainted(tmp_path):
+    assert _one(tmp_path, """
+def main():
+    try:
+        int("12")
+    except ValueError as failure:
+        os.system(str(failure))
+""") == set()
+
+
+def test_the_caught_name_still_loses_what_it_carried(tmp_path):
+    """Rebinding is rebinding: `failure` held a command, now it holds an
+    exception raised by a block that touched nothing untrusted."""
+    assert _one(tmp_path, """
+def main():
+    failure = sys.argv[1]
+    try:
+        int("12")
+    except ValueError as failure:
+        os.system(str(failure))
+""") == set()
+
+
+# --- where the value came from is half of how serious it is ----------------
+#
+# `open(args.output, "w")` in a command-line tool is the operator naming a
+# file: whoever supplies argv already has the filesystem, and the call grants
+# nothing. `open(request.args["f"])` in a handler is arbitrary file read.
+# Same rule, same sink, and the engine ranked them identically because a
+# candidate recorded where its source *was* and never which rule matched it.
+# Measured on Hermes the day attribute chains started resolving: 48 findings
+# of the first kind, 9 from one CI script, all at medium.
+
+
+def _candidates(tmp_path, body: str) -> list:
+    (tmp_path / "a.py").write_text("import os, sys\n" + body)
+    manifest = detect_scope(tmp_path)
+    symbols = [
+        s for relative in manifest.files
+        for s in PythonIndexer().index_file(tmp_path, relative)
+    ]
+    graph = CodeGraph.build(symbols, manifest.entrypoints)
+    return find_candidates(tmp_path, graph)
+
+
+def test_a_candidate_says_which_source_started_it(tmp_path):
+    found = _candidates(tmp_path, """
+def main():
+    os.system(sys.argv[1])
+""")
+
+    assert [c.source_rule for c in found] == ["source.argv"]
+
+
+def test_a_path_named_on_the_command_line_ranks_below_one_from_a_request(tmp_path):
+    from thot.contracts import Severity
+
+    local = _candidates(tmp_path, """
+def main():
+    open(sys.argv[1]).read()
+""")
+    remote = _candidates(tmp_path, """
+from flask import request
+
+def handler():
+    open(request.args["f"]).read()
+""")
+
+    assert [c.impact for c in local] == [Severity.LOW]
+    assert [c.impact for c in remote] == [Severity.MEDIUM]
+
+
+def test_the_discount_applies_to_the_path_and_not_to_the_shell(tmp_path):
+    """Only the sinks whose seriousness depends on the distance travelled.
+    A command built from argv is still a command."""
+    from thot.contracts import Severity
+
+    found = _candidates(tmp_path, """
+def main():
+    os.system(sys.argv[1])
+""")
+
+    assert [c.impact for c in found] == [Severity.CRITICAL]
+
+
+def test_a_named_source_wins_over_an_unattributed_duplicate(tmp_path):
+    """The same sink is reached twice: once inside the helper, whose
+    parameter is tainted by assumption and names no rule, and once from the
+    caller that actually fed it `sys.argv`. Both produce the same finding,
+    and the first one emitted used to win — so the run kept the version that
+    knew nothing about where the value came from."""
+    found = _candidates(tmp_path, """
+def helper(path):
+    handle = open(path)
+    return handle.read()
+
+def main():
+    helper(sys.argv[1])
+""")
+
+    assert [c.source_rule for c in found] == ["source.argv"]
+
+
+def test_a_local_derived_from_a_parameter_still_reaches_its_caller(tmp_path):
+    """`target = path.strip()` and the link to `path` was gone: the sink was
+    registered against no parameter, so no caller was ever paired with it.
+    The path was still reported — from inside the helper, starting nowhere."""
+    found = _candidates(tmp_path, """
+def helper(path):
+    target = path.strip()
+    open(target).read()
+
+def main():
+    helper(sys.argv[1])
+""")
+
+    assert [c.source_rule for c in found] == ["source.argv"]
+    # And the reported path goes through the call, not just the helper.
+    assert len(found[0].path) == 3
+
+
+# --- quel paramètre un argument remplit -----------------------------------
+#
+# Le moteur appariait un appelant avec *tous* les sinks du callee, sans
+# regarder où l'argument atterrissait : `helper(untrusted, "ls")` contre
+# `def helper(safe, cmd)` était rapporté comme un chemin vers le shell que
+# seul `cmd` atteint. Le moteur JavaScript lit déjà `callee.params[index]` ;
+# ces tests tiennent les deux bouts, le faux positif retiré et les vrais
+# positifs conservés.
+
+
+_TWO_SLOTS = """
+def helper(safe, cmd):
+    os.system(cmd)
+
+def main():
+    helper(%s)
+"""
+
+
+def test_a_value_handed_to_a_safe_parameter_reaches_no_sink(tmp_path):
+    """The whole point: `safe` goes nowhere near `os.system`."""
+    assert _one(tmp_path, _TWO_SLOTS % 'sys.argv[1], "ls"') == set()
+
+
+def test_the_same_value_in_the_dangerous_slot_is_still_reported(tmp_path):
+    """The guard against over-correcting: move the argument one slot right
+    and the finding must come back."""
+    assert "sink.os.system" in _one(tmp_path, _TWO_SLOTS % '"ls", sys.argv[1]')
+
+
+def test_a_keyword_argument_is_matched_by_name(tmp_path):
+    assert _one(tmp_path, _TWO_SLOTS % 'safe=sys.argv[1], cmd="ls"') == set()
+    assert "sink.os.system" in _one(
+        tmp_path, _TWO_SLOTS % 'cmd=sys.argv[1], safe="ls"'
+    )
+
+
+def test_a_starred_argument_leaves_every_parameter_open(tmp_path):
+    """`helper(*argv)` settles no position, so the engine keeps the answer it
+    gave before slots were tracked. Losing a real path to a spread argument
+    would be the expensive half of this trade."""
+    assert "sink.os.system" in _one(tmp_path, """
+def helper(safe, cmd):
+    os.system(cmd)
+
+def main():
+    argv = [sys.argv[1], "ls"]
+    helper(*argv)
+""")
+
+
+def test_a_receiver_shifts_the_positions_by_one(tmp_path):
+    """`Runner().go(x)` renders as a bare `go` — the call site cannot say
+    whether a receiver was passed, so the callee's signature decides."""
+    method = """
+class Runner:
+    def go(self, safe, cmd):
+        os.system(cmd)
+
+def main():
+    Runner().go(%s)
+"""
+    assert _one(tmp_path, method % 'sys.argv[1], "ls"') == set()
+    assert "sink.os.system" in _one(tmp_path, method % '"ls", sys.argv[1]')
+
+
+def test_the_slot_survives_a_second_hop(tmp_path):
+    """The fixed point propagates `param_sinks` across call edges, and it
+    matched slots just as loosely as the emission did — so a two-hop chain
+    would have re-introduced the false positive one level up."""
+    relayed = """
+def inner(safe, cmd):
+    os.system(cmd)
+
+def outer(first, second):
+    inner(first, second)
+
+def main():
+    outer(%s)
+"""
+    assert _one(tmp_path, relayed % 'sys.argv[1], "ls"') == set()
+    assert "sink.os.system" in _one(tmp_path, relayed % '"ls", sys.argv[1]')
+
+
+# -- a value that travels through a container --------------------------------
+#
+# Measured on a labelled corpus: 27 % of the cases still missed in categories
+# where Thot already had a working rule were this one shape. `parts` was
+# assigned an empty list and never re-assigned, so nothing in the walk made it
+# untrusted and the sink saw a clean name — the engine's answer depended on
+# whether the author happened to use a list.
+
+
+def _findings(tmp_path, source: str):
+    from thot.pipeline import run_audit
+
+    (tmp_path / "app.py").write_text(source, encoding="utf-8")
+    return run_audit(tmp_path, require_authorization=False, budget=0).findings
+
+
+def test_a_value_appended_to_a_list_taints_the_list(tmp_path):
+    found = _findings(tmp_path, (
+        "import os\n"
+        "import sys\n\n"
+        "def main():\n"
+        "    parts = []\n"
+        "    for token in sys.argv[1].split(','):\n"
+        "        parts.append(token.strip())\n"
+        "    os.system('echo ' + ','.join(parts))\n"
+    ))
+    assert [f.rule for f in found] == ["sink.os.system"]
+
+
+def test_appending_a_constant_leaves_the_list_alone(tmp_path):
+    found = _findings(tmp_path, (
+        "import os\n\n"
+        "def main():\n"
+        "    parts = []\n"
+        "    parts.append('ls')\n"
+        "    os.system(' '.join(parts))\n"
+    ))
+    assert found == []
+
+
+def test_appending_a_constant_does_not_launder_what_the_list_held(tmp_path):
+    """The same reason `AugAssign` reads its own target: a second, clean
+    append must not wash out the first, dirty one."""
+    found = _findings(tmp_path, (
+        "import os\n"
+        "import sys\n\n"
+        "def main():\n"
+        "    parts = []\n"
+        "    parts.append(sys.argv[1])\n"
+        "    parts.append('--now')\n"
+        "    os.system(' '.join(parts))\n"
+    ))
+    assert [f.rule for f in found] == ["sink.os.system"]
+
+
+def test_a_set_and_a_dict_carry_a_value_like_a_list(tmp_path):
+    found = _findings(tmp_path, (
+        "import os\n"
+        "import sys\n\n"
+        "def main():\n"
+        "    seen = set()\n"
+        "    seen.add(sys.argv[1])\n"
+        "    os.system(' '.join(seen))\n"
+    ))
+    assert [f.rule for f in found] == ["sink.os.system"]
+
+
+def test_a_container_reached_through_an_attribute_is_not_invented(tmp_path):
+    """`self.items.append(x)` mutates something the engine does not track as
+    a name. Tainting `items` would taint a name that does not exist here."""
+    from thot.taint.engine import _mutated_container
+    import ast
+
+    call = ast.parse("self.items.append(x)").body[0].value
+    assert _mutated_container(call) is None
+
+    bare = ast.parse("items.append(x)").body[0].value
+    assert _mutated_container(bare) == "items"
+
+
+def test_a_method_that_reads_rather_than_writes_is_not_a_mutation(tmp_path):
+    from thot.taint.engine import _mutated_container
+    import ast
+
+    call = ast.parse("parts.index(x)").body[0].value
+    assert _mutated_container(call) is None
+
+
+# -- guards that prove a destination, not a value ----------------------------
+#
+# Recognising these took `ssrf` from J -8 % to +65 %, `cloud_ssrf_metadata`
+# from 0 % to +79 % and `pathtraver` from +23 % to +56 %, over 18 300 labelled
+# cases, without losing one true positive. Every test below that ends in a
+# finding being KEPT exists because an adversarial probe on the first version
+# of this code turned a real vulnerability into silence: a range check on an
+# IP says nothing about shell metacharacters, and a path confined under a
+# directory is still a string full of semicolons.
+
+
+def test_a_host_allow_list_clears_an_outgoing_request(tmp_path):
+    found = _findings(tmp_path, (
+        "import requests\n"
+        "from urllib.parse import urlparse\n"
+        "from flask import request\n\n"
+        "@app.route('/x')\n"
+        "def handler():\n"
+        "    url = request.args.get('url', '')\n"
+        "    parsed = urlparse(url)\n"
+        "    if parsed.hostname not in ('a.example', 'b.example'):\n"
+        "        return 'no', 403\n"
+        "    requests.get(url)\n"
+    ))
+    assert found == []
+
+
+def test_a_host_allow_list_does_not_clear_a_shell(tmp_path):
+    """The guard constrains where the request goes. The string still holds
+    whatever the attacker put after the host."""
+    found = _findings(tmp_path, (
+        "import os\n"
+        "from urllib.parse import urlparse\n"
+        "from flask import request\n\n"
+        "@app.route('/x')\n"
+        "def handler():\n"
+        "    url = request.args.get('url', '')\n"
+        "    parsed = urlparse(url)\n"
+        "    if parsed.hostname not in ('a.example',):\n"
+        "        return 'no', 403\n"
+        "    os.system('curl ' + url)\n"
+    ))
+    assert [f.rule for f in found] == ["sink.os.system"]
+
+
+def test_a_host_attribute_on_any_object_clears_nothing(tmp_path):
+    """`payload.host` is not a parsed URL. Without the origin requirement any
+    attribute spelled `host` launders any value."""
+    found = _findings(tmp_path, (
+        "import os\n"
+        "from flask import request\n\n"
+        "@app.route('/x')\n"
+        "def handler():\n"
+        "    payload = request.get_json()\n"
+        "    if payload.host not in ('a.example',):\n"
+        "        return 'no', 403\n"
+        "    os.system(payload.host)\n"
+    ))
+    assert [f.rule for f in found] == ["sink.os.system"]
+
+
+def test_a_resolved_address_range_check_clears_an_outgoing_request(tmp_path):
+    found = _findings(tmp_path, (
+        "import ipaddress\n"
+        "import socket\n"
+        "import requests\n"
+        "from urllib.parse import urlparse\n"
+        "from flask import request\n\n"
+        "@app.route('/x')\n"
+        "def handler():\n"
+        "    url = request.args.get('url', '')\n"
+        "    parsed = urlparse(url)\n"
+        "    resolved = socket.gethostbyname(parsed.hostname or url)\n"
+        "    if ipaddress.ip_address(resolved).is_private:\n"
+        "        return 'no', 403\n"
+        "    target = url.replace(parsed.hostname, resolved)\n"
+        "    requests.get(target)\n"
+    ))
+    assert found == [], "la valeur dérivée après la garde doit l'être aussi"
+
+
+def test_a_range_check_does_not_clear_a_shell(tmp_path):
+    found = _findings(tmp_path, (
+        "import ipaddress\n"
+        "import socket\n"
+        "import os\n"
+        "from urllib.parse import urlparse\n"
+        "from flask import request\n\n"
+        "@app.route('/x')\n"
+        "def handler():\n"
+        "    url = request.args.get('url', '')\n"
+        "    parsed = urlparse(url)\n"
+        "    resolved = socket.gethostbyname(parsed.hostname or url)\n"
+        "    if ipaddress.ip_address(resolved).is_private:\n"
+        "        return 'no', 403\n"
+        "    os.system('curl -s ' + url)\n"
+    ))
+    assert [f.rule for f in found] == ["sink.os.system"]
+
+
+def test_a_range_check_needs_an_address_that_was_resolved(tmp_path):
+    """On a hostname the check answers about the wrong thing entirely."""
+    found = _findings(tmp_path, (
+        "import ipaddress\n"
+        "import requests\n"
+        "from flask import request\n\n"
+        "@app.route('/x')\n"
+        "def handler():\n"
+        "    host = request.args.get('host', '')\n"
+        "    if ipaddress.ip_address(host).is_private:\n"
+        "        return 'no', 403\n"
+        # https, so the only rule under test here is the taint one — plain
+        # http is a finding of its own now, and correctly so.
+        "    requests.get('https://' + host)\n"
+    ))
+    assert [f.rule for f in found] == ["sink.network"]
+
+
+def test_a_path_confined_under_a_constant_root_clears_a_read(tmp_path):
+    found = _findings(tmp_path, (
+        "from pathlib import Path\n"
+        "from flask import request\n\n"
+        "@app.route('/x')\n"
+        "def handler():\n"
+        "    data = request.args.get('name', '')\n"
+        "    base = Path('/var/app/data').resolve()\n"
+        "    candidate = (base / data).resolve()\n"
+        "    if base not in candidate.parents and candidate != base:\n"
+        "        return 'no', 403\n"
+        "    return open(str(candidate)).read()\n"
+    ))
+    assert found == []
+
+
+def test_a_confined_path_does_not_clear_a_shell(tmp_path):
+    """`realpath` keeps every shell metacharacter it was given. A path under
+    the right directory is still `x; rm -rf /`."""
+    found = _findings(tmp_path, (
+        "import os\n"
+        "from pathlib import Path\n"
+        "from flask import request\n\n"
+        "@app.route('/x')\n"
+        "def handler():\n"
+        "    data = request.args.get('name', '')\n"
+        "    base = Path('/var/app/data').resolve()\n"
+        "    candidate = (base / data).resolve()\n"
+        "    if base not in candidate.parents and candidate != base:\n"
+        "        return 'no', 403\n"
+        "    os.system('cat ' + str(candidate))\n"
+    ))
+    assert [f.rule for f in found] == ["sink.os.system"]
+
+
+def test_a_root_the_attacker_chose_confines_nothing(tmp_path):
+    found = _findings(tmp_path, (
+        "from pathlib import Path\n"
+        "from flask import request\n\n"
+        "@app.route('/x')\n"
+        "def handler():\n"
+        "    root = request.args.get('root', '')\n"
+        "    data = request.args.get('name', '')\n"
+        "    base = Path(root).resolve()\n"
+        "    candidate = (base / data).resolve()\n"
+        "    if base not in candidate.parents and candidate != base:\n"
+        "        return 'no', 403\n"
+        "    return open(str(candidate)).read()\n"
+    ))
+    assert [f.rule for f in found] == ["sink.fs.read"]
+
+
+def test_a_constant_prefix_check_clears_a_read(tmp_path):
+    found = _findings(tmp_path, (
+        "import os\n"
+        "from flask import request\n\n"
+        "@app.route('/x')\n"
+        "def handler():\n"
+        "    data = request.args.get('name', '')\n"
+        "    base_dir = '/var/app/data'\n"
+        "    full = os.path.realpath(os.path.join(base_dir, data))\n"
+        "    if not full.startswith(base_dir + os.sep):\n"
+        "        return 'no', 403\n"
+        "    return open(full).read()\n"
+    ))
+    assert found == []
+
+
+def test_an_allow_list_given_a_name_is_the_same_guard_as_one_written_inline(tmp_path):
+    found = _findings(tmp_path, (
+        "import os\n"
+        "from flask import request\n\n"
+        "@app.route('/x')\n"
+        "def handler():\n"
+        "    allowed = {'config.json', 'index.html'}\n"
+        "    data = request.args.get('name', '')\n"
+        "    if data not in allowed:\n"
+        "        return 'no', 403\n"
+        "    return open('/var/app/data/' + data).read()\n"
+    ))
+    assert found == []
+
+
+def test_an_allow_list_that_was_widened_stops_being_one(tmp_path):
+    """`allowed.add(user_value)` two lines up makes the membership test say
+    nothing at all, and the name must stop counting at that line."""
+    found = _findings(tmp_path, (
+        "from flask import request\n\n"
+        "@app.route('/x')\n"
+        "def handler():\n"
+        "    allowed = {'config.json'}\n"
+        "    data = request.args.get('name', '')\n"
+        "    allowed.add(data)\n"
+        "    if data not in allowed:\n"
+        "        return 'no', 403\n"
+        "    return open('/var/app/data/' + data).read()\n"
+    ))
+    assert [f.rule for f in found] == ["sink.fs.read"]
+
+
+# -- a fullmatch pattern that forbids one character is not an allow-list ------
+
+
+def test_a_negated_character_class_is_a_deny_list_however_it_is_anchored(tmp_path):
+    found = _findings(tmp_path, (
+        "import os\n"
+        "import re\n"
+        "from flask import request\n\n"
+        "@app.route('/x')\n"
+        "def handler():\n"
+        "    data = request.args.get('q', '')\n"
+        "    if not re.fullmatch('^[^\\\\x00]+$', data):\n"
+        "        return 'no', 400\n"
+        "    os.system('echo ' + data)\n"
+    ))
+    assert [f.rule for f in found] == ["sink.os.system"]
+
+
+def test_an_enumerated_character_class_still_counts(tmp_path):
+    found = _findings(tmp_path, (
+        "import os\n"
+        "import re\n"
+        "from flask import request\n\n"
+        "@app.route('/x')\n"
+        "def handler():\n"
+        "    data = request.args.get('q', '')\n"
+        "    if not re.fullmatch('[a-z0-9_-]+', data):\n"
+        "        return 'no', 400\n"
+        "    os.system('echo ' + data)\n"
+    ))
+    assert found == []
+
+
+# -- HTML that is told not to be escaped -------------------------------------
+
+
+def test_marking_request_data_as_safe_html_is_a_finding(tmp_path):
+    found = _findings(tmp_path, (
+        "from django.utils.safestring import mark_safe\n"
+        "from django.http import HttpResponse\n\n"
+        "def show(request):\n"
+        "    value = request.GET.get('q', '')\n"
+        "    return HttpResponse(mark_safe('<div>' + str(value) + '</div>'))\n"
+    ))
+    assert [f.rule for f in found] == ["sink.xss"]
+
+
+def test_escaping_before_marking_it_safe_is_not(tmp_path):
+    found = _findings(tmp_path, (
+        "import html\n"
+        "from django.utils.safestring import mark_safe\n"
+        "from django.http import HttpResponse\n\n"
+        "def show(request):\n"
+        "    value = request.GET.get('q', '')\n"
+        "    clean = html.escape(value)\n"
+        "    return HttpResponse(mark_safe('<div>' + clean + '</div>'))\n"
+    ))
+    assert found == []
+
+
+def test_a_html_cleaner_answers_for_html_and_not_for_a_shell(tmp_path):
+    """`bleach.clean` strips tags. It leaves `x; rm -rf /` exactly as it found
+    it, so it clears `sink.xss` and must not clear `sink.os.system`."""
+    found = _findings(tmp_path, (
+        "import bleach\n"
+        "import os\n"
+        "from django.utils.safestring import mark_safe\n\n"
+        "def show(request):\n"
+        "    value = request.GET.get('q', '')\n"
+        "    clean = bleach.clean(value)\n"
+        "    os.system('echo ' + clean)\n"
+        "    return mark_safe('<div>' + clean + '</div>')\n"
+    ))
+    assert [f.rule for f in found] == ["sink.os.system"]
+
+
+def test_returning_through_a_response_is_not_by_itself_a_finding(tmp_path):
+    """Django escapes on the way out. A rule on the response would have fired
+    on the safe half of the corpus too and separated nothing."""
+    found = _findings(tmp_path, (
+        "from django.http import HttpResponse\n\n"
+        "def show(request):\n"
+        "    value = request.GET.get('q', '')\n"
+        "    return HttpResponse(value)\n"
+    ))
+    assert found == []

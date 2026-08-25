@@ -80,6 +80,12 @@ def render_json(
                     for r in f.taint_path
                 ],
                 "failure_scenario": f.failure_scenario,
+                # Which rule started the path. A consumer that filters or
+                # re-ranks — a CI gate, a dashboard — needs the same fact the
+                # rank was computed from, and reading it back out of a French
+                # sentence is not an interface.
+                **({"source_rule": (f.provenance or {})["source_rule"]}
+                   if (f.provenance or {}).get("source_rule") else {}),
                 **({"jugement": _judgement(f)} if _judgement(f) else {}),
             }
             for f in findings

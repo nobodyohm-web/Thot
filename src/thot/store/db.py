@@ -49,6 +49,15 @@ class Store:
         path = Path(path)
         path.parent.mkdir(parents=True, exist_ok=True)
         connection = sqlite3.connect(path)
+        # WAL, for the same reason the session store asks for it: the
+        # scheduler daemon audits on its own clock, and outside WAL one open
+        # read transaction makes its every write wait out the busy timeout
+        # and then fail with "database is locked". Refused on some network
+        # shares, where the rollback journal still works.
+        try:
+            connection.execute("PRAGMA journal_mode = WAL")
+        except sqlite3.Error:
+            pass
         connection.executescript(_SCHEMA)
         connection.commit()
         return cls(connection)
@@ -113,6 +122,35 @@ class Store:
                 )
             )
         return findings
+
+    def rule_precision(self) -> list[tuple[str, int, int]]:
+        """Per rule: how many distinct candidates were judged, how many held.
+
+        `count(distinct id)`, never `count(*)`. A finding keeps its verdict
+        through `apply_memory` and is written again on every later run, so
+        this table holds 15 008 judged rows for 638 distinct candidates — a
+        23x inflation, and it does not fall evenly: a rule whose findings sit
+        in a tree that is audited nightly would look twenty times better
+        evidenced than one audited twice. Counting rows narrows every
+        interval by that factor and would condemn `sink.sql` at 0.18 % when
+        its honest ceiling is 4.33 %.
+
+        Only decided rows count. `plausible` means the deep pass never
+        reached it, which is a statement about the budget and not about the
+        rule.
+        """
+        rows = self._connection.execute(
+            """
+            SELECT rule,
+                   COUNT(DISTINCT id),
+                   COUNT(DISTINCT CASE WHEN confidence = 'confirmed'
+                                       THEN id END)
+              FROM findings
+             WHERE confidence IN ('confirmed', 'refuted')
+             GROUP BY rule
+            """
+        ).fetchall()
+        return [(rule, judged, confirmed) for rule, judged, confirmed in rows]
 
     def previous_finding_ids(self, root: str) -> set[str]:
         """What the most recent stored run on this repository already knew.

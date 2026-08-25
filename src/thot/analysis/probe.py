@@ -20,6 +20,7 @@ from pathlib import Path
 from thot.contracts import CodeRef, Confidence, Finding, Severity
 from thot.engine.base import AgentResult, AgentTask, Engine
 from thot.memory.base import carries_decision
+from thot.scoring.prior import Prior
 
 # How many candidates a run will spend a model on unless told otherwise.
 DEFAULT_LIMIT = 20
@@ -78,8 +79,21 @@ def select_for_analysis(
     limit: int = DEFAULT_LIMIT,
     skip: set[str] | None = None,
     demote: set[str] | None = None,
+    prior: "Prior | None" = None,
+    spend_on_noise: bool = False,
 ) -> list[Finding]:
     """The candidates worth a model, worst first.
+
+    `prior` is what the rule has been worth, measured across every run ever
+    stored: a rule whose 95 % ceiling on precision falls under
+    `NOISE_CEILING` is not argued at all, because paying a model to refute
+    what 171 refutations already refuted is the largest single waste this
+    tool has. Nothing is hidden by that — the findings stay in the report,
+    they simply stay `plausible`. `spend_on_noise=True` restores the old
+    behaviour for a caller that wants the whole pool judged.
+
+    Within what remains, a candidate traced to a named source outranks one
+    resting on the untrusted-parameter assumption. See `assumed_source`.
 
     `demote` holds the ones that have already failed twice. They stay
     eligible — a wall can be a busy afternoon — but they go last, so a small
@@ -108,11 +122,45 @@ def select_for_analysis(
         and f.id not in skip
     ]
     demote = demote or set()
+    prior = prior if prior is not None else Prior()
+    if not spend_on_noise:
+        live = [f for f in live if not prior.noisy(f.rule)]
     ranked = sorted(
         live,
-        key=lambda f: (f.id in demote, SEVERITY_ORDER.get(f.severity, 9)),
+        key=lambda f: (
+            f.id in demote,
+            prior.noisy(f.rule),
+            assumed_source(f),
+            SEVERITY_ORDER.get(f.severity, 9),
+        ),
     )
     return ranked[:limit]
+
+
+def assumed_source(finding: Finding) -> bool:
+    """A taint claim resting on nothing but an untrusted-by-default parameter.
+
+    The engine holds every parameter untrusted until a caller proves
+    otherwise, which is the right default and also the reason two thirds of
+    every taint pool exists: measured on `hermes/`, 538 of 787 candidates
+    name no source rule at all. In a codebase where every HTTP helper takes
+    a URL parameter, "this parameter could carry anything" describes every
+    helper.
+
+    A candidate that *does* name its source has been traced to something
+    genuinely outside the program — argv, a request, an environment
+    variable. It is a stronger claim about the same sink, and it is the one
+    worth arguing first.
+
+    Only taint findings are ranked this way. A pattern rule proves no path
+    and claims none, so the question does not apply to it — and applying it
+    anyway would push every pattern finding below every taint finding, when
+    pattern rules hold three of the nine confirmations this tool has ever
+    produced.
+    """
+    if not finding.taint_path:
+        return False
+    return not (finding.provenance or {}).get("source_rule")
 
 
 def excerpt(root: Path, ref: CodeRef, radius: int = 12) -> str:
@@ -319,13 +367,19 @@ def _apply_review(
     until someone settles it.
     """
     provenance = dict(finding.provenance or {})
-    provenance["relecture"] = _attribute(engine, result.task_id)
+    reviewer = _attribute(engine, result.task_id)
+    sound = _boolean((result.data or {}).get("sound"))
 
-    if not result.ok or not result.data:
-        provenance["relecture impossible"] = result.error or "réponse vide"
+    if not result.ok or not result.data or sound is None:
+        # Same rule as the attack: a reader that did not answer is not a
+        # reader, so it is not named as one. This key is also what stops
+        # `record_verdicts` caching the refutation — an unverified one must
+        # not gain the permanence of a verified one.
+        provenance["relecture impossible"] = f"{reviewer} : {_unreadable(result)}"
         return replace(finding, provenance=provenance)
 
-    if result.data.get("sound"):
+    provenance["relecture"] = reviewer
+    if sound:
         provenance["réfutation vérifiée"] = "oui"
         return replace(finding, provenance=provenance)
 
@@ -353,6 +407,35 @@ def _verdict(value: str) -> Confidence:
         return Confidence.PLAUSIBLE
 
 
+def _boolean(value: object) -> bool | None:
+    """The yes or no an agent actually gave, or `None` when it gave neither.
+
+    Not `bool(value)`. The schema in an `AgentTask` is a request, not a
+    guarantee: the engines run `extract_json`, which checks that the answer is
+    an object and never that it carries the keys asked for. So two shapes
+    reach here that are not verdicts — the key missing, and the verdict
+    spelled as a string. `"false"` is truthy in Python, and reading it as yes
+    refutes a finding on a word that says the opposite, permanently: a
+    refutation is remembered and skipped by every audit that follows.
+    """
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        token = value.strip().lower()
+        if token in {"true", "vrai", "oui", "yes"}:
+            return True
+        if token in {"false", "faux", "non", "no"}:
+            return False
+    return None
+
+
+def _unreadable(result: AgentResult) -> str:
+    """Why nothing usable came back, in the words the report will show."""
+    if result.error:
+        return result.error
+    return "réponse sans verdict lisible" if result.data else "réponse vide"
+
+
 def analyse(
     root: Path,
     findings: list[Finding],
@@ -361,6 +444,7 @@ def analyse(
     on_decided: Callable[[Finding], None] | None = None,
     skip: set[str] | None = None,
     demote: set[str] | None = None,
+    prior: "Prior | None" = None,
 ) -> list[Finding]:
     """Probe, attack, and attack again what survived — in batches.
 
@@ -383,7 +467,7 @@ def analyse(
     started: what an interruption costs is one batch, not the run.
     """
     root = Path(root)
-    selected = select_for_analysis(findings, limit, skip, demote)
+    selected = select_for_analysis(findings, limit, skip, demote, prior=prior)
     if not selected:
         return list(findings)
 
@@ -535,13 +619,19 @@ def _apply_probe(finding: Finding, result: AgentResult, engine: Engine) -> Findi
     # Merged, not replaced: what got the finding here — which rule fired,
     # which catalogue it came from — is not the probe's to throw away.
     provenance = dict(finding.provenance or {})
-    provenance["moteur"] = engine_name
 
     if not result.ok or not result.data:
-        provenance["erreur"] = result.error or "réponse vide"
+        # `moteur` is left out on purpose: every view renders it as
+        # "argumenté par <agent>", and an agent that timed out argued
+        # nothing. Naming it anyway made a run where nothing ran read like
+        # a run where something did.
+        provenance["erreur"] = _unreadable(result)
+        provenance["sonde impossible"] = engine_name
+        provenance["phase"] = "non sondée"
         return replace(finding, provenance=provenance)
 
     data = result.data
+    provenance["moteur"] = engine_name
     provenance["phase"] = "sonde"
     confidence = _verdict(data.get("verdict", ""))
     # A probe can refute outright, without the second pass. When it does, the
@@ -565,19 +655,48 @@ def _apply_refutation(
     finding: Finding, result: AgentResult, engine: Engine, *, again: bool = False
 ) -> Finding:
     provenance = dict(finding.provenance or {})
+    attacker = _attribute(engine, result.task_id)
+
+    # Three states, not two: attacked and standing, attacked and refuted, and
+    # never attacked. The attacker used to be named before its result was
+    # looked at, and a failure left the CONFIRMED the probe had given the
+    # finding — so the report said "attaqué par prime · 1 confirmé(s)" about a
+    # finding prime never answered on (observed on a real `--deep` run). That
+    # sentence is the only thing a panel buys.
+    if not result.ok or not result.data:
+        provenance["réfutation"] = _unreadable(result)
+        provenance["attaque impossible"] = attacker
+        if again:
+            # A first attacker did speak and failed to kill it. That much is
+            # earned; only the escalation did not happen.
+            return replace(finding, provenance=provenance)
+        provenance["phase"] = "non attaquée"
+        return replace(
+            finding, confidence=Confidence.PLAUSIBLE, provenance=provenance
+        )
+
     # Named separately from `moteur`: on a panel these are two different
     # agents, and "who tried to destroy this and failed" is the sentence
     # that makes a confirmation worth trusting. The second attacker gets its
     # own key so a survivor can name both, and so nothing overwrites the
     # record of who already tried.
-    key = "second contradicteur" if again else "contradicteur"
-    provenance[key] = _attribute(engine, result.task_id)
-    if not result.ok or not result.data:
-        provenance["réfutation"] = result.error or "réponse vide"
-        return replace(finding, provenance=provenance)
+    provenance["second contradicteur" if again else "contradicteur"] = attacker
 
     survived = "confirmée (2 attaques)" if again else "confirmée"
     reason = str(result.data.get("raison") or "")
+    refuted = _boolean(result.data.get("refuted"))
+
+    # An answer that carries no readable `refuted` claims nothing, and
+    # `extract_json` cannot refuse it: it checks that the answer is an object,
+    # never that it holds the keys asked for — so a stray JSON block quoted
+    # from the code, or an answer written to the probe's schema, arrives here
+    # looking like a verdict. Treated exactly like a refutation with no
+    # reason below: the attack happened, it killed nothing, and the report
+    # says which of the two it was instead of inventing a counter-argument.
+    if refuted is None:
+        provenance["phase"] = survived
+        provenance["réfutation illisible"] = "écartée"
+        return replace(finding, provenance=provenance)
 
     # A refutation with nothing behind it is not a refutation. It used to be
     # accepted, turning the finding REFUTED/INFO with the text "Réfuté : " and
@@ -588,13 +707,13 @@ def _apply_refutation(
     # and `suppressions` says why. Empty is not thin, it is the absence of a
     # claim, and this takes the same safe direction `_verdict` already takes
     # for an answer it cannot parse.
-    if result.data.get("refuted") and not reason.strip():
+    if refuted and not reason.strip():
         provenance["phase"] = survived
         provenance["réfutation sans motif"] = "écartée"
         return replace(finding, provenance=provenance)
 
-    provenance["phase"] = "réfutée" if result.data.get("refuted") else survived
-    if result.data.get("refuted"):
+    provenance["phase"] = "réfutée" if refuted else survived
+    if refuted:
         # Severity is impact × reach × confidence, and refuted confidence
         # scores zero. Leaving it where the probe put it made a refutation
         # reached this run rank above one remembered from last week, for the

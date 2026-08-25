@@ -48,12 +48,19 @@ def test_the_sets_that_reach_the_output_are_ordered():
         if not line.strip().startswith("#")
     )
 
-    # 1. Which name's taint is reported when several carry it.
-    assert "min(carriers)" in code, (
+    # 1. Which name's taint is reported when several carry it. `carrier` is
+    #    the single place that answers it — `is_tainted` and the provenance
+    #    of a binding both read it, and they have to agree.
+    assert re.search(r"def carrier\(", code)
+    assert "min(found)" in code, (
         "l'origine doit être la plus ancienne, pas la première du hachage"
     )
     # 2. The insertion order of `param_sinks`, which the fixed point follows.
-    assert re.search(r"for name in sorted\(argument_refs & params\)", code)
+    #    `roots` is the parameters a sink is registered against: those read
+    #    straight into it, plus those its arguments were derived from.
+    assert re.search(r"for name in sorted\(roots\)", code)
+    # 2b. And which parameter is credited when a value carries several.
+    assert re.search(r"direct = sorted\(refs & params\)", code)
     # 3. The order of `calls_out`, which decides which caller emits first.
     assert re.search(r"for name in sorted\(outgoing\)", code)
 
@@ -72,5 +79,5 @@ def test_no_bare_set_iteration_decides_an_emitted_field():
         stripped = line.strip()
         if stripped.startswith("#") or "for " not in stripped:
             continue
-        if "outgoing" in stripped or "argument_refs & params" in stripped:
+        if "outgoing" in stripped or "in roots" in stripped:
             assert "sorted(" in stripped, f"itération non ordonnée : {stripped!r}"

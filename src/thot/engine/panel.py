@@ -25,6 +25,7 @@ from __future__ import annotations
 import threading
 from dataclasses import dataclass, field
 
+from thot.engine import process as process_group
 from thot.engine.base import AgentResult, AgentTask, Engine, EngineCapabilities
 
 # `analyse` labels its tasks `probe:<finding id>` and `refute:<finding id>`.
@@ -195,14 +196,13 @@ class PanelEngine:
         if not tasks:
             return []
 
-        import threading
-
         results: list[AgentResult | None] = [None] * len(tasks)
         pending = list(range(len(tasks)))
         gate = threading.Lock()
+        cancelled = threading.Event()
 
         def pull(member: Engine) -> None:
-            while True:
+            while not cancelled.is_set():
                 with gate:
                     index = next(
                         (i for i in pending if self._eligible(member, tasks[i])),
@@ -211,9 +211,21 @@ class PanelEngine:
                     if index is None:
                         return
                     pending.remove(index)
-                results[index] = self._execute(member, tasks[index])
+                try:
+                    results[index] = self._execute(member, tasks[index])
+                except Exception as exc:
+                    # A member that raises must not turn into "no engine
+                    # available" three frames later: that message named the
+                    # panel for a fault that belongs to one agent, and the
+                    # index had already left `pending`, so nobody retried it.
+                    results[index] = AgentResult(
+                        task_id=tasks[index].id,
+                        error=f"moteur {member.capabilities.name} : {exc}",
+                    )
 
         threads = [
+            # Daemon on purpose, and only safe because of the kill below: an
+            # agent that cannot be killed must not turn a Ctrl-C into a hang.
             threading.Thread(target=pull, args=(member,), daemon=True)
             for member in self.members
             for _ in range(max(1, member.capabilities.max_parallel))
@@ -224,8 +236,21 @@ class PanelEngine:
         else:
             for thread in threads:
                 thread.start()
-            for thread in threads:
-                thread.join()
+            try:
+                for thread in threads:
+                    thread.join()
+            except BaseException:
+                # Ctrl-C. The workers are daemon threads: the interpreter
+                # drops them where they stand, inside `communicate()`, so
+                # their own cleanup never runs and the agents they started —
+                # detached by `start_new_session` — outlive the audit and
+                # bill the subscription to the end. Measured: four of them
+                # still running forty-five seconds after python had exited.
+                # Killing the groups is also what unblocks the workers; the
+                # flag alone would never be read by one of them.
+                cancelled.set()
+                process_group._end_all()
+                raise
 
         # A member that died mid-batch would leave a hole; the port promises
         # a result per task, so say what happened rather than return None.

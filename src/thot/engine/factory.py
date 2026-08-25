@@ -80,6 +80,36 @@ def build_panel(
     )
 
 
+# The providers that mean "run Thot on the agents", not "call a model".
+FUSED = ("fusion", "hermes", "prime")
+
+
+def build_cascade(root: Path, *, prefer: str = "fusion", max_parallel: int = 1):
+    """The two agents, as the session's backend.
+
+    `prefer` narrows it: `hermes` or `prime` alone when the user wants one
+    voice and one bill. Refusing rather than falling back is the same rule
+    `build_engine` follows — a session that silently ran on a different agent
+    than the one asked for would attribute its own history to the wrong one.
+    """
+    from thot.engine.cascade import Cascade, NoAgents
+
+    wanted = ("hermes", "prime") if prefer == "fusion" else (prefer,)
+    members = {
+        name: AGENT_ENGINES[name](root=Path(root), max_parallel=max_parallel)
+        for name in wanted
+        if name in AGENT_ENGINES and AGENT_ENGINES[name].available()
+    }
+    if not members:
+        raise NoAgents(
+            "Thot est la fusion de Hermes et Prime, et aucun des deux n'est "
+            "joignable.\n"
+            "   Hermes : `uv sync` à la racine du dépôt.\n"
+            "   Prime  : cd prime && npm install && npm run build"
+        )
+    return Cascade(root=Path(root), members=members)
+
+
 def build_engine(
     root: Path,
     config: Config | None = None,

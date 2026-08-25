@@ -342,3 +342,27 @@ def test_a_contained_kernel_has_nothing_to_warn_about(tmp_path):
     assert kernel.contained is True
     assert kernel.warning() == ""
     assert "sans réseau" in kernel.describe()
+
+
+def test_a_host_call_that_raises_still_answers_and_keeps_the_namespace(tmp_path):
+    """The protocol has one invariant: a REPLY always leaves.
+
+    `Harness.remember` refuses an empty body (harness.py:148), which a cell
+    the agent wrote itself is enough to trigger. Without an answer the worker
+    waits for ever in `Host.request`, the next cell times out after the full
+    budget, and `stop()` takes the persistent namespace with it — the only
+    reason the kernel exists.
+    """
+    from thot.harness import Harness
+
+    harness = Harness(tmp_path / "local.json", tmp_path / "global.json")
+    kernel = Kernel(root=tmp_path, harness=harness).start()
+    try:
+        kernel.execute("garde = 42")
+        outcome = kernel.execute("remember('un titre', '')")
+
+        assert "obligatoires" in outcome.error
+        assert kernel.running, "le noyau doit survivre à un appel hôte fautif"
+        assert kernel.execute("garde").value == "42"
+    finally:
+        kernel.stop()

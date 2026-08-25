@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import os
+import sys
+
 from rich.console import Console
 from rich.table import Table
 
@@ -19,7 +22,25 @@ _ORDER = [
     Severity.CRITICAL, Severity.HIGH, Severity.MEDIUM, Severity.LOW, Severity.INFO
 ]
 
-console = Console()
+class _PipeSafeConsole(Console):
+    """A dead stdout is not an audit verdict.
+
+    rich's own `on_broken_pipe` ends on `raise SystemExit(1)`, and 1 is
+    EXIT_FINDINGS. `thot audit . | head -1` on a repository with nothing to
+    report therefore exited 1 with an empty stderr — indistinguishable from
+    "des findings au-dessus du seuil", and unexplainable to whoever read the
+    red CI job. Going quiet instead lets the command return the code it
+    actually computed, including the EXIT_FINDINGS `--fail-on` earned.
+    """
+
+    def on_broken_pipe(self) -> None:
+        self.quiet = True
+        # What rich does before raising: without it, every later print
+        # raises again on a file descriptor nobody is reading.
+        os.dup2(os.open(os.devnull, os.O_WRONLY), sys.stdout.fileno())
+
+
+console = _PipeSafeConsole()
 
 
 def print_report(result, hidden: int = 0, judged=None) -> None:

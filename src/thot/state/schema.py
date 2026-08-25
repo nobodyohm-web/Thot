@@ -124,8 +124,21 @@ def migrate(connection: sqlite3.Connection) -> bool:
 
     searchable = has_fts5(connection)
     if searchable:
+        fresh = connection.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='messages_fts'"
+        ).fetchone() is None
         connection.executescript(FTS_SQL)
         connection.executescript(FTS_TRIGGERS)
+        if fresh:
+            # An external-content index only ever fills through its triggers,
+            # so a base that lived on a SQLite without FTS5 holds messages the
+            # index never saw. Search would then answer from the recent ones
+            # and never fall back, and DELETE would raise "database disk image
+            # is malformed" from the delete trigger. Free: on a new base the
+            # rebuild runs over zero rows, and afterwards `fresh` is False.
+            connection.execute(
+                "INSERT INTO messages_fts(messages_fts) VALUES('rebuild')"
+            )
 
     connection.execute(
         "INSERT OR REPLACE INTO meta (key, value) VALUES ('schema_version', ?)",

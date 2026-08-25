@@ -11,7 +11,8 @@ Nothing here touches the network or a model. `thot doctor` on a plane must
 give the same answer as `thot doctor` at a desk.
 
 `--agents` is the exception, and it is opt-in because it spends three model
-calls. It exists because of a defect no static inspection could have found:
+calls per installed agent — read, write, toolbelt. It exists because of a
+defect no static inspection could have found:
 Hermes could not open a file by a path relative to its working directory, so
 a third of the panel was silently unable to check any claim resting on a
 second file — and it said so in words that read like a refusal rather than a
@@ -151,6 +152,35 @@ def _mcp(root: Path):
     return ok, f"{len(tools)} outil(s) exposé(s)"
 
 
+def _served():
+    """An address in a configuration file is not a connection.
+
+    Prime cannot start this server: HTTP is the one transport a client does
+    not launch, so `thot mcp serve --http` has to be running for the entry
+    `thot fusion wire` wrote to mean anything. A wired Prime and a dead
+    endpoint is the state every reboot leaves behind, and it is exactly what
+    `fusion status` counted as `branché 4/4` — the flattering half of the
+    truth, told by reading a file instead of asking the port.
+
+    Not wiring Prime at all is a preference, and passes. A wiring that does
+    not work is a broken install, and does not.
+    """
+    from thot import service
+    from thot.fusion import wiring
+    from thot.mcp_http import endpoint_answers
+
+    url = wiring.prime_endpoint()
+    if url is None:
+        return True, "Prime n'est pas branché en HTTP — rien à servir"
+    if endpoint_answers(url):
+        return True, f"{url} répond"
+    if service.installed():
+        remedy = f"unité écrite, pas encore chargée : {service.activation()}"
+    else:
+        remedy = "`thot mcp service --install` pour la servir au démarrage"
+    return False, f"{url} ne répond pas · {remedy}"
+
+
 def _fusion():
     from thot.fusion.audit import parts
 
@@ -167,24 +197,46 @@ def _wiring():
     own upgrades and migrations, and they are exactly what breaks quietly
     between two versions.
     """
-    from thot.fusion.wiring import hermes_enabled, plan_hermes, plan_prime
+    from thot.fusion import wiring
 
-    steps = plan_hermes() + plan_prime()
+    steps = wiring.plan_hermes() + wiring.plan_prime()
     if not steps:
         return False, "rien à brancher — Hermes et Prime absents ?"
 
     pending = [s for s in steps if s.action != "déjà en place"]
-    enabled = hermes_enabled()
+    notes: list[str] = []
+    enabled = wiring.hermes_enabled()
     if enabled is False:
-        pending.append("plugin non activé dans Hermes")
+        notes.append("plugin non activé dans Hermes")
     elif enabled is None:
-        pending.append("config de Hermes illisible")
+        notes.append("config de Hermes illisible")
 
-    if pending:
-        return False, (
-            f"{len(pending)} élément(s) à rebrancher — `thot fusion wire`"
+    problems: list[str] = []
+    rewire = len(pending) + len(notes)
+    if rewire:
+        remedy = f"{rewire} élément(s) à rebrancher — `thot fusion wire`"
+        problems.append(f"{remedy} ({' ; '.join(notes)})" if notes else remedy)
+
+    # The check that was missing, and the one that mattered most. Every file
+    # can be in place, `plugins.enabled` can name the plugin, and Hermes can
+    # still have no MCP tools whatsoever — not Thot's, not any — because the
+    # SDK is absent from the environment that runs it. That was this
+    # machine's state under a green "4/4 fichiers en place", for as long as
+    # the check only counted files Thot had written itself.
+    #
+    # Its own line, and its own remedy: `thot fusion wire` writes files, and
+    # no amount of writing files installs a Python package.
+    speaks = wiring.hermes_speaks_mcp()
+    if speaks is False:
+        problems.append(
+            "sdk mcp absent — Hermes n'aura aucun outil ; `uv sync` à la racine"
         )
-    return True, f"{len(steps)}/{len(steps)} fichiers en place"
+    elif speaks is None:
+        problems.append("interpréteur de Hermes indéterminé — sdk mcp non vérifié")
+
+    if problems:
+        return False, " · ".join(problems)
+    return True, f"{len(steps)}/{len(steps)} fichiers en place · sdk mcp présent"
 
 
 # Folders macOS guards with TCC. A LaunchAgent holds no consent for them and
@@ -303,7 +355,13 @@ def _loop():
 
     job = next((j for j in load() if j.whole_program and j.deep), None)
     if job is None:
-        return False, "non programmée — `thot improve --every daily`"
+        # A preference, not a broken installation. `doctor` answers "is this
+        # install whole" and exits non-zero for a `&&` in CI, so reporting an
+        # unscheduled loop as a failure made the first thing a new user ever
+        # saw a red line on a perfectly healthy machine. A loop that *is*
+        # scheduled and reaches nothing is a different matter, and every
+        # branch below still fails.
+        return True, "non programmée — `thot improve --every daily` pour l'activer"
 
     # The unit's own PATH, not this shell's. launchd hands a job
     # `/usr/bin:/bin:/usr/sbin:/sbin`, the agents are not there, and a deep
@@ -431,6 +489,7 @@ def run(root: Path) -> list[Check]:
         _safe("plugins", lambda: _plugins(root)),
         _safe("mémoire", lambda: _memory(root)),
         _safe("mcp", lambda: _mcp(root)),
+        _safe("service", _served),
         _safe("amélioration", _loop),
     ]
 
@@ -601,8 +660,9 @@ def run_agents(*, writes: bool = True) -> list[Check]:
     from thot.engine.factory import AGENT_ENGINES
 
     # Neither of these can be made read-only, and a permanent red line is a
-    # line people stop reading. Their reach is stated instead, so a reader
-    # choosing `--engine hermes` knows what they are choosing.
+    # line people stop reading. So the probe still runs and the line stays
+    # green; what changes is the wording, which is the reach a reader
+    # choosing `--engine hermes` is accepting.
     UNRESTRICTABLE = {
         "hermes": "peut écrire — aucun mode lecture seule (`-t file` et "
                   "`--safe-mode` ne restreignent pas les permissions)",
@@ -618,12 +678,29 @@ def run_agents(*, writes: bool = True) -> list[Check]:
         if not writes:
             continue
 
+        # Measured for all three, judged only for the one that can be
+        # narrowed. The two lines below used to be constant `Check`s: the
+        # sentence was true — both engines do write, verified — but nothing
+        # had asked, and the day `-t file` stops exposing `write_file` the
+        # line would read exactly the same. Two model calls, 16,9 s for
+        # hermes and 5,6 s for prime, which is what `--agents` is for and
+        # what `writes=False` turns off.
+        label = f"écriture · {name}"
         if name in UNRESTRICTABLE:
-            checks.append(Check(f"écriture · {name}", True, UNRESTRICTABLE[name]))
+            try:
+                restrained, measured = _cannot_write(cls)
+            except Exception as exc:  # the diagnostic survives what it probes
+                # Not folded into the green branch: a probe that never ran
+                # would otherwise print "peut écrire" as if it had looked.
+                checks.append(Check(label, False, f"{type(exc).__name__}: {exc}"))
+            else:
+                # Green either way — a permanent red for a reach nobody can
+                # restrict is a line people stop reading — but the words are
+                # the ones that were just observed.
+                checks.append(Check(label, True,
+                                    measured if restrained else UNRESTRICTABLE[name]))
         else:
-            checks.append(
-                _safe(f"écriture · {name}", lambda c=cls: _cannot_write(c))
-            )
+            checks.append(_safe(label, lambda c=cls: _cannot_write(c)))
 
         # Shown for all three, judged only for the one that can be narrowed.
         # Someone choosing `--engine hermes` should see what they are

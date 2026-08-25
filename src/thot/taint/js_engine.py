@@ -30,11 +30,17 @@ from __future__ import annotations
 
 import os
 import re
+
+from bisect import bisect_left
+from functools import lru_cache
 from pathlib import Path, PurePosixPath
 
 from thot.codemap.ts_indexer import EXTENSIONS, _line_of, read_masked
 from thot.contracts import CodeRef, Symbol
-from thot.taint.js_catalog import active, bindings, imports, using
+from thot.scope.detect import source_versions
+from thot.taint.js_catalog import (
+    PROTOTYPE_GUARDS, active, bindings, imports, using,
+)
 
 _IDENT = r"[A-Za-z_$][A-Za-z0-9_$]*"
 _DOTTED = re.compile(rf"{_IDENT}(?:\.{_IDENT})*")
@@ -51,13 +57,78 @@ _DESTRUCTURE = re.compile(
 _PROPERTY_ASSIGN = re.compile(
     rf"\.({_IDENT})\s*=(?![=>])\s*(.+)", re.DOTALL
 )
+# `target[key] = value`. The dotted form above matches a property *name*;
+# this one matches the hole where a name would be, which is the only place a
+# key can be attacker-chosen.
+_COMPUTED_ASSIGN = re.compile(
+    rf"({_IDENT}(?:\.{_IDENT})*)\s*\[\s*(?P<key>[^\[\]]+?)\s*\]"
+    rf"\s*=(?![=>])\s*(?P<value>.+)",
+    re.DOTALL,
+)
+# `for (const k in obj)` and `for (const item of list)` — a binding whose
+# value comes from the thing iterated, which makes it a propagation and not
+# an assignment. Anchored on the closing parenthesis so that the subject of
+# `for (const k of Object.keys(o))` is the whole call and not `Object.keys(o`.
+_FOR_BINDING = re.compile(
+    rf"\bfor\s*(?:await\s+)?\(\s*(?:const|let|var)\s+(?P<target>.+?)"
+    rf"\s+(?:in|of)\s+(?P<subject>.+?)\s*\)\s*$",
+    re.DOTALL,
+)
+# The head of a function nobody calls by name. `(a, b) =>`, `x =>`,
+# `(e: MouseEvent): void =>`, and the `function (e)` spelling.
+# `for (let i = 8; i < n; i += 1)`. The header is a binding, and an engine
+# that does not read it lets an `i` tainted in another function stand as the
+# key of every array write in this one.
+_FOR_COUNTER = re.compile(
+    rf"\bfor\s*\(\s*(?:const|let|var)\s+({_IDENT})\s*=(?![=>])\s*([^;]*);"
+)
+_ARROW_HEAD = re.compile(
+    rf"(?:\(\s*(?P<params>[^()]*?)\s*\)|(?P<single>{_IDENT}))"
+    rf"\s*(?::[^=;()]*?)?=>"
+)
+_FUNCTION_HEAD = re.compile(
+    rf"\bfunction\s*(?:{_IDENT})?\s*\(\s*(?P<params>[^()]*?)\s*\)"
+)
+_CALL = re.compile(rf"({_IDENT}(?:\.{_IDENT})*)\s*\(")
+_GUARD_WORD = re.compile(
+    r"\b(?:%s)\b" % "|".join(re.escape(w) for w in PROTOTYPE_GUARDS)
+)
 
 OPENERS, CLOSERS = "([", ")]"
 
-# What sits just before a brace that opens a *block* rather than a value.
-# `if (x) {`, `=> {`, `else {`, `try {`, `do {` — against `= {`, `( {`, `, {`,
-# `return {`, which are objects and must stay part of their statement.
-BLOCK_AFTER = (")", ">", "else", "try", "do", "finally")
+BLOCK_WORDS = ("else", "try", "do", "finally")
+
+# How far back the search for a type argument list gives up. Past that the
+# answer is "not a type", which errs the safe way: a brace read as an object
+# keeps its statement whole, a brace read as a block cuts one in half.
+TYPE_ARGUMENT_SPAN = 400
+
+
+def _closes_type_arguments(body: str, end: int) -> bool:
+    """Whether the `>` just before `end` closes `Map<K, V>` and not `<div>`.
+
+    Both sit immediately before a brace, and only one of them opens a block:
+    `function f(): Map<string, number> {` does, `render(<div>{x}</div>)` does
+    not. The tell is the character before the matching `<` — a type argument
+    list is glued to the name it qualifies, a JSX tag is always preceded by
+    whitespace, a parenthesis or an operator.
+    """
+    depth = 0
+    floor = max(0, end - TYPE_ARGUMENT_SPAN)
+    for index in range(end - 1, floor - 1, -1):
+        char = body[index]
+        if char == ">":
+            if index and body[index - 1] == "=":
+                continue  # the tail of an arrow, not a bracket
+            depth += 1
+        elif char == "<":
+            depth -= 1
+            if depth == 0:
+                before = body[index - 1] if index else ""
+                return before.isalnum() or before in "_$"
+        elif char in ";{}":
+            return False
+    return False
 
 
 def _opens_block(body: str, index: int) -> bool:
@@ -65,16 +136,26 @@ def _opens_block(body: str, index: int) -> bool:
 
     The distinction is the whole difference between splitting a body into
     statements and shredding `const { host } = req.query` into three pieces.
+    A block follows `if (x)`, `=>`, `else`, `try`, `do`, `finally`; an object
+    follows `=`, `(`, `,`, `return`, and stays part of its statement.
+
+    Reads backwards over `body` instead of slicing a head off it: the same
+    question is asked of every brace in the file, and copying the prefix each
+    time is quadratic on the generated files this engine has to survive.
     """
-    head = body[:index].rstrip()
-    if not head:
+    end = index
+    while end and body[end - 1].isspace():
+        end -= 1
+    if not end:
         return True  # a bare block, or the very start of a body
-    if head[-1] in ")>":
+    last = body[end - 1]
+    if last == ")":
         return True
-    for word in ("else", "try", "do", "finally"):
-        if head.endswith(word):
-            return True
-    return False
+    if last == ">":
+        return (end > 1 and body[end - 2] == "=") or _closes_type_arguments(
+            body, end
+        )
+    return any(body.endswith(word, 0, end) for word in BLOCK_WORDS)
 
 
 def _statements(body: str, offset: int) -> list[tuple[int, str]]:
@@ -85,30 +166,41 @@ def _statements(body: str, offset: int) -> list[tuple[int, str]]:
     function's own opening brace holding the whole body at depth one, and
     nothing would ever split; counting none would cut destructuring in half.
 
+    A block opens at any depth, not only at depth zero. The ordinary web
+    handler *is* a body inside an argument list — `app.get("/x", (req, res)
+    => { … })` — and a rule that only cut at depth zero left the whole route
+    call as a single statement: no split, so no propagation, so no path, for
+    the most common shape a web vulnerability takes. Entering a block parks
+    the enclosing depth and restarts at zero so the body's `;` and newlines
+    separate again; leaving it puts the depth back, so the `)` that closes
+    the route still balances.
+
     A call spread over five lines survives: it is inside parentheses.
     """
     out: list[tuple[int, str]] = []
     depth = 0
     start = 0
-    block_depth: list[bool] = []
+    block_depth: list[tuple[bool, int]] = []
     for index, char in enumerate(body):
         if char in OPENERS:
             depth += 1
         elif char in CLOSERS:
             depth = max(0, depth - 1)
         elif char == "{":
-            if depth == 0 and _opens_block(body, index):
-                block_depth.append(True)
+            if _opens_block(body, index):
+                block_depth.append((True, depth))
+                depth = 0
                 piece = body[start:index]
                 if piece.strip():
                     out.append((offset + start, piece))
                 start = index + 1
             else:
-                block_depth.append(False)
+                block_depth.append((False, depth))
                 depth += 1
         elif char == "}":
-            was_block = block_depth.pop() if block_depth else True
+            was_block, parked = block_depth.pop() if block_depth else (True, 0)
             if was_block:
+                depth = parked
                 piece = body[start:index]
                 if piece.strip():
                     out.append((offset + start, piece))
@@ -130,12 +222,20 @@ def _names(text: str) -> list[str]:
 
 
 def _source_in(text: str) -> str | None:
-    """The first untrusted source a fragment reads, as its dotted name."""
+    """The id of the first untrusted source rule a fragment reads.
+
+    The id and not the pattern that matched. The value is carried as a mark
+    through the whole propagation — into `tainted`, into `seeded`, across a
+    call in `handed` — and it comes back out on the finding, where the
+    question asked of it is how far the value travelled. `req.query` cannot
+    answer that; `source.js.request` can. Callback sources already marked
+    with their id, so this also makes the two kinds of mark one kind.
+    """
     for name in _names(text):
         for rule in active().sources:
             for pattern in rule.patterns:
                 if name == pattern or name.startswith(pattern + "."):
-                    return pattern
+                    return rule.id
     return None
 
 
@@ -211,13 +311,109 @@ def _reads_tainted(text: str, tainted: dict[str, str]) -> str | None:
     return None
 
 
+@lru_cache(maxsize=8)
+def _source_probe(catalog) -> re.Pattern:
+    """One alternation over every word that could start a path.
+
+    Word-bounded rather than a plain substring test. The filter it feeds is
+    what takes Prime from 938 files to a few dozen, and `"fetch" in masked`
+    also answers yes to `prefetch`, `fetchAll` and `refetchQueries` — three
+    ways to pay for a file that holds nothing.
+    """
+    words = {pattern for rule in catalog.sources for pattern in rule.patterns}
+    words.update(
+        name for rule in catalog.callback_sources for name in rule.names
+    )
+    return re.compile(
+        r"\b(?:%s)\b" % "|".join(re.escape(w) for w in sorted(words))
+    )
+
+
+@lru_cache(maxsize=8)
+def _sink_probe(catalog) -> re.Pattern:
+    """The other half of the filter: a file with no sink cannot hold a path.
+
+    Symmetric with `_source_probe` and just as cheap, and it was missing.
+    Widening the source list to cover browser code — `fetch`,
+    `addEventListener` — took Hermes from 155 files to 287 for exactly zero
+    extra candidates, because the added files hold events and no sink. The
+    last alternative is the prototype rule, which matches a shape rather than
+    a name: a computed assignment, `x[k] =`.
+    """
+    names = {name for rule in catalog.sinks for name in rule.names}
+    names.update(
+        name for rule in catalog.assignment_sinks for name in rule.names
+    )
+    words = "|".join(re.escape(n) for n in sorted(names))
+    return re.compile(rf"\b(?:{words})\b|\]\s*=(?![=>])")
+
+
 def _has_any_source(masked: str) -> bool:
     """Whether any untrusted source appears anywhere in the file."""
-    for rule in active().sources:
-        for pattern in rule.patterns:
-            if pattern in masked:
-                return True
-    return False
+    return _source_probe(active()).search(masked) is not None
+
+
+def _can_hold_a_path(masked: str) -> bool:
+    """Whether it is worth splitting this file into statements at all."""
+    catalog = active()
+    return (_source_probe(catalog).search(masked) is not None
+            and _sink_probe(catalog).search(masked) is not None)
+
+
+def _parameter_names(clause: str) -> list[str]:
+    """`a, {b}, ...rest` -> ["a", "", "rest"].
+
+    An empty string is a slot that holds a position and binds no name — the
+    same convention the indexer uses for a destructured parameter, and for
+    the same reason: there is nothing there to taint.
+    """
+    if not clause.strip():
+        return []
+    out: list[str] = []
+    depth = 0
+    piece = ""
+    for char in clause + ",":
+        if char in OPENERS + "{":
+            depth += 1
+        elif char in CLOSERS + "}":
+            depth -= 1
+        if char == "," and depth == 0:
+            match = re.match(rf"\s*(?:\.\.\.)?({_IDENT})", piece)
+            out.append(match.group(1) if match else "")
+            piece = ""
+        else:
+            piece += char
+    return out
+
+
+# How far back a receiver is read. A receiver is the expression a method is
+# called on, which sits immediately to its left; the rest of the statement is
+# not it. The bound matters because a statement can be the whole file: an
+# i18n module is one object literal, 113 023 characters with no `;` or
+# newline at depth zero, and `zh.ts` alone spent 2.06 seconds re-reading it
+# once per callback before this was bounded.
+RECEIVER_LIMIT = 4_000
+
+
+def _call_sites(statement: str) -> list[tuple[int, str]]:
+    """Every call opened in this statement, by offset. Computed once."""
+    return [(match.start(), match.group(1)) for match in _CALL.finditer(statement)]
+
+
+def _enclosing_call(statement: str, sites: list[tuple[int, str]],
+                    position: int) -> tuple[str, int, str] | None:
+    """The call this position sits inside: (bare name, offset, dotted name)."""
+    index = bisect_left(sites, (position,)) - 1
+    if index < 0:
+        return None
+    at, dotted = sites[index]
+    return dotted.rsplit(".", 1)[-1], at, dotted
+
+
+def _receiver(statement: str, at: int, dotted: str) -> str:
+    """What the call is being made *on*: the qualifier plus what precedes it."""
+    qualifier = dotted.rsplit(".", 1)[0] if "." in dotted else ""
+    return statement[max(0, at - RECEIVER_LIMIT):at] + qualifier
 
 
 def _applicable(source: str) -> tuple[list, list]:
@@ -239,6 +435,7 @@ def _scan_body(
     starts: list[int],
     call_sinks: list,
     assign_sinks: list,
+    raw: str = "",
     seeded: dict[str, str] | None = None,
     entered: CodeRef | None = None,
     locals_by_name: dict[str, Symbol] | None = None,
@@ -254,9 +451,23 @@ def _scan_body(
 
     tainted: dict[str, str] = dict(seeded or {})
     origin: dict[str, int] = {}    # variable -> line where it became tainted
+    guarded: set[str] = set()      # keys the author already refused by name
     found = []
     seen_sites: dict[str, int] = {}
     module = relative.rsplit(".", 1)[0].replace("/", ".")
+
+    # Entering a function rebinds its parameters, exactly as `x = "safe"`
+    # rebinds `x`. The map is flat within the file so that a closure inherits
+    # what surrounds it, and that part is real; two sibling functions reusing
+    # a name are not a closure, and the path reported for them ran from a
+    # line in one function to a line in another that never calls it — a
+    # fabricated path, which is the one thing this engine promises not to do.
+    # A seeded name is exempt: the caller's proof is *why* it is tainted.
+    shadowed = sorted(
+        (symbol.lineno, symbol.params) for symbol in symbols if symbol.params
+    )
+    protected = set(seeded or ())
+    next_shadow = 0
 
     def ref(line: int, site: str | None = None) -> CodeRef:
         # The innermost function containing this line. Top-level code has
@@ -269,12 +480,70 @@ def _scan_body(
                 )
         return CodeRef(path=relative, line=line, symbol=module, site=site)
 
+    catalog = active()
+    prototype = catalog.prototype_sink
+    callback_sources = catalog.callback_sources
+    carriers = catalog.carriers
+
+    def seed_callback(statement: str, sites: list, position: int,
+                      start: int, clause: str) -> None:
+        """Taint the parameters of a callback that is about to be handed one.
+
+        Two ways a callback gets an untrusted value, and they are not the
+        same claim. `addEventListener` introduces one: the parameter is the
+        event, whatever the file did before. `.then`, `.map`, `.forEach`
+        only *carry* — the parameter is tainted exactly when the thing being
+        iterated already was, so a constant list stays a constant list.
+        """
+        names = _parameter_names(clause)
+        if not any(names):
+            return
+        call = _enclosing_call(statement, sites, start)
+        if call is None:
+            return
+        called, at, dotted = call
+        mark, wanted = None, (0,)
+        for rule in callback_sources:
+            if called in rule.names:
+                mark, wanted = rule.id, rule.parameters
+                break
+        if mark is None:
+            # Reading the receiver is the expensive half, so it waits until
+            # the name says it could matter.
+            if called not in carriers:
+                return
+            receiver = _receiver(statement, at, dotted)
+            culprit = _reads_tainted(receiver, tainted)
+            mark = tainted.get(culprit) if culprit else _source_in(receiver)
+        if not mark:
+            return
+        for index in wanted:
+            if index < len(names) and names[index]:
+                tainted[names[index]] = mark
+                origin[names[index]] = _line_of(starts, position + start)
+
     for position, statement in _statements(body, offset):
         # The line of the *statement*. A sink several lines into a multi-line
         # statement gets its own line below — pointing a reader at
         # `const x = JSON.parse(` when the sink is the `execSync` four lines
         # down is how a true finding gets read as a false one.
         line = _line_of(starts, position)
+
+        while next_shadow < len(shadowed) and shadowed[next_shadow][0] <= line:
+            for parameter in shadowed[next_shadow][1]:
+                # An unnamed slot holds a position and binds nothing.
+                if parameter and parameter not in protected:
+                    tainted.pop(parameter, None)
+                    origin.pop(parameter, None)
+            next_shadow += 1
+
+        # A statement that spells `__proto__` out loud is the author refusing
+        # the key, which is the fix. Read from the raw text: the name lives
+        # inside a string literal, and the body scanned here is masked.
+        begins = position - offset
+        original = raw[begins:begins + len(statement)]
+        if original and _GUARD_WORD.search(original):
+            guarded.update(name.split(".")[0] for name in _names(statement))
 
         # -- sinks first: a statement can both consume and produce taint ----
         for rule in call_sinks:
@@ -305,14 +574,16 @@ def _scan_body(
                     # the file that touches the request never appears, and the
                     # reader sees a helper handling a value from nowhere.
                     steps = ((entered,) if entered else ()) + (source_ref, sink_ref)
+                    came_from = tainted.get(culprit, "") if culprit else (direct or "")
                     found.append(
                         TaintCandidate(
                             rule=rule.id,
                             source=entered or source_ref,
                             sink=sink_ref,
                             path=steps,
-                            impact=rule.impact,
+                            impact=catalog.impact_for(rule, came_from),
                             description=rule.description,
+                            source_rule=came_from,
                         )
                     )
 
@@ -333,13 +604,48 @@ def _scan_body(
                 source_ref = ref(
                     origin.get(culprit, sink_line) if culprit else sink_line
                 )
+                came_from = tainted.get(culprit, "") if culprit else (
+                    _source_in(value) or "")
                 found.append(
                     TaintCandidate(
                         rule=rule.id, source=source_ref, sink=sink_ref,
-                        path=(source_ref, sink_ref), impact=rule.impact,
-                        description=rule.description,
+                        path=(source_ref, sink_ref),
+                        impact=catalog.impact_for(rule, came_from),
+                        description=rule.description, source_rule=came_from,
                     )
                 )
+
+        # -- a controlled key, which is prototype pollution ------------------
+        for match in _COMPUTED_ASSIGN.finditer(statement):
+            key = match.group("key")
+            culprit = _reads_tainted(key, tainted)
+            direct = None if culprit else _source_in(key)
+            if not culprit and not direct:
+                continue
+            if culprit and culprit in guarded:
+                continue
+            if not culprit and _sanitised(key):
+                continue
+            sink_line = _line_of(starts, position + match.start())
+            seen_before = seen_sites.get(prototype.id, 0)
+            seen_sites[prototype.id] = seen_before + 1
+            sink_ref = ref(sink_line, f"{prototype.id}#{seen_before}")
+            source_ref = ref(
+                origin.get(culprit, sink_line) if culprit else sink_line
+            )
+            steps = ((entered,) if entered else ()) + (source_ref, sink_ref)
+            came_from = tainted.get(culprit, "") if culprit else (direct or "")
+            found.append(
+                TaintCandidate(
+                    rule=prototype.id,
+                    source=entered or source_ref,
+                    sink=sink_ref,
+                    path=steps,
+                    impact=catalog.impact_for(prototype, came_from),
+                    description=prototype.description,
+                    source_rule=came_from,
+                )
+            )
 
         # -- a tainted value handed to a function defined in this file -------
         if locals_by_name is not None and handed is not None:
@@ -368,7 +674,45 @@ def _scan_body(
                                        mark, ref(_line_of(starts, position
                                                           + match.start()))))
 
+        # -- a callback the runtime will call, with a value from outside -----
+        heads = [(h.start(), h.group("params") or h.group("single") or "")
+                 for h in _ARROW_HEAD.finditer(statement)]
+        heads += [(h.start(), h.group("params") or "")
+                  for h in _FUNCTION_HEAD.finditer(statement)]
+        if heads:
+            sites = _call_sites(statement)
+            for start, clause in heads:
+                seed_callback(statement, sites, position, start, clause)
+
         # -- then propagation ------------------------------------------------
+        counter = _FOR_COUNTER.search(statement)
+        if counter:
+            name, value = counter.group(1), counter.group(2)
+            mark = _source_in(value)
+            if mark is None:
+                culprit = _reads_tainted(value, tainted)
+                mark = tainted.get(culprit) if culprit else None
+            if mark and not _sanitised(value):
+                tainted[name] = mark
+                origin[name] = line
+            else:
+                tainted.pop(name, None)
+            continue
+
+        binding = _FOR_BINDING.search(statement)
+        if binding:
+            subject = binding.group("subject")
+            culprit = _reads_tainted(subject, tainted)
+            mark = tainted.get(culprit) if culprit else _source_in(subject)
+            for name in _names(binding.group("target")):
+                bare = name.split(".")[-1]
+                if mark and not _sanitised(subject):
+                    tainted[bare] = mark
+                    origin[bare] = line
+                else:
+                    tainted.pop(bare, None)
+            continue
+
         destructured = _DESTRUCTURE.search(statement)
         if destructured:
             value = destructured.group(2)
@@ -423,9 +767,9 @@ def find_candidates(root: Path, symbols: list[Symbol]) -> list:
 
     The taint map is flat within a file rather than per-scope. That is not a
     shortcut: a closure genuinely does see the variables around it, so
-    nesting has to inherit. Two sibling functions reusing a variable name is
-    the case it over-approximates, and reassignment clears taint, so the
-    common shape of that collision heals itself.
+    nesting has to inherit. What it must not do is let two sibling functions
+    share a name — so entering a function drops its parameters, which is a
+    rebinding like any other.
     """
     from thot.codemap.rules import load_js_catalog
 
@@ -510,13 +854,34 @@ def _find_candidates(root: Path, symbols: list[Symbol]) -> list:
         if symbol.path.lower().endswith(EXTENSIONS):
             by_file.setdefault(symbol.path, []).append(symbol)
 
+    # A file of pure routes defines no named function, so it carries no
+    # indexed symbol — and a loop that starts from the symbols never opens
+    # it. Measured on prime/: of 929 JavaScript and TypeScript files, 220
+    # carried no symbol and were never read by this engine, among them
+    # exactly the shape the docstring below says it exists to catch. The
+    # union keeps the files the index knows about even when the walk's
+    # suffix list is narrower than the indexer's.
+    scannable = set(by_file)
+    scannable.update(
+        relative for relative, _, _ in source_versions(root)
+        if relative.lower().endswith(EXTENSIONS)
+    )
+
     found: list = []
     exported_cache: dict = {}
-    for relative in sorted(by_file):
+    for relative in sorted(scannable):
         # Read and masked once per version of the file: the indexer has
         # already paid for this, and paying twice showed up as nine seconds
         # before the prompt on a TypeScript repository.
-        source, masked = read_masked(root / relative)
+        try:
+            source, masked = read_masked(root / relative)
+        except RecursionError:
+            # Walking the tree means opening files the indexer gave up on,
+            # which until now shielded this pass by accident: it only ever
+            # read what had indexed cleanly. A file of 1 500 nested template
+            # literals exhausts the masker's mutual recursion, and one file
+            # nobody can lex must cost only itself.
+            continue
         if not source:
             continue
         # A file with no untrusted source in it cannot contain a path, so
@@ -524,13 +889,13 @@ def _find_candidates(root: Path, symbols: list[Symbol]) -> list:
         # file costs microseconds and skips the great majority of them —
         # measured on Prime: 938 files down to the few dozen that can
         # possibly matter.
-        if not _has_any_source(masked):
+        if not _can_hold_a_path(masked):
             continue
         call_sinks, assign_sinks = _applicable(source)
         if not call_sinks and not assign_sinks:
             continue
         starts = [0] + [i + 1 for i, c in enumerate(masked) if c == "\n"]
-        ordered = _enclosing(by_file[relative])
+        ordered = _enclosing(by_file.get(relative, []))
         # Functions this file defines, by the bare name a caller would use.
         # Same file only: following a call across files needs a resolved
         # module graph, and JavaScript does not offer one without a tsconfig
@@ -554,6 +919,7 @@ def _find_candidates(root: Path, symbols: list[Symbol]) -> list:
                 symbols=ordered,
                 body=masked,
                 offset=0,
+                raw=source,
                 starts=starts,
                 call_sinks=call_sinks,
                 assign_sinks=assign_sinks,
@@ -588,7 +954,7 @@ def _find_candidates(root: Path, symbols: list[Symbol]) -> list:
                 body_starts = [0] + [
                     i + 1 for i, c in enumerate(body_masked) if c == "\n"
                 ]
-                body_symbols = _enclosing(by_file[where])
+                body_symbols = _enclosing(by_file.get(where, []))
                 body_call, body_assign = _applicable(body_source)
                 if not body_call and not body_assign:
                     continue
@@ -604,6 +970,7 @@ def _find_candidates(root: Path, symbols: list[Symbol]) -> list:
                     symbols=body_symbols,
                     body=body_masked[begin:end],
                     offset=begin,
+                    raw=body_source[begin:end],
                     starts=body_starts,
                     call_sinks=body_call,
                     assign_sinks=body_assign,

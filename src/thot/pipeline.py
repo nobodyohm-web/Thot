@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import replace
+from functools import partial
 
 import subprocess
 import time
@@ -62,6 +63,10 @@ class AuditResult:
     # one worth trusting: two of the three agents can write, and no flag
     # stops them, so what cannot be prevented is made impossible to miss.
     touched: tuple[str, ...] = ()
+    # Candidates a measured-noise rule produced and no model was paid to
+    # argue. Never silent: `hidden` already set the precedent that anything
+    # a threshold holds back is counted where the reader can see it.
+    deferred: int = 0
 
     @property
     def confirmed(self) -> list[Finding]:
@@ -140,13 +145,26 @@ def findings_from_graph(root: Path, graph: CodeGraph) -> list[Finding]:
             escapes=graph.reach_unknown(candidate.sink.symbol or ""),
             role=role,
         )
+        # Naming the *kind* of source, not only the line it sits on. Since
+        # the rank of a file-path finding depends on how far the value
+        # travelled, a reader who cannot see which source started it cannot
+        # tell a discounted finding from a quiet one — and cannot disagree.
+        label = _source_label(candidate.source_rule)
+        origin = (f"{label} (`{candidate.source}`)" if label
+                  else f"`{candidate.source}`")
         scenario = (
-            f"{candidate.description} : une valeur issue de `{candidate.source}` "
+            f"{candidate.description} : une valeur issue de {origin} "
             f"atteint `{candidate.sink}` sans validation intermédiaire détectée."
         )
-        provenance = None
+        traced: dict = {}
         if role is not Role.PRODUCTION:
-            provenance = {"rôle": role.value}
+            traced["rôle"] = role.value
+        if candidate.source_rule:
+            # Not `source`: the pattern scanner already puts the *rule pack*
+            # a rule came from under that key, and the two answers are
+            # different questions with the same word.
+            traced["source_rule"] = candidate.source_rule
+        provenance = traced or None
         finding = Finding(
             id=Finding.compute_id(candidate.rule, candidate.sink),
             rule=candidate.rule,
@@ -162,6 +180,89 @@ def findings_from_graph(root: Path, graph: CodeGraph) -> list[Finding]:
             held, finding
         )
     return list(by_id.values())
+
+
+# The two sweeps below are the heaviest phases of an audit and the most
+# obviously parallel: each reads one file, matches it against a fixed rule
+# set, and appends to a local list. Measured on `hermes/`: 58.6 s and 11.0 s
+# of the 138.5 s an audit took, on one core out of ten.
+#
+# Wrapped here rather than parallelised inside the guard because a spawned
+# worker has to import the function it runs by name, and because the guard's
+# own signature should not have to know that a pool exists.
+
+
+def _patterns_chunk(root: str, relatives: list[str]) -> list:
+    from thot.guard.scanner import sweep_patterns as sweep
+
+    return sweep(Path(root), relatives)
+
+
+def _suppressions_chunk(already: set, root: str, relatives: list[str]) -> list:
+    """The already-flagged locations come bound in, never through a global.
+
+    A worker is spawned, not forked: it re-imports this module from scratch,
+    so a module-level variable the parent had just assigned reaches it as
+    whatever the import statement produced — an empty set. `partial` carries
+    the value across because it is pickled with the call.
+    """
+    from thot.guard.suppressions import sweep_suppressions as sweep
+
+    return sweep(Path(root), relatives, already)
+
+
+# A pattern rule that duplicates a taint sink, and the sink that proves the
+# same call. `run_audit` states the division of labour below: pattern rules
+# cover "what the AST indexer never reads — JavaScript, YAML, CI workflows —
+# and shapes that are dangerous without a provable path". These three read
+# Python the indexer does read, and match on the call's name alone.
+#
+# Measured against 100 labelled command-injection cases and 100 code-injection
+# ones: the taint sinks scored 76 true positives and **no** false positive,
+# while these three patterns added 89 false positives on top — they fire on a
+# guarded call and an unguarded one alike, because a name is all they see.
+# Deferring took command injection from +22 % to +82 % and eval injection from
+# 0 % (a coin flip: it fired on all 100 cases) to +70 %.
+#
+# The price is 24 true positives the pattern caught and the taint pass did
+# not, inside files it had read. That is the trade, and it is only taken
+# where measured — adding an entry here means measuring it first.
+DUPLICATES_A_SINK = {
+    "pattern.eval_injection": "sink.eval",
+    "pattern.os_system_injection": "sink.os.system",
+    "pattern.python_subprocess_shell": "sink.subprocess.shell",
+}
+
+
+def defer_to_taint(findings: list, analysed: set[str]) -> list:
+    """Drop pattern findings the taint pass was in a position to judge.
+
+    `analysed` is the set of paths the indexer actually read. A file absent
+    from it — JavaScript, a workflow, a module that failed to parse — keeps
+    its pattern findings untouched, which is the whole reason the pattern
+    rules exist.
+    """
+    return [
+        finding for finding in findings
+        if finding.rule not in DUPLICATES_A_SINK
+        or finding.location.path not in analysed
+    ]
+
+
+def _source_label(rule_id: str) -> str:
+    """The human name of the rule that started a path, in either language.
+
+    Both catalogues are asked because both engines emit into one contract,
+    and neither file may import the other: the two languages disagree about
+    what a dangerous name looks like, which is the reason they are apart.
+    """
+    if not rule_id:
+        return ""
+    from thot.codemap.catalog import active as python_catalog
+    from thot.taint.js_catalog import active as javascript_catalog
+
+    found = python_catalog().source(rule_id) or javascript_catalog().source(rule_id)
+    return found.description if found is not None else ""
 
 
 def run_audit(
@@ -206,19 +307,25 @@ def run_audit(
 
     # Pattern rules cover what the AST indexer never reads — JavaScript, YAML,
     # CI workflows — and shapes that are dangerous without a provable path.
-    findings += sweep_patterns(root, list(manifest.files))
+    from thot.parallel import over_files
+
+    # `swept`, not `files`: the pattern rules are the only thing that ever
+    # reads a workflow, a compose file or a `.pem`, and they were being handed
+    # the indexer's list — so the rule keyed on `.github/workflows/` could not
+    # fire, and no secret rule ever saw a `.env`.
+    findings += over_files(_patterns_chunk, root, list(manifest.swept))
 
     # A suppression is the one claim about safety that no scanner re-reads —
     # including this one, by design. Twice in a single audit a comment
     # disarming a check turned out to be false, so they are reported as a
     # class and left LOW: not "this is dangerous", but "nobody has re-read
     # the reason this was excused".
-    from thot.guard.suppressions import sweep_suppressions
+    findings = defer_to_taint(findings, {symbol.path for symbol in symbols})
 
-    findings += sweep_suppressions(
-            root, list(manifest.files),
-            {(f.location.path, f.location.line) for f in findings},
-        )
+    already = {(f.location.path, f.location.line) for f in findings}
+    findings += over_files(
+        partial(_suppressions_chunk, already), root, list(manifest.files)
+    )
 
     # Dependencies are the one surface that needs the network, so they are
     # opt-in and imported here rather than at module level: an audit without
@@ -244,6 +351,7 @@ def run_audit(
 
     engine_name = None
     touched_files: tuple[str, ...] = ()
+    deferred = 0
     if engine is not None and findings:
         from thot.analysis.deep import run_deep_pass
 
@@ -255,6 +363,7 @@ def run_audit(
         findings = outcome.findings
         engine_name = outcome.engine
         touched_files = outcome.touched
+        deferred = outcome.deferred
 
     # Plugins see the finished findings, before anything is written down.
     findings = annotate_findings(findings, root)
@@ -264,7 +373,13 @@ def run_audit(
     if store is not None:
         run_id = store.start_run(root=str(root), commit=_git_commit(root))
         store.save_findings(run_id, findings)
-        store.remember_symbols({s.name: s.ast_hash for s in symbols})
+        # `remember_symbols` used to be called here, writing one row per
+        # symbol — 101 533 of them on `hermes/`, every run — into a table
+        # nothing outside the tests has ever read. It could not have been
+        # read usefully either: `symbol_cache` is keyed on the symbol name
+        # alone, with no path and no file version, so it cannot say whether
+        # the file a symbol came from has changed. The cache that does that
+        # work lives in `codemap/index.py`, keyed on (path, size, mtime_ns).
 
     return AuditResult(
         findings=findings,
@@ -275,4 +390,5 @@ def run_audit(
         remembered=remembered,
         supply_error=supply_error,
         touched=touched_files,
+        deferred=deferred,
     )

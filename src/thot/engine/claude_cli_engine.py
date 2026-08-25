@@ -14,11 +14,9 @@ from __future__ import annotations
 
 import json
 import shutil
-import subprocess
 
 from thot.engine import process as process_group
 from thot.llm.claude_cli import PROBE_DENIED
-from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -165,5 +163,6 @@ class ClaudeCliEngine:
             return []
         if len(tasks) == 1 or self.max_parallel <= 1:
             return [self.run(task) for task in tasks]
-        with ThreadPoolExecutor(max_workers=self.max_parallel) as pool:
-            return list(pool.map(self.run, tasks))
+        return process_group.parallel_map(
+            self.run, tasks, max_workers=self.max_parallel
+        )

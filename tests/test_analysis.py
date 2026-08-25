@@ -532,3 +532,146 @@ def test_a_counter_argument_that_failed_is_still_recorded(toy_repo):
     judged = _judged(toy_repo, {"refuted": False, "raison": "tentative ratée"})
 
     assert (judged.provenance or {}).get("contre-argument écarté") == "tentative ratée"
+
+
+# --- trois états, pas deux -------------------------------------------------
+#
+# Un finding pouvait sortir CONFIRMED avec « attaqué par prime » alors que
+# prime n'avait jamais répondu : `_apply_refutation` nommait le contradicteur
+# AVANT de regarder son résultat, et la branche d'échec ne touchait pas la
+# confiance. Le rapport affirmait alors la seule chose qu'un panel achète —
+# « ceci a survécu à un adversaire » — sans qu'aucun adversaire n'ait parlé.
+#
+# Les trois états sont : attaqué et survivant, attaqué et réfuté, PAS ATTAQUÉ.
+
+
+def _never_attacked(toy_repo, refutation=None):
+    engine = ScriptedEngine({
+        "probe:": {"verdict": "confirmed", "scenario": "argv atteint os.system",
+                   "severity": "high"},
+        "refute:": refutation,
+    })
+    return analyse(toy_repo, [make_finding()], engine, limit=1)[0]
+
+
+def test_an_attack_that_failed_leaves_the_finding_unattacked(toy_repo):
+    judged = _never_attacked(toy_repo)
+    provenance = judged.provenance or {}
+
+    assert judged.confidence is Confidence.PLAUSIBLE
+    assert "contradicteur" not in provenance
+    assert provenance["attaque impossible"] == "scripted"
+    assert "échec simulé" in provenance["réfutation"]
+
+
+def test_the_report_names_no_attacker_when_none_answered(toy_repo):
+    """Les quatre vues lisent la même liste : la réparer ici les répare toutes."""
+    from thot.report import judgement
+
+    stages = judgement(_never_attacked(toy_repo))
+
+    assert not any(label == "attaqué par" for label, _ in stages), stages
+    assert ("phase", "non attaquée") in stages
+
+
+def test_an_answer_without_a_readable_verdict_refutes_nothing_and_says_so(toy_repo):
+    """`refuted` absent : l'agent a parlé sans rien affirmer.
+
+    `extract_json` accepte tout objet JSON sans jamais vérifier ses clés, donc
+    un bloc cité depuis le code arrivait ici avec le poids d'un verdict — et
+    son `raison` vide était écrit comme un contre-argument écarté.
+    """
+    judged = _never_attacked(toy_repo, {"scenario": "un objet qui n'est pas un verdict"})
+    provenance = judged.provenance or {}
+
+    assert judged.confidence is Confidence.CONFIRMED
+    assert provenance["réfutation illisible"] == "écartée"
+    assert "contre-argument écarté" not in provenance
+
+
+def test_the_string_false_is_read_as_false_not_as_a_refutation(toy_repo):
+    """`"refuted": "false"` est vrai au sens de Python et faux au sens du texte."""
+    judged = _judged(toy_repo, {"refuted": "false", "raison": "rien trouvé"})
+
+    assert judged.confidence is Confidence.CONFIRMED
+
+
+def test_the_string_true_still_refutes(toy_repo):
+    judged = _judged(toy_repo, {"refuted": "true", "raison": "entrée constante"})
+
+    assert judged.confidence is Confidence.REFUTED
+
+
+def test_a_second_attack_that_failed_does_not_undo_the_first(tmp_path):
+    """Une attaque réelle a bien eu lieu et a échoué à le tuer : c'est acquis."""
+    from thot.engine.panel import PanelEngine
+
+    members = [
+        _Member(name, {
+            "probe:": {"verdict": "confirmed", "scenario": "entrée x atteint le sink"},
+            "refute:": {"refuted": False, "raison": "je n'ai rien trouvé"},
+        })  # refute2: n'est scripté nulle part — le second attaquant échoue
+        for name in ("claude", "hermes", "prime")
+    ]
+    result = analyse(tmp_path, [make_finding()], PanelEngine(members=members),
+                     limit=1)[0]
+    provenance = result.provenance
+
+    assert result.confidence is Confidence.CONFIRMED
+    assert "second contradicteur" not in provenance
+    assert provenance["attaque impossible"]
+    assert provenance["phase"] == "confirmée", "une seule attaque a eu lieu"
+
+
+def test_a_probe_that_never_answered_is_not_credited_with_the_argument(toy_repo):
+    from thot.report import judgement
+
+    engine = ScriptedEngine({"probe:": None})
+    judged = analyse(toy_repo, [make_finding()], engine, limit=1)[0]
+    provenance = judged.provenance or {}
+
+    assert "moteur" not in provenance
+    assert provenance["sonde impossible"] == "scripted"
+    assert not any(label == "argumenté par" for label, _ in judgement(judged))
+
+
+def _refutation_reviewed_by(tmp_path, review):
+    from thot.engine.panel import PanelEngine
+
+    members = [
+        _Member(name, {
+            "probe:": {"verdict": "refuted", "scenario": "rien à voir"},
+            **({"review:": review} if review is not None else {}),
+        })
+        for name in ("claude", "hermes")
+    ]
+    return analyse(tmp_path, [make_finding(severity=Severity.HIGH)],
+                   PanelEngine(members=members), limit=1)[0]
+
+
+def test_a_reviewer_that_never_answered_is_not_credited_with_the_reading(tmp_path):
+    result = _refutation_reviewed_by(tmp_path, None)
+    provenance = result.provenance or {}
+
+    assert "relecture" not in provenance
+    assert provenance["relecture impossible"]
+    assert "réfutation vérifiée" not in provenance
+
+
+def test_a_review_without_a_readable_verdict_verifies_nothing(tmp_path):
+    result = _refutation_reviewed_by(tmp_path, {"raison": "je ne sais pas"})
+    provenance = result.provenance or {}
+
+    assert "réfutation vérifiée" not in provenance
+    assert provenance["relecture impossible"]
+
+
+def test_a_review_that_says_the_string_false_does_not_bless_the_refutation(tmp_path):
+    """Une réfutation validée est mémorisée pour de bon : le mot compte."""
+    result = _refutation_reviewed_by(
+        tmp_path, {"sound": "false", "raison": "la ligne est bien là"}
+    )
+    provenance = result.provenance or {}
+
+    assert result.confidence is Confidence.PLAUSIBLE
+    assert provenance["réfutation contestée"] == "la ligne est bien là"

@@ -152,6 +152,48 @@ def test_a_command_keeps_its_end_because_that_is_where_it_failed(tmp_path):
     assert "coupées au début" in result.output
 
 
+def test_a_timeout_takes_the_grandchildren_with_it(tmp_path):
+    """`subprocess.run(timeout=…)` killed the shell and nothing under it.
+
+    A `pytest` that started a server left it running under `ppid=1`, holding
+    its port; engine/process.py already answers this with a process group,
+    and this is the same answer applied to the same problem.
+    """
+    import os
+    import subprocess
+    import sys
+    import time
+
+    marker = tmp_path / "grandchild.pid"
+    inner = (f"import os, pathlib, time; "
+             f"pathlib.Path({str(marker)!r}).write_text(str(os.getpid())); "
+             f"time.sleep(300)")
+    command = (f"{sys.executable} -c {inner!r} >/dev/null 2>&1 & sleep 300")
+
+    result = LocalSandbox(root=tmp_path).run(command, timeout=2)
+    assert result.timed_out is True
+
+    deadline = time.monotonic() + 5
+    while not marker.exists() and time.monotonic() < deadline:
+        time.sleep(0.05)
+    assert marker.exists(), "le petit-enfant n'a jamais démarré"
+    pid = int(marker.read_text())
+
+    alive = True
+    while time.monotonic() < deadline:
+        if subprocess.run(["ps", "-p", str(pid)],
+                          capture_output=True).returncode != 0:
+            alive = False
+            break
+        time.sleep(0.05)
+    if alive:  # never leak it into the rest of the suite
+        try:
+            os.kill(pid, 9)
+        except OSError:
+            pass
+    assert not alive, f"le processus {pid} a survécu au délai dépassé"
+
+
 # -- the tool the model actually calls ---------------------------------------
 
 

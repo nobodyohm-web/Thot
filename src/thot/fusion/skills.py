@@ -12,10 +12,20 @@ So the merge is not a copy. Copies drift, and a skill installed twice is a
 skill patched once. Each program is pointed at the others' directories, and
 the files stay where their owner put them.
 
-One asymmetry is deliberate. Skills that Hermes installs come from public
-registries — skills.sh, GitHub, ClawHub — so Thot reads them *screened* by
-its own guard, in the same rank as a skill found in an audited repository.
-Its own shipped library is the only one it vouches for.
+One asymmetry is deliberate, and it has two steps rather than one. Thot
+vouches for its own shipped library and for what the user put in Thot's own
+folder: both are on disk because the program was installed. Everything else
+is screened by the guard — but not against the same bar.
+
+A skill supplied by the repository under audit is the case the guard was
+written for: nobody vouched for that code, so `caution` is enough to refuse
+it. A library the user installed into a neighbouring agent's home is not
+that. The install already happened, deliberately, and Thot is only deciding
+whether to read what is already on the machine; it is still scanned and
+still reported, and refused on `dangerous`. Measured on this user's
+`~/.hermes/skills`: under the repository's bar, 8 of 83 were refused, six of
+them for the single rule that reads a skill documenting the address of its
+own token as exfiltration.
 """
 
 from __future__ import annotations

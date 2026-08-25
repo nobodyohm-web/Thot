@@ -228,7 +228,16 @@ def list_dir(context: ToolContext, *, path: str = ".") -> str:
         for entry in entries
         if not entry.name.startswith(".")
     ]
-    return "\n".join(rendered) or "(vide)"
+    if not rendered:
+        return "(vide)"
+    # Bounded like every other tool that can return an unknown amount. A
+    # `node_modules` on this machine holds 473 visible entries — one call,
+    # some 3 500 tokens, for a listing whose tail nobody reads. The head is
+    # what is kept: the entries are sorted, directories first, so the top is
+    # the part that orients.
+    from thot.output import truncate_head
+
+    return truncate_head("\n".join(rendered)).rendered()
 
 
 def _sandbox_for(context: ToolContext):

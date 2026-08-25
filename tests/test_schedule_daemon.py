@@ -7,6 +7,9 @@ same `schedule run` the CLI has always had.
 
 from __future__ import annotations
 
+import fcntl
+import os
+import subprocess
 from datetime import datetime
 
 from thot.schedule.daemon import due, previous_occurrence, seed
@@ -219,3 +222,115 @@ def test_a_job_launchd_already_serves_is_left_alone(tmp_path, monkeypatch):
     assert ran == []
     # Marked as served, so the next tick does not ask launchd all over again.
     assert daemon.read_state()["nuit"] == at("2026-08-23 03:00")
+
+
+# -- one scheduler, and the right one ----------------------------------------
+#
+# Two of them ran every nightly job twice, and `stop` could only ever reach
+# the one named in the pidfile: measured with two `thot schedule start` in
+# parallel — pids 63600 and 63601 both alive with ppid=1, pidfile holding
+# 63601, `stop` leaving 63600 running and `status` answering "arrêté".
+
+
+def test_a_second_scheduler_refuses_to_start_beside_the_first(tmp_path,
+                                                              monkeypatch):
+    """The pidfile is not a lock: writing it is the third thing `serve` did."""
+    from thot.schedule import daemon
+
+    monkeypatch.setattr(daemon, "home", lambda: tmp_path)
+    monkeypatch.setattr(daemon, "ensure_home", lambda: tmp_path)
+    monkeypatch.setattr("thot.schedule.jobs.load", lambda: [])
+    monkeypatch.setattr(daemon, "_run", lambda name: None)
+
+    held = os.open(daemon.lockfile(), os.O_RDWR | os.O_CREAT, 0o644)
+    fcntl.flock(held, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    daemon.pidfile().write_text("4242")
+
+    ticks = iter([at("2026-08-23 02:00"), at("2026-08-23 03:00")])
+
+    def clock():
+        try:
+            return next(ticks)
+        except StopIteration:
+            raise KeyboardInterrupt
+
+    try:
+        assert daemon.serve(tick=0, clock=clock) == 1
+        assert daemon.pidfile().read_text() == "4242", \
+            "le premier planificateur reste celui que le pidfile désigne"
+    finally:
+        fcntl.flock(held, fcntl.LOCK_UN)
+        os.close(held)
+
+
+def test_the_lock_is_released_when_the_loop_ends(tmp_path, monkeypatch):
+    """A scheduler stopped with Ctrl-C must let the next one start."""
+    from thot.schedule import daemon
+
+    monkeypatch.setattr(daemon, "home", lambda: tmp_path)
+    monkeypatch.setattr(daemon, "ensure_home", lambda: tmp_path)
+    monkeypatch.setattr("thot.schedule.jobs.load", lambda: [])
+    monkeypatch.setattr(daemon, "_run", lambda name: None)
+
+    def once():
+        raise KeyboardInterrupt
+
+    assert daemon.serve(tick=0, clock=once) == 0
+
+    held = os.open(daemon.lockfile(), os.O_RDWR | os.O_CREAT, 0o644)
+    try:
+        fcntl.flock(held, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    finally:
+        os.close(held)
+
+
+def test_the_scheduler_recognises_its_own_pidfile(tmp_path, monkeypatch):
+    from thot.schedule import daemon
+
+    monkeypatch.setattr(daemon, "home", lambda: tmp_path)
+    daemon.pidfile().write_text(str(os.getpid()))
+    daemon.idfile().write_text(daemon._started_at(os.getpid()))
+
+    assert daemon.running() == os.getpid()
+
+
+def test_a_pid_the_scheduler_never_owned_is_not_taken_for_it(tmp_path,
+                                                             monkeypatch):
+    """`~/.thot/scheduler.pid` outlives a reboot and a `kill -9`, and pids
+    are reused: `os.kill(pid, 0)` alone answers "alive" for a stranger."""
+    from thot.schedule import daemon
+
+    monkeypatch.setattr(daemon, "home", lambda: tmp_path)
+    daemon.pidfile().write_text(str(os.getpid()))
+    daemon.idfile().write_text("Thu Jan  1 00:00:00 1970")
+
+    assert daemon.running() is None
+    assert not daemon.pidfile().exists(), "un pidfile périmé est nettoyé"
+
+
+def test_a_pidfile_with_no_identity_beside_it_is_stale(tmp_path, monkeypatch):
+    from thot.schedule import daemon
+
+    monkeypatch.setattr(daemon, "home", lambda: tmp_path)
+    daemon.pidfile().write_text(str(os.getpid()))
+
+    assert daemon.running() is None
+
+
+def test_stop_never_signals_a_process_that_is_not_a_scheduler(tmp_path,
+                                                              monkeypatch):
+    """Reproduced against a `/bin/sleep 300` of the user's: `thot schedule
+    stop` printed "Planificateur arrêté." and killed it."""
+    from thot.schedule import daemon
+
+    monkeypatch.setattr(daemon, "home", lambda: tmp_path)
+    victim = subprocess.Popen(["/bin/sleep", "30"])
+    try:
+        daemon.pidfile().write_text(str(victim.pid))
+        daemon.idfile().write_text(daemon._started_at(victim.pid))
+
+        assert daemon.stop() is False
+        assert victim.poll() is None, "un processus étranger a reçu SIGTERM"
+    finally:
+        victim.kill()
+        victim.wait()

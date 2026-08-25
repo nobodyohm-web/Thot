@@ -15,15 +15,28 @@ from __future__ import annotations
 import ast
 import hashlib
 import io
+import math
 import re
 import tokenize
+from collections import Counter
 from pathlib import Path
+
+# The catalogue's regexes are read as data, not only executed — see
+# `_literal_gate`. `re._parser` is private and this is the only use of it, so
+# a version of Python that moves it costs the pre-filter and nothing else.
+try:
+    from re import _constants as _sre
+    from re import _parser as _sre_parse
+except ImportError:  # pragma: no cover - depends on the interpreter build
+    _sre = None
+    _sre_parse = None
 
 from thot.contracts import CodeRef, Confidence, Finding, Severity
 from thot.codemap.ts_indexer import _skip_balanced
 from thot.taint.js_catalog import binds
 from thot.guard.patterns import _JS_EXTS as _JS_SUFFIXES
-from thot.guard.patterns import SECURITY_PATTERNS
+from thot.guard.audit_rules import THOT_PATTERNS
+from thot.guard.patterns import AUDIT_PATTERNS, SECURITY_PATTERNS
 from thot.scoring.role import Role, role_of
 from thot.scoring.severity import compute_severity
 
@@ -73,6 +86,10 @@ _IMPACT: dict[str, Severity] = {
     "aes_ecb_mode": Severity.MEDIUM,
     "script_src_without_sri": Severity.MEDIUM,
     "github_actions_workflow": Severity.MEDIUM,
+    "hardcoded_credential": Severity.HIGH,
+    # A guess about a name, not a recognised key shape: reported, ranked
+    # below the rules that recognise one.
+    "hardcoded_secret_assignment": Severity.MEDIUM,
 }
 
 _DEFAULT_IMPACT = Severity.MEDIUM
@@ -163,6 +180,101 @@ _INJECTION_RULES = frozenset({
 })
 
 _IDENTIFIER = re.compile(r"[A-Za-z_]")
+
+
+# Rules that recognise a credential. Judged, because the shape of a key and
+# the shape of the documentation's example of that key are the same shape:
+# `AKIAIOSFODNN7EXAMPLE` is in AWS's own docs and therefore in more
+# repositories than any real key ever will be.
+_CREDENTIAL_RULES = frozenset({
+    "hardcoded_credential",
+    "hardcoded_secret_assignment",
+})
+
+_PLACEHOLDER_MARKERS = (
+    "example", "placeholder", "your", "changeme", "change_me", "change-me",
+    "redacted", "dummy", "fake", "sample", "notreal", "not-real", "insert",
+    "replace", "todo", "test", "xxxx", "0000", "1234567890", "abcdef",
+    "<", ">", "{", "}", "$",
+)
+
+# The alphabet a key is drawn from. Anything else in the value — a dot, a
+# colon, a space, a Japanese character — says the string names or describes
+# something. Measured on hermes/, that one condition is what separates a
+# credential from `'hermes.desktop.layoutTree.v2'`, `'conn:local::research'`
+# and `'credits.grant_spent'`.
+_KEY_ALPHABET = re.compile(r"[A-Za-z0-9+/=_\-]{16,}\Z")
+
+# Shannon bits per character. A 24-character value drawn from an alphabet of
+# 62 carries about 4.6; `changeme-changeme-change` carries 2.9 and
+# `aaaaaaaaaaaaaaaaaaaaaaaa` carries 0. The threshold separates a key from a
+# sentence, which is what the name-based rule needs and all it needs.
+_MIN_SECRET_ENTROPY = 3.0
+
+
+def _looks_like_a_key(value: str) -> bool:
+    """Whether this value could be a credential rather than a name for one.
+
+    The digit is what rules out `"token": "TELEGRAM_BOT_TOKEN"` — a table
+    mapping a setting to the variable it is read from, which is the shape
+    this rule exists to recommend, and which it reported on Thot's own
+    source. A generated key of any provider carries digits; a name for one
+    carries words.
+    """
+    if not _KEY_ALPHABET.match(value):
+        return False
+    if not any(char.isdigit() for char in value):
+        return False
+    if not any(char.isalpha() for char in value):
+        return False
+    # Below 32 characters, one case throughout reads as a slug rather than as
+    # something generated: `bearer-token-123` against `Zq7Z4hV9nX2pL8sK`.
+    mixed = (any(char.islower() for char in value)
+             and any(char.isupper() for char in value))
+    return mixed or len(value) >= 32
+
+
+def _assigned_value(matched: str) -> str:
+    """The literal to the right of the assignment, or the whole match.
+
+    Read from the end, because the name is quoted too in every mapping
+    syntax there is — `"token": "TELEGRAM_BOT_TOKEN"` has four quotes and
+    only the last pair holds the value.
+    """
+    trimmed = matched.rstrip()
+    if trimmed[-1:] in ('"', "'"):
+        opening = trimmed.rfind(trimmed[-1], 0, len(trimmed) - 1)
+        if opening != -1:
+            return trimmed[opening + 1:-1]
+    return matched
+
+
+def _entropy(value: str) -> float:
+    if not value:
+        return 0.0
+    total = len(value)
+    return -sum(
+        (count / total) * math.log2(count / total)
+        for count in Counter(value).values()
+    )
+
+
+def _is_placeholder(rule: str, matched: str) -> bool:
+    """Whether this match is a stand-in for a credential rather than one.
+
+    False negatives are the deliberate side of this: a real key that happens
+    to spell `dummy` inside its base64 goes unreported. A scanner nobody
+    reads reports nothing at all, and the documentation example is the single
+    most common string this catalogue will ever meet.
+    """
+    lowered = matched.lower()
+    if any(marker in lowered for marker in _PLACEHOLDER_MARKERS):
+        return True
+    if rule == "hardcoded_secret_assignment":
+        value = _assigned_value(matched)
+        return (not _looks_like_a_key(value)
+                or _entropy(value) < _MIN_SECRET_ENTROPY)
+    return False
 
 
 def _spans(text: str, pattern: dict) -> list[tuple[int, int]]:
@@ -298,7 +410,7 @@ _YAML_RULE = "unsafe_yaml_load"
 _SAFE_LOADER = "SafeLoader"
 
 
-def _structural(relative: str, text: str) -> str:
+def _structural(relative: str, text: str, scannable: str) -> str:
     """The same text with literals opaque, for reasoning about offsets.
 
     `code_only` keeps JavaScript string bodies on purpose — a rule has to
@@ -306,6 +418,12 @@ def _structural(relative: str, text: str) -> str:
     comma in `execSync("a,b", opts)` is not an argument separator, and the
     brace in a template holding a program is not a body. Same offsets, two
     readings, and the structural one is never matched against.
+
+    The two readings only differ for JavaScript. Everywhere else the caller's
+    `code_only` result *is* the structural one, and recomputing it re-ran the
+    pure-Python tokenizer over every `.py` file a second time: measured on
+    hermes/ (7080 files), a sweep of 46.29 s against one of 34.17 s, same 47
+    findings.
     """
     if relative.endswith(_JS_SUFFIXES):
         from thot.codemap.ts_indexer import _mask
@@ -314,7 +432,7 @@ def _structural(relative: str, text: str) -> str:
             return _mask(text)
         except RecursionError:
             return text
-    return code_only(relative, text)
+    return scannable
 
 
 def _is_none(node: ast.AST) -> bool:
@@ -474,12 +592,13 @@ def _fire_line(
     """The line to report, or None when every match on the rule is inert."""
     module = _BOUND_FROM.get(name)
     judged = name in _INJECTION_RULES
+    credential = name in _CREDENTIAL_RULES
     yaml_lines = (
         _unsafe_yaml_lines(source)
         if name == _YAML_RULE and relative.endswith(_PY_SUFFIXES)
         else None
     )
-    if module is None and not judged and yaml_lines is None:
+    if module is None and not judged and not credential and yaml_lines is None:
         return _first_line(masked, pattern)
     spans = _spans(masked, pattern)
     if not spans:
@@ -487,6 +606,8 @@ def _fire_line(
     for span in spans:
         line = masked.count("\n", 0, span[0]) + 1
         if yaml_lines is not None and line not in yaml_lines:
+            continue
+        if credential and _is_placeholder(name, masked[span[0]:span[1]]):
             continue
         if module and _is_foreign_name(source, structural, span, module):
             continue
@@ -530,6 +651,125 @@ def _line_identity(text: str, line: int) -> str:
     return hashlib.sha256(normalised.encode()).hexdigest()[:16]
 
 
+# A rule proves an absence far more often than a presence, and `re` proves it
+# the expensive way: it cannot factor an alternation, so it walks the text
+# character by character. Measured on hermes/ (7080 files): 117 750 searches
+# to produce 47 findings. Asking `str.__contains__` first — a C skip loop —
+# leaves 7806 of them and takes the sweep from 34.17 s to 17.28 s on the same
+# 47 findings.
+#
+# Below this length a literal filters nothing: `(` is in every source file,
+# and the lookup costs more than the search it was meant to save.
+_MIN_GATE_LITERAL = 4
+
+_GATE_CACHE: dict[str, tuple[str, ...] | None] = {}
+
+
+def _leading_literal(sequence) -> str:
+    """The literal every match of `sequence` starts with, possibly empty."""
+    head: list[str] = []
+    for op, argument in sequence:
+        if op is _sre.LITERAL:
+            head.append(chr(argument))
+        elif op not in (_sre.AT, _sre.ASSERT, _sre.ASSERT_NOT):
+            break
+    return ''.join(head)
+
+
+def _mandatory_literals(sequence) -> tuple[str, ...] | None:
+    """Literals of which every match of `sequence` contains at least one.
+
+    None when no such set can be proven, which is the answer for a rule built
+    out of character classes. Only what a match must traverse contributes: an
+    optional repeat and a back-reference yield nothing, a group is entered
+    only where it cannot be skipped, and a zero-width assertion is stepped
+    over rather than cutting the literal run around it — `\\bos\\.system` has
+    to spell `os.system`, boundary and all.
+    """
+    best: tuple[str, ...] | None = None
+    run: list[str] = []
+
+    def rank(candidate: tuple[str, ...]) -> tuple[int, int]:
+        return (min(len(item) for item in candidate),
+                sum(len(item) for item in candidate))
+
+    def consider(candidate: tuple[str, ...] | None) -> None:
+        nonlocal best
+        if not candidate or any(len(item) < _MIN_GATE_LITERAL for item in candidate):
+            return
+        # A text holding `postgresql` holds `postgres`: testing for both is
+        # one substring pass wasted on every file in the repository.
+        candidate = tuple(
+            item for item in candidate
+            if not any(other != item and other in item for other in candidate)
+        )
+        if best is None or rank(candidate) > rank(best):
+            best = candidate
+
+    def flush() -> None:
+        if run:
+            consider((''.join(run),))
+            run.clear()
+
+    for op, argument in sequence:
+        if op is _sre.LITERAL:
+            run.append(chr(argument))
+            continue
+        if op in (_sre.AT, _sre.ASSERT, _sre.ASSERT_NOT):
+            continue  # matches the empty string: the run is uninterrupted
+        prefix = ''.join(run)
+        flush()
+        if op is _sre.SUBPATTERN:
+            # A group that turns a flag on mid-pattern is read as opaque:
+            # `(?i:…)` would make its literals unusable as a substring test.
+            if not argument[1] and not argument[2]:
+                consider(_mandatory_literals(argument[3]))
+        elif op in (_sre.MAX_REPEAT, _sre.MIN_REPEAT):
+            if argument[0] >= 1:
+                consider(_mandatory_literals(argument[2]))
+        elif op is _sre.BRANCH:
+            arms = [_mandatory_literals(arm) for arm in argument[1]]
+            if all(arms):
+                consider(tuple(sorted({lit for arm in arms for lit in arm})))
+            # The parser factors a common prefix out of an alternation:
+            # `(?:ghp_|gho_|ghu_)` parses as `gh` followed by `(?:p_|o_|u_)`,
+            # and neither half is long enough to filter on. Gluing the run
+            # back onto each arm's own leading literal recovers the branch
+            # the source spelled, which is the one worth testing for.
+            if prefix:
+                heads = [_leading_literal(arm) for arm in argument[1]]
+                if all(heads):
+                    consider(tuple(sorted({prefix + head for head in heads})))
+        elif op is _sre.ATOMIC_GROUP:
+            consider(_mandatory_literals(argument))
+    flush()
+    return best
+
+
+def _literal_gate(regex: str) -> tuple[str, ...] | None:
+    """A substring test that every match of `regex` passes, or None.
+
+    Derived from the parsed pattern, never written by hand. A hand-written
+    gate is a silent `return False` for the branch its author forgot: listing
+    `verify=False` and `rejectUnauthorized` but not
+    `ssl._create_unverified_context` switches tls_verification_disabled off
+    and nothing in the output says so.
+    """
+    if regex in _GATE_CACHE:
+        return _GATE_CACHE[regex]
+    gate: tuple[str, ...] | None = None
+    if _sre is not None:
+        try:
+            parsed = _sre_parse.parse(regex)
+            # Case folding would make a case-sensitive substring test wrong.
+            if not parsed.state.flags & re.IGNORECASE:
+                gate = _mandatory_literals(parsed)
+        except Exception:  # an unparseable rule is simply left ungated
+            gate = None
+    _GATE_CACHE[regex] = gate
+    return gate
+
+
 def _applies(pattern: dict, relative: str, text: str) -> bool:
     path_check = pattern.get("path_check")
     if path_check is not None and not path_check(relative):
@@ -543,8 +783,15 @@ def _applies(pattern: dict, relative: str, text: str) -> bool:
     if regex is None and not substrings:
         # A path-only rule (a CI workflow, say) fires on the path alone.
         return path_check is not None
-    if regex and re.search(regex, text):
-        return True
+    if regex:
+        # The gate answers only for the regex. `substrings` is the rule's
+        # other arm, not a precondition of this one: child_process_exec and
+        # os_system_injection carry both, and stopping here would drop
+        # `child_process.exec` and `from os import system` on the floor.
+        gate = _literal_gate(regex)
+        if gate is None or any(literal in text for literal in gate):
+            if re.search(regex, text):
+                return True
     return any(needle in text for needle in substrings or ())
 
 
@@ -556,29 +803,43 @@ def _scenario(pattern: dict) -> str:
     return condensed[:_SCENARIO_CHARS].rsplit(" ", 1)[0] + "…"
 
 
-def scan_text(relative: str, text: str) -> list[Finding]:
-    """Every rule that fires in one file, at most once each."""
+def scan_text(relative: str, text: str, rules=None) -> list[Finding]:
+    """Every rule that fires in one file, at most once each.
+
+    `rules` defaults to the whole catalogue, which is what the write-time
+    plugin wants: it is about to write this file, so every reminder applies.
+    The audit passes `AUDIT_PATTERNS` instead — see the note beside it.
+    """
     findings: list[Finding] = []
     scannable = code_only(relative, text)
-    structural = _structural(relative, text)
-    for pattern in SECURITY_PATTERNS:
+    structural = _structural(relative, text, scannable)
+    for pattern in (SECURITY_PATTERNS if rules is None else rules):
         name = pattern.get("ruleName", "?")
+        # A rule that reads raw text sees the file as written; every other
+        # rule sees it with literals and comments blanked. Both views have
+        # the same offsets, so a line number means the same thing in either.
+        subject = text if pattern.get("raw") else scannable
         try:
-            if not _applies(pattern, relative, scannable):
+            if not _applies(pattern, relative, subject):
                 continue
         except re.error:  # a bad regex must not take the audit down
             continue
 
-        impact = _IMPACT.get(name, _DEFAULT_IMPACT)
+        # A Thot rule states its own impact: severity is a property of
+        # the weakness, not of which catalogue the rule came from.
+        impact = pattern.get("impact") or _IMPACT.get(name, _DEFAULT_IMPACT)
         line = _fire_line(pattern, name, relative,
-                          scannable, structural, text)
+                          subject, structural, text)
         if line is None:
             continue  # every match is a literal: nothing to inject into
         location = CodeRef(
             path=relative,
             line=line,
             symbol=None,
-            ast_hash=_line_identity(scannable, line),
+            # Keyed on what the rule read: for a credential the secret *is*
+            # the line, and hashing the blanked view would give every key in
+            # a file the same identity — one dismissal pardoning the next.
+            ast_hash=_line_identity(subject, line),
         )
         rule = f"pattern.{name}"
         role = role_of(relative)
@@ -593,7 +854,22 @@ def scan_text(relative: str, text: str) -> list[Finding]:
                 rule=rule,
                 severity=compute_severity(
                     impact, None, Confidence.PLAUSIBLE,
+                    # `distance=0`, and not the unknown-reach penalty the
+                    # taint engine takes. A pattern rule makes no claim about
+                    # who calls this file: `hashlib.md5(...)` is a weak hash
+                    # whether one entry point reaches it or none do, and the
+                    # weakness is in the line as written. Charging it a
+                    # reachability discount is a category error, and it was an
+                    # expensive one — 0.5 x 0.8 x 0.6 = 0.24 against a MEDIUM
+                    # threshold of 0.25, so *every* medium-impact pattern in
+                    # the catalogue was ranked `low` and hidden by the default
+                    # report. Measured on 18 300 labelled cases, four rules
+                    # scoring +100 % with no false positive at all were
+                    # invisible: 7 points of Youden, bought back for nothing.
+                    # `role` still applies — a weak hash in a test fixture is
+                    # still not news.
                     entrypoints_known=False, role=role,
+                    reachable=True,
                 ),
                 confidence=Confidence.PLAUSIBLE,
                 location=location,
@@ -602,6 +878,12 @@ def scan_text(relative: str, text: str) -> list[Finding]:
             )
         )
     return findings
+
+
+# The forked catalogue plus Thot's own. Built once: `sweep_patterns` runs
+# it over every file in the scope, and rebuilding the list per file cost
+# a concatenation seven thousand times on a real tree.
+SWEEP_RULES = AUDIT_PATTERNS + THOT_PATTERNS
 
 
 def sweep_patterns(root: Path, files: list[str]) -> list[Finding]:
@@ -613,5 +895,5 @@ def sweep_patterns(root: Path, files: list[str]) -> list[Finding]:
             text = (root / relative).read_text(encoding="utf-8", errors="replace")
         except OSError:
             continue
-        findings.extend(scan_text(relative, text))
+        findings.extend(scan_text(relative, text, SWEEP_RULES))
     return findings

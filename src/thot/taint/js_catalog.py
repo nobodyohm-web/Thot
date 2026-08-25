@@ -38,6 +38,27 @@ class JsSource:
     id: str
     patterns: tuple[str, ...]       # matched as a dotted prefix
     description: str
+    # Whether somebody who is not running this process can choose the value.
+    # `process.env` and `process.argv` belong to whoever started it; a
+    # request, a page URL and a cross-origin message do not.
+    remote: bool = False
+
+
+@dataclass(frozen=True)
+class JsCallbackSource:
+    """A function the runtime calls for you, handing it an untrusted value.
+
+    The parameter *is* the input. No line in the file ever assigns it, so an
+    engine that only follows assignments and calls walks straight past the
+    place the value arrives — which on browser and event-driven code is most
+    of the code there is.
+    """
+
+    id: str
+    names: tuple[str, ...]          # matched on the last dotted segment
+    description: str
+    parameters: tuple[int, ...] = (0,)
+    remote: bool = True
 
 
 SINKS: tuple[JsSink, ...] = (
@@ -120,6 +141,23 @@ ASSIGNMENT_SINKS: tuple[JsSink, ...] = (
     ),
 )
 
+# `target[key] = value` where the *key* is controlled. The payload is the
+# key and not the value: a key of `__proto__` writes through to every object
+# in the program, so what makes this a sink is the shape of the assignment
+# rather than any name it mentions. Kept apart from ASSIGNMENT_SINKS for
+# that reason — those match a property name, this one matches a hole.
+PROTOTYPE_SINK = JsSink(
+    id="sink.js.prototype",
+    names=(),
+    impact=Severity.HIGH,
+    description="Pollution de prototype : clé d'affectation contrôlée",
+)
+
+# Names that, mentioned in a statement, mean the author already thought about
+# this. A merge loop that refuses `__proto__` by name is fixed; reporting it
+# anyway is how a scanner teaches people to stop reading its output.
+PROTOTYPE_GUARDS: tuple[str, ...] = ("__proto__", "constructor", "prototype")
+
 SOURCES: tuple[JsSource, ...] = (
     JsSource(
         id="source.js.request",
@@ -128,6 +166,7 @@ SOURCES: tuple[JsSource, ...] = (
                   "request.params", "ctx.query", "ctx.params",
                   "ctx.request.body"),
         description="Requête HTTP entrante",
+        remote=True,
     ),
     JsSource(
         id="source.js.process",
@@ -140,13 +179,56 @@ SOURCES: tuple[JsSource, ...] = (
                   "window.name", "document.URL", "document.referrer",
                   "document.location"),
         description="Valeur contrôlée par l'URL ou la page",
+        remote=True,
+    ),
+    JsSource(
+        id="source.js.network",
+        # A remote service is not an attacker, but it is not this program
+        # either: a value it returns has crossed a boundary, and the audit
+        # question — could a command be built from it — has the same answer
+        # as for a request parameter.
+        patterns=("fetch", "axios"),
+        description="Réponse d'un service distant",
+        remote=True,
     ),
     JsSource(
         id="source.js.message",
         patterns=("event.data", "message.data", "msg.data", "e.data"),
         description="Message reçu d'une autre origine",
+        remote=True,
     ),
 )
+
+CALLBACK_SOURCES: tuple[JsCallbackSource, ...] = (
+    JsCallbackSource(
+        id="source.js.event",
+        names=("addEventListener",),
+        description="Événement reçu par la page",
+    ),
+)
+
+# Methods that hand the callback whatever the receiver already holds. These
+# carry taint, they do not introduce it: `list.map(f)` taints `f`'s parameter
+# only when `list` is tainted. That difference is the whole distance between
+# following a value and inventing one.
+CARRIER_METHODS: frozenset[str] = frozenset({
+    "then", "map", "forEach", "filter", "find", "flatMap", "some", "every",
+})
+
+# Sinks whose seriousness depends on how far the value travelled — the same
+# list, and the same reasoning, as `codemap.catalog.TRAVEL_SENSITIVE`. Kept
+# here rather than imported so the two languages' catalogues stay
+# independent, which is the whole premise of this file.
+TRAVEL_SENSITIVE: frozenset[str] = frozenset({"sink.js.path"})
+
+_ONE_DOWN = {
+    Severity.CRITICAL: Severity.HIGH,
+    Severity.HIGH: Severity.MEDIUM,
+    Severity.MEDIUM: Severity.LOW,
+    Severity.LOW: Severity.INFO,
+    Severity.INFO: Severity.INFO,
+}
+
 
 # A tainted value that passes through one of these stops being tainted.
 SANITIZERS: frozenset[str] = frozenset({
@@ -242,14 +324,43 @@ class JsCatalog:
 
     sinks: tuple[JsSink, ...] = SINKS
     assignment_sinks: tuple[JsSink, ...] = ASSIGNMENT_SINKS
+    prototype_sink: JsSink = PROTOTYPE_SINK
     sources: tuple[JsSource, ...] = SOURCES
+    callback_sources: tuple[JsCallbackSource, ...] = CALLBACK_SOURCES
+    carriers: frozenset[str] = CARRIER_METHODS
     sanitizers: frozenset[str] = SANITIZERS
+
+    def source(self, rule_id: str):
+        """A source rule by id, callbacks included: `addEventListener` is a
+        source, and a finding that starts there has to be rankable too."""
+        for rule in self.sources:
+            if rule.id == rule_id:
+                return rule
+        for rule in self.callback_sources:
+            if rule.id == rule_id:
+                return rule
+        return None
+
+    def impact_for(self, sink: JsSink, source_id: str = "") -> Severity:
+        """A sink's impact, given where the value came from.
+
+        Unknown provenance counts as local, exactly as on the Python side:
+        assuming remote would put every unattributed file path back at the
+        top of the report, and `--all` still shows what the discount hides.
+        """
+        if sink.id not in TRAVEL_SENSITIVE:
+            return sink.impact
+        found = self.source(source_id) if source_id else None
+        return sink.impact if (found is not None and found.remote) \
+            else _ONE_DOWN[sink.impact]
 
     def merged(
         self,
         *,
         sinks: tuple[JsSink, ...] = (),
         sources: tuple[JsSource, ...] = (),
+        callback_sources: tuple[JsCallbackSource, ...] = (),
+        carriers: frozenset[str] = frozenset(),
         sanitizers: frozenset[str] = frozenset(),
     ) -> "JsCatalog":
         """Add rules, replacing built-ins that share an id.
@@ -267,6 +378,8 @@ class JsCatalog:
             self,
             sinks=fold(self.sinks, sinks),
             sources=fold(self.sources, sources),
+            callback_sources=fold(self.callback_sources, callback_sources),
+            carriers=self.carriers | carriers,
             sanitizers=self.sanitizers | sanitizers,
         )
 

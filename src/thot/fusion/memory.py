@@ -84,8 +84,9 @@ def read_hermes() -> tuple[list[Note], int]:
     """Hermes's two stores, and how many entries were skipped as scaffolding.
 
     A freshly created `USER.md` is a form: `**Name:**` with nothing after it,
-    italic instructions, a horizontal rule. Passing those into a briefing
-    would state "Context: ---" as a fact about the user. The count comes back
+    italic instructions, a horizontal rule, and one closing line of plain
+    prose that looks like nothing at all. Passing those into a briefing would
+    state "Context: ---" as a fact about the user. The count comes back
     with the notes rather than being dropped in silence — Thot cannot tell a
     template from a terse note with certainty, so the number is shown.
     """
@@ -98,6 +99,17 @@ def read_hermes() -> tuple[list[Note], int]:
 # `**Label:**` followed by nothing but optional italic guidance.
 _EMPTY_FIELD = re.compile(r"^\*\*[^*]+:\*\*\s*(_[^_]*_)?$")
 
+# The one entry of the `USER.md` Hermes creates that no rule below catches:
+# ordinary prose, addressed to the agent, with no marker of any kind. It went
+# into the briefing as a fact about the user. Matched on its text because
+# that is what it is — a shipped line, not a shape — and because every shape
+# broad enough to cover it (second person, ends in an instruction) would also
+# throw away real notes somebody wrote about themselves.
+_SHIPPED_SCAFFOLDING = frozenset({
+    "the more you know, the better you can help. but remember — you're "
+    "learning about a person, not building a dossier. respect the difference.",
+})
+
 
 def _is_fact(text: str) -> bool:
     body = text.strip()
@@ -108,6 +120,8 @@ def _is_fact(text: str) -> bool:
         return False
     if body.startswith("_") and body.endswith("_"):
         return False  # wholly italic: an instruction to the agent, not a fact
+    if " ".join(body.split()).casefold() in _SHIPPED_SCAFFOLDING:
+        return False
     return _EMPTY_FIELD.match(body) is None
 
 

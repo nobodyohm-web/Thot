@@ -445,3 +445,46 @@ def test_a_long_command_still_shows_the_sandbox_posture():
         pass
 
     assert "aucune isolation" in _visible(shown[0][1])
+
+
+# -- a listing is as unbounded as any other tool output ----------------------
+#
+# `read_file` and the sandboxes all cap what they hand a model; `list_dir` did
+# not. Measured on this machine: a `node_modules` holds 473 visible entries —
+# one call, some 3 500 tokens, for a listing whose tail nobody reads.
+
+
+def test_a_large_directory_is_capped_like_every_other_tool(context):
+    from thot.output import DEFAULT_MAX_LINES
+
+    crowded = context.root / "crowded"
+    crowded.mkdir()
+    for index in range(DEFAULT_MAX_LINES + 500):
+        (crowded / f"f{index:05d}.js").write_text("x")
+
+    listing = agent_tools.list_dir(context, path="crowded")
+    assert len(listing.splitlines()) <= DEFAULT_MAX_LINES + 1
+
+
+def test_the_listing_says_what_it_dropped(context):
+    """Silently cutting reads as "that is all there is", which sends a model
+    looking for a file the tool decided not to mention."""
+    from thot.output import DEFAULT_MAX_LINES
+
+    crowded = context.root / "crowded"
+    crowded.mkdir()
+    for index in range(DEFAULT_MAX_LINES + 500):
+        (crowded / f"f{index:05d}.js").write_text("x")
+
+    listing = agent_tools.list_dir(context, path="crowded")
+    assert "coupées" in listing
+
+
+def test_a_small_directory_is_untouched(context):
+    listing = agent_tools.list_dir(context, path=".")
+    assert "coupées" not in listing
+
+
+def test_an_empty_directory_still_says_so(context):
+    (context.root / "vide").mkdir()
+    assert agent_tools.list_dir(context, path="vide") == "(vide)"

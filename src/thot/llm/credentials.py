@@ -25,7 +25,7 @@ from thot.llm.openai_compat import (
     list_local_models,
 )
 
-from thot.paths import config_file
+from thot.paths import config_file, ensure_home
 CLAUDE_CREDENTIALS_FILE = Path.home() / ".claude" / ".credentials.json"
 KEYCHAIN_SERVICE = "Claude Code-credentials"
 
@@ -37,12 +37,19 @@ DEFAULT_OPENAI_MODEL = "gpt-5.1"
 class Config:
     """What Thot remembers between runs. Never holds an OAuth access token."""
 
-    provider: str  # "claude-cli" | "claude" | "openai" | "local" | "custom"
+    # "fusion" | "hermes" | "prime" — Thot running on the two agents it is
+    # the fusion of — then the single-model backends:
+    # "claude-cli" | "claude" | "openai" | "local" | "custom"
+    provider: str
     model: str
     api_key: str = ""
     base_url: str = ""
 
     def label(self) -> str:
+        if self.provider == "fusion":
+            return "hermes + prime · la fusion"
+        if self.provider in ("hermes", "prime"):
+            return f"{self.provider} · ton compte"
         if self.provider == "claude-cli":
             return f"{self.model or 'claude'} · ton compte"
         return self.model
@@ -63,8 +70,19 @@ def load_config() -> Config | None:
 
 def save_config(config: Config) -> None:
     path = config_file()
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(asdict(config), indent=2))
+    # `ensure_home()` and not a bare mkdir: the first `thot login` is what
+    # creates `~/.thot`, and it is the directory that keeps the sessions and
+    # the findings private.
+    ensure_home()
+    # The mode goes on before the first byte, not after it: `write_text`
+    # created the file with the umask — 0644 on an ordinary machine — and the
+    # `chmod` only landed once the API key was already on disk. A file that
+    # was world-readable for the width of one call has been world-readable.
+    # `O_CREAT`'s mode is ignored when the file already exists, so the chmod
+    # stays for the rewrite case.
+    descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
+        handle.write(json.dumps(asdict(config), indent=2))
     os.chmod(path, 0o600)
 
 

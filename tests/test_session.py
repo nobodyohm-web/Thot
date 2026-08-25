@@ -531,3 +531,142 @@ def test_the_help_still_announces_nothing_it_cannot_run():
         Path(__file__).resolve().parents[1])}
 
     assert _helped() - _dispatched() - shipped == set()
+
+
+# --- le compactage automatique, deux fois de suite -------------------------
+#
+# En mode compte, `_compact` vidait `self.messages` et confiait tout au
+# carry ; le carry est injecté dans un prompt puis effacé, et n'est jamais
+# remis dans la liste. Au compactage suivant il ne restait donc que les tours
+# postérieurs au premier : l'énoncé de la tâche disparaissait du contexte,
+# alors que compaction.py existe pour « protect the first turns — they frame
+# what the task even is ».
+
+
+class FakeCli:
+    """A CLI whose window fills up, and whose threads keep what they were told."""
+
+    context_window = 1_000
+
+    def __init__(self) -> None:
+        self.session_id = "cli-1"
+        self.threads: dict[str, list[str]] = {self.session_id: []}
+        self.last_tokens = 0
+        self._threads_opened = 1
+
+    def forget_thread(self) -> None:
+        self._threads_opened += 1
+        self.session_id = f"cli-{self._threads_opened}"
+        self.threads[self.session_id] = []
+        self.last_tokens = 0
+
+    def send(self, prompt, brief=None, events=None) -> str:
+        self.threads[self.session_id].append(prompt)
+        self.last_tokens += 400
+        return "d'accord"
+
+
+def _cli_turn(session, line: str) -> None:
+    session.messages.append(Message(role="user", content=line))
+    session._record("user", line)
+    session._turn_via_cli()
+
+
+@pytest.fixture
+def cli_session(session):
+    session.claude = FakeCli()
+    session.provider = None
+    return session
+
+
+def test_the_task_survives_every_automatic_compaction(cli_session):
+    _cli_turn(cli_session, "tâche initiale : réparer le parseur JSON")
+    for step in range(8):
+        _cli_turn(cli_session, f"suite {step}")
+
+    spoken = [prompts for prompts in cli_session.claude.threads.values() if prompts]
+    assert len(spoken) >= 3, "il faut au moins deux compactages successifs"
+    for prompts in spoken[1:]:
+        assert "tâche initiale" in prompts[0], prompts[0]
+
+
+def test_a_compacted_session_is_not_left_with_an_empty_history(cli_session):
+    _cli_turn(cli_session, "tâche initiale : réparer le parseur JSON")
+    for step in range(4):
+        _cli_turn(cli_session, f"suite {step}")
+
+    assert cli_session.claude._threads_opened > 1, "rien n'a été compacté"
+    assert any("tâche initiale" in (m.content or "")
+               for m in cli_session.messages)
+
+
+def test_clearing_the_conversation_also_clears_what_compaction_protects(
+    cli_session,
+):
+    _cli_turn(cli_session, "tâche initiale : réparer le parseur JSON")
+    for step in range(4):
+        _cli_turn(cli_session, f"suite {step}")
+    cli_session._command("/clear")
+
+    _cli_turn(cli_session, "autre tâche : relire le planificateur")
+    for step in range(4):
+        _cli_turn(cli_session, f"encore {step}")
+
+    last = cli_session.claude.threads[cli_session.claude.session_id]
+    carried = "\n".join(last) + "\n".join(
+        m.content or "" for m in cli_session.messages
+    )
+    assert "tâche initiale" not in carried, "« oublier » doit oublier"
+    assert "autre tâche" in carried
+
+
+# --- une session non interactive ne meurt pas d'une question ---------------
+#
+# `_confirm` appelait `input()` sans garde : sur une session pipée, l'EOF
+# levait EOFError jusqu'en haut de la boucle, la session mourait, et le noyau
+# comme la ligne de session restaient ouverts.
+
+
+def test_a_tool_confirmation_without_anyone_to_answer_is_a_refusal(session,
+                                                                   monkeypatch):
+    def closed(prompt=""):
+        raise EOFError
+
+    monkeypatch.setattr("builtins.input", closed)
+
+    assert session._confirm("écrire src/app.py", "-a\n+b") is False
+
+
+def test_a_confirmation_interrupted_by_ctrl_c_is_a_refusal(session, monkeypatch):
+    def interrupted(prompt=""):
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr("builtins.input", interrupted)
+
+    assert session._confirm("écrire src/app.py", "-a\n+b") is False
+
+
+def test_an_unexpected_failure_still_closes_the_kernel_and_the_session_line(
+    session, monkeypatch
+):
+    session._record("user", "une vraie question")
+
+    class Kernel:
+        stopped = False
+
+        def stop(self):
+            Kernel.stopped = True
+
+    session.kernel = Kernel()
+
+    def boom():
+        raise RuntimeError("boum")
+
+    monkeypatch.setattr(session, "greet", lambda: None)
+    monkeypatch.setattr(session, "_read_line", boom)
+
+    with pytest.raises(RuntimeError):
+        session.run()
+
+    assert Kernel.stopped
+    assert session.store.info(session.session_id).ended_at

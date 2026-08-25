@@ -1,0 +1,13 @@
+[project]
+name = "thot-map"
+version = "0.1.0"
+description = "Thot's precomputed repository map, as MCP tools for Prime Agent"
+requires-python = ">=3.10"
+dependencies = []
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/thot_map"]

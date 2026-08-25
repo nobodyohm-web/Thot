@@ -18,6 +18,19 @@ from pathlib import Path
 
 from thot.contracts import Confidence, Severity
 
+# What `thot audit` shows by default, applied here for the same reason: the
+# fused view exists to say in one place what three commands say separately,
+# and it has to say the same thing. Counting every LOW made it answer 933
+# for a tree `thot audit hermes` called 42, in the same minute.
+FLOOR = Severity.MEDIUM
+
+_RANK = [Severity.INFO, Severity.LOW, Severity.MEDIUM,
+         Severity.HIGH, Severity.CRITICAL]
+
+
+def above(findings, floor: Severity = FLOOR) -> list:
+    return [f for f in findings if _RANK.index(f.severity) >= _RANK.index(floor)]
+
 
 @dataclass
 class Part:
@@ -32,13 +45,19 @@ class Part:
     def ok(self) -> bool:
         return self.result is not None
 
-    def counts(self) -> dict[Severity, int]:
+    def counts(self, floor: Severity = FLOOR) -> dict[Severity, int]:
         if self.result is None:
             return {}
         found: dict[Severity, int] = {}
-        for finding in self.result.findings:
+        for finding in above(self.result.findings, floor):
             found[finding.severity] = found.get(finding.severity, 0) + 1
         return found
+
+    def hidden(self, floor: Severity = FLOOR) -> int:
+        """How many the floor held back — never silently, always counted."""
+        if self.result is None:
+            return 0
+        return len(self.result.findings) - len(above(self.result.findings, floor))
 
     def refuted(self) -> int:
         """How many of this row's findings a stored verdict argued away.
@@ -67,8 +86,10 @@ class Part:
         )
         files = len(self.result.manifest.files)
         dismissed = self.refuted()
+        under = self.hidden()
         return (f"{self.name:<8} {files:>5} fichiers  {total:>4} finding(s)"
                 + (f" — {breakdown}" if breakdown else "")
+                + (f" · {under} sous le seuil" if under else "")
                 + (f" · {dismissed} réfuté(s) en mémoire" if dismissed else ""))
 
 
@@ -169,7 +190,7 @@ def _memory(root: Path):
 
 def summary(done: list[Part]) -> str:
     """One line for the whole program."""
-    total = sum(len(part.result.findings) for part in done if part.ok)
+    total = sum(len(above(part.result.findings)) for part in done if part.ok)
     worst: dict[Severity, int] = {}
     for part in done:
         for severity, count in part.counts().items():
@@ -177,10 +198,13 @@ def summary(done: list[Part]) -> str:
     breakdown = " · ".join(
         f"{worst[s]} {s.value}" for s in Severity if worst.get(s)
     )
+    under = sum(part.hidden() for part in done)
+    below = f" · {under} sous le seuil (`--all`)" if under else ""
     failed = [part.name for part in done if not part.ok]
     tail = f" · {len(failed)} partie(s) non auditée(s) : {', '.join(failed)}" if failed else ""
     dismissed = sum(part.refuted() for part in done)
     # Said before the failures, because it changes how the whole count reads.
     settled = f" · dont {dismissed} réfuté(s) en mémoire" if dismissed else ""
     return (f"{total} finding(s) sur l'ensemble"
-            + (f" — {breakdown}" if breakdown else "") + settled + tail)
+            + (f" — {breakdown}" if breakdown else "")
+            + below + settled + tail)

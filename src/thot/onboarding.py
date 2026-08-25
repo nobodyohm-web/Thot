@@ -47,31 +47,69 @@ def _option(number: int, name: str, detail: str, *, highlight: bool) -> Text:
     return line
 
 
+def _fused_option() -> tuple[str, str, str] | None:
+    """The two agents Thot is made of, when they are here.
+
+    Offered first and pre-selected, because it is not one backend among
+    five: it is what the program is. A first-run screen that listed every
+    model *except* Hermes and Prime asked the user to configure their way out
+    of Thot's own premise — and that is the screen this program shipped with.
+    """
+    try:
+        from thot.engine.factory import available_engines
+
+        found = [name for name in available_engines() if name in ("hermes", "prime")]
+    except Exception:
+        return None
+    if len(found) == 2:
+        return ("fusion", "Fusion",
+                "hermes + prime — Prime exécute, Hermes raisonne")
+    if len(found) == 1:
+        only = found[0]
+        detail = ("exécution et noyau" if only == "prime"
+                  else "raisonnement et contexte long")
+        return (only, only.capitalize(), f"le seul des deux installé — {detail}")
+    return None
+
+
 def first_run() -> Config | None:
     theme.banner()
-    theme.hint("Premier lancement. Un modèle à connecter.")
-    theme.console.print()
-
     found = detect()
-    default = _default_choice(found)
+    fused = _fused_option()
 
-    theme.console.print(_option(1, "Claude", _claude_detail(found), highlight=default == 1))
-    theme.console.print(_option(2, "OpenAI", _openai_detail(found), highlight=default == 2))
-    theme.console.print(_option(3, "Local", _local_detail(found), highlight=default == 3))
-    theme.console.print(_option(4, "Autre", "endpoint compatible OpenAI", highlight=False))
+    theme.hint("Premier lancement. Un modèle à connecter."
+               if fused is None
+               else "Premier lancement. Thot est la fusion de Hermes et Prime.")
     theme.console.print()
 
-    choice = _ask(f"[1-4]", default=str(default))
+    # (provider, label, detail, setup) — the fused entry first when present,
+    # so pressing Enter runs Thot as what it is.
+    entries: list[tuple[str, str, str, object]] = []
+    if fused is not None:
+        provider, label, detail = fused
+        entries.append((provider, label, detail,
+                        lambda p=provider: Config(provider=p, model="")))
+    entries += [
+        ("claude", "Claude", _claude_detail(found), lambda: _setup_claude(found)),
+        ("openai", "OpenAI", _openai_detail(found), lambda: _setup_openai(found)),
+        ("local", "Local", _local_detail(found), lambda: _setup_local(found)),
+        ("custom", "Autre", "endpoint compatible OpenAI", _setup_custom),
+    ]
+
+    default = 1 if fused is not None else _default_choice(found)
+    for index, (_, label, detail, _setup) in enumerate(entries, start=1):
+        theme.console.print(
+            _option(index, label, detail, highlight=default == index)
+        )
     theme.console.print()
 
-    if choice == "1":
-        return _setup_claude(found)
-    if choice == "2":
-        return _setup_openai(found)
-    if choice == "3":
-        return _setup_local(found)
-    if choice == "4":
-        return _setup_custom()
+    choice = _ask(f"[1-{len(entries)}]", default=str(default))
+    theme.console.print()
+
+    if not choice:
+        choice = str(default)
+    if choice.isdigit() and 1 <= int(choice) <= len(entries):
+        return entries[int(choice) - 1][3]()
     return None
 
 
@@ -107,12 +145,26 @@ def _local_detail(found: Detected) -> str:
     return "Ollama ou LM Studio (aucun détecté)"
 
 
+# Everything that means "there is nobody at this keyboard".
+#
+# `EOFError` is the closed pipe and `KeyboardInterrupt` is the person leaving,
+# but a stdin that was never there at all raises `RuntimeError: input(): lost
+# sys.stdin` — the shape a `nohup`, a launchd job or a CI runner takes. That
+# one was not caught, so the very first screen Thot ever shows ended in a
+# traceback. `OSError` joins them for the terminal that goes away mid-prompt.
+#
+# The catch is deliberately wide because the contract is narrow: this function
+# returns what someone typed, or nothing. There is no failure of the keyboard
+# for which crashing beats answering "nothing".
+_NO_KEYBOARD = (EOFError, KeyboardInterrupt, OSError, RuntimeError)
+
+
 def _ask(label: str, default: str = "") -> str:
     suffix = f" [dim]{label}[/dim]"
     theme.console.print(f"   [{theme.ACCENT}]›[/]{suffix} ", end="")
     try:
         answer = input().strip()
-    except (EOFError, KeyboardInterrupt):
+    except _NO_KEYBOARD:
         theme.console.print()
         return ""
     return answer or default
@@ -193,6 +245,6 @@ def _secret(label: str) -> str:
     theme.console.print(f"   [{theme.ACCENT}]›[/] [dim]{label}[/dim] ", end="")
     try:
         return getpass.getpass("").strip()
-    except (EOFError, KeyboardInterrupt):
+    except _NO_KEYBOARD:
         theme.console.print()
         return ""

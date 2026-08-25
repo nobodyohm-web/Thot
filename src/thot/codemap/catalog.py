@@ -70,6 +70,10 @@ class SourceRule:
     patterns: tuple[str, ...]
     description: str
     match_mode: str = "qualified"
+    # Whether somebody who is not running this process can choose the value.
+    # The command line, the environment and stdin all belong to whoever
+    # started the program; a request does not.
+    remote: bool = False
 
 
 DEFAULT_SINKS: tuple[SinkRule, ...] = (
@@ -94,6 +98,26 @@ DEFAULT_SINKS: tuple[SinkRule, ...] = (
         match_mode="bare",
     ),
     SinkRule(
+        id="sink.xss",
+        # The escape hatches, and only the escape hatches. Every one of these
+        # exists to tell a template engine "this string is already safe, do
+        # not escape it" — which is exactly the sentence that is false when
+        # the string came from a request.
+        #
+        # `HttpResponse` and `render` are deliberately absent: returning a
+        # value through them is what a view *does*, and Django escapes it on
+        # the way out. Measured, the safe half of this category reaches the
+        # same `HttpResponse` through `Template(...).render(...)` or after
+        # `html.escape`, so a rule on the response would have fired on all
+        # three hundred cases and separated nothing.
+        patterns=("mark_safe", "django.utils.safestring.mark_safe",
+                  "format_html", "Markup", "markupsafe.Markup",
+                  "flask.Markup", "jinja2.Markup"),
+        impact=Severity.HIGH,
+        description="HTML rendu sans échappement",
+        match_mode="bare",
+    ),
+    SinkRule(
         id="sink.deserialization",
         patterns=("pickle.loads", "pickle.load", "yaml.load", "marshal.loads",
                   "dill.loads"),
@@ -109,7 +133,16 @@ DEFAULT_SINKS: tuple[SinkRule, ...] = (
         # The price, measured on Hermes: a connection handed to a file that
         # imports no driver goes unseen — one production site out of 110
         # candidates, against 28 that were never SQL at all.
-        needs=("sqlite3", "aiosqlite", "psycopg", "psycopg2", "pymysql",
+        #
+        # That price turned out to be far higher than Hermes showed. Against
+        # 100 labelled SQL-injection cases whose sink was `db.execute` behind
+        # `from app_runtime import db`, the import gate scored 0/100: hiding
+        # the driver behind a local wrapper is the normal shape, not the
+        # exception. `sql:text` is the way back in — the file writes a query
+        # out in full, which says SQL is being composed here more directly
+        # than any import does. See `taint/engine.py::_file_gates`.
+        needs=("sql:text",
+               "sqlite3", "aiosqlite", "psycopg", "psycopg2", "pymysql",
                "MySQLdb", "mysql", "mariadb", "sqlalchemy", "asyncpg",
                "duckdb", "oracledb", "cx_Oracle", "pyodbc", "django",
                "peewee", "tortoise", "databases", "sqlmodel"),
@@ -127,9 +160,43 @@ DEFAULT_SINKS: tuple[SinkRule, ...] = (
         # tree entry named `..` reaching `shutil.rmtree` in Hermes.
     ),
     SinkRule(
+        id="sink.fs.read",
+        patterns=("open",),
+        # MEDIUM as written, and discounted by `impact_for` when the path
+        # never left the machine — see TRAVEL_SENSITIVE below. This rule
+        # spent a while pinned at LOW instead, because a candidate did not
+        # record which source rule started it and the two cases could not be
+        # told apart. They can now.
+        impact=Severity.MEDIUM,
+        description="Ouverture d'un fichier par chemin",
+        match_mode="bare",
+        # Path traversal — CWE-22 — went past this catalogue entirely:
+        # `sink.fs.write` knows `shutil.move` and `os.remove`, and nothing
+        # knew `open`. Measured on a corpus of eleven vulnerability classes,
+        # seven were caught and this was one of the four that were not.
+        #
+        # The price, measured before adding it: zero further candidates on
+        # Thot (14), on Prime (25) and on Hermes (401 → 401). It fires only
+        # where a tainted value reaches the call, which none of the three
+        # trees does — and it turns three of the corpus's pattern-only hits
+        # into proven taint paths (pickle, `yaml.load`, `with open(...) as`),
+        # since the file being opened was already the vector.
+        #
+        # `bare`, because it is a builtin: qualifying it would miss every
+        # ordinary call, and `connexion.open` is not this function.
+    ),
+    SinkRule(
         id="sink.network",
         patterns=("requests.get", "requests.post", "urllib.request.urlopen",
-                  "httpx.get", "httpx.post"),
+                  "httpx.get", "httpx.post",
+                  # Added only once the host-allow-list and resolved-range
+                  # guards were recognised, and the order was not a
+                  # preference: measured, this pattern *alone* took `ssrf`
+                  # from 44 true positives against 56 false ones to 97
+                  # against 108 — more right answers and a worse rule, J
+                  # still negative. With the guards in place the same line
+                  # gives 97 against 0.
+                  "socket.create_connection"),
         impact=Severity.MEDIUM,
         description="Requête réseau sortante",
         dangerous_args=(),
@@ -172,6 +239,7 @@ DEFAULT_SOURCES: tuple[SourceRule, ...] = (
                   "request.body", "request.POST", "request.GET"),
         description="Requête HTTP entrante",
         match_mode="prefix",
+        remote=True,
     ),
 )
 
@@ -200,6 +268,12 @@ class Catalog:
         """Whether this function's parameters arrive from somewhere untrusted."""
         for rule in self.entry_sources:
             if _matches(symbol_name, rule.patterns, rule.match_mode):
+                return rule
+        return None
+
+    def source(self, rule_id: str) -> SourceRule | None:
+        for rule in self.sources:
+            if rule.id == rule_id:
                 return rule
         return None
 
@@ -274,9 +348,69 @@ SANITIZERS: frozenset[str] = frozenset(
 )
 
 
+# Neutralisations that hold for HTML and for nothing else. `bleach.clean`
+# strips tags and attributes; it leaves `x; rm -rf /` exactly as it found it,
+# so treating it as a sanitizer everywhere would silence a shell for the
+# benefit of a template. Kept apart and consulted only at `sink.xss` — the
+# same reason a resolved-address range check clears an outgoing request and
+# not an `os.system`.
+HTML_SANITIZERS: frozenset[str] = frozenset(
+    {
+        "bleach.clean", "bleach.linkify", "nh3.clean",
+        "markupsafe.escape", "django.utils.html.escape",
+        "django.utils.html.escapejs", "flask.escape",
+    }
+)
+
+
+def is_html_sanitizer(call_name: str) -> bool:
+    return call_name in HTML_SANITIZERS
+
+
 def is_sanitizer(call_name: str) -> bool:
     """True when a call breaks the taint chain."""
     return active().is_sanitizer(call_name)
+
+
+# Sinks whose seriousness depends on how far the value travelled to reach
+# them. Opening a path somebody named on the command line is the program
+# doing what it was told: whoever supplies argv already holds this process's
+# filesystem, and the call hands them nothing they did not have. The same
+# call reached from a request is arbitrary file access.
+#
+# Only these. A command built from argv is still a command and a pickle read
+# from an environment variable still runs code — the sink is the escalation
+# there, not the path.
+TRAVEL_SENSITIVE = frozenset({"sink.fs.read", "sink.fs.write", "sink.js.path"})
+
+_ONE_DOWN = {
+    Severity.CRITICAL: Severity.HIGH,
+    Severity.HIGH: Severity.MEDIUM,
+    Severity.MEDIUM: Severity.LOW,
+    Severity.LOW: Severity.INFO,
+    Severity.INFO: Severity.INFO,
+}
+
+
+def impact_for(sink_id: str, source_id: str = "") -> Severity:
+    """A sink's impact, given where the value came from.
+
+    An unknown provenance is treated as local. The alternative — assume
+    remote until proven otherwise — puts every unattributed file path back
+    at the top of the report, which is the flood this exists to end. What it
+    costs is stated rather than hidden: a travel-sensitive finding whose
+    source the engine could not name is ranked one step low, and `--all`
+    shows it.
+    """
+    base = Severity.MEDIUM
+    for rule in active().sinks:
+        if rule.id == sink_id:
+            base = rule.impact
+            break
+    if sink_id not in TRAVEL_SENSITIVE:
+        return base
+    found = active().source(source_id) if source_id else None
+    return base if (found is not None and found.remote) else _ONE_DOWN[base]
 
 
 DEFAULT_CATALOG = Catalog(

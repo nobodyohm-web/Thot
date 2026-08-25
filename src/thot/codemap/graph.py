@@ -7,6 +7,9 @@ from dataclasses import dataclass, field
 
 from thot.contracts import Symbol
 
+# The only language whose entry points are detected at all.
+PYTHON_SUFFIXES = (".py", ".pyi")
+
 
 @dataclass
 class CodeGraph:
@@ -28,6 +31,9 @@ class CodeGraph:
     # answer to it. Neither is evidence of unreachability.
     escaped_names: frozenset[str] = frozenset()
     ambiguous_names: frozenset[str] = frozenset()
+    # Qualified names an escaped symbol calls, transitively. Whatever route
+    # reaches the escaped caller reaches these too, by the graph's own edges.
+    inherits_unknown: frozenset[str] = frozenset()
 
     @classmethod
     def build(
@@ -69,7 +75,47 @@ class CodeGraph:
 
         graph.escaped_names = frozenset(mentioned)
         graph.ambiguous_names = frozenset(ambiguous)
+        graph.inherits_unknown = graph._inherited_unknown_reach()
         return graph
+
+    def _escaped_by_name(self, name: str) -> bool:
+        short = name.rsplit(".", 1)[-1]
+        return short in self.escaped_names or short in self.ambiguous_names
+
+    def _inherited_unknown_reach(self) -> frozenset[str]:
+        """Spread unknown reach one call at a time, from escaped symbols out.
+
+        Only the escaped symbol itself carried the signal, and a decorated
+        Flask view is the one shape where that is never enough: the view is
+        marked, the helper it calls is not — being called is exactly why it
+        appears in nobody's `references`. So a proven `request.args` ->
+        `conn.execute` path scored 0.2 instead of 0.8 as soon as any
+        unrelated `main()` existed elsewhere in the tree, which put the
+        *proven* finding below the *unproven* pattern one, and below the
+        default threshold entirely.
+
+        Seeded on the escape signal alone, never on the language gate below:
+        a call resolved from TypeScript into a Python symbol of the same
+        short name is a guess, and inheriting reach through it would spread
+        one weak resolution across the other language.
+
+        Cost, measured on this repository (3277 symbols): the set answering
+        reach_unknown goes from 802 to 1477, but only symbols the graph
+        already calls unreachable ever consult it — `accessibility_weight`
+        reads `escapes` in the `distance is None` branch and nowhere else —
+        and of the twelve taint findings exactly one moves: `sink.eval` in
+        `kernel/worker.py`, which the cell loop does reach and which was
+        buried at LOW. On prime/, exactly one moves too — `sink.js.spawn` in
+        `cli/daemon-update-restart.ts`, low to medium.
+        """
+        reached: set[str] = set()
+        queue = deque(name for name in self.symbols if self._escaped_by_name(name))
+        while queue:
+            for callee in self.callees(queue.popleft()):
+                if callee not in reached:
+                    reached.add(callee)
+                    queue.append(callee)
+        return frozenset(reached)
 
     def reach_unknown(self, name: str) -> bool:
         """Whether a route to this symbol exists that the graph cannot follow.
@@ -83,8 +129,19 @@ class CodeGraph:
         """
         if not name:
             return False
-        short = name.rsplit(".", 1)[-1]
-        return short in self.escaped_names or short in self.ambiguous_names
+        symbol = self.symbols.get(name)
+        if symbol is not None and not symbol.path.lower().endswith(PYTHON_SUFFIXES):
+            # Entry points are found by `scope.detect._python_entrypoints` and
+            # by nothing else, so `entrypoints` describes the Python half of a
+            # tree and no other. No TypeScript, Go or Ruby symbol is reachable
+            # from a Python `main()` by construction; answering "unreachable"
+            # for one is a verdict from a graph that never covered it, and it
+            # buried every `sink.js.exec` in a mixed repository — CRITICAL
+            # impact at 1.0 x 0.2 x 0.6 = 0.12, two thresholds down.
+            return True
+        if name in self.inherits_unknown:
+            return True
+        return self._escaped_by_name(name)
 
     # The old spelling, kept because it reads well at the call site.
     escapes = reach_unknown

@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import json
 import os
+import subprocess
 import sys
 from dataclasses import dataclass
 from pathlib import Path
@@ -24,6 +25,45 @@ PLUGIN_SCHEMA_V1 = "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json"
 MCP_SCHEMA_V1 = "https://agent-plugins.org/schemas/1.0.0/mcp.schema.json"
 
 SERVER_NAME = "thot"
+
+
+# The SDK Hermes needs to be an MCP *client*. Thot's own server does not use
+# it — `mcp_server` speaks JSON-RPC by hand, on purpose — so its absence is
+# invisible from Thot's side and total from Hermes's: `_ensure_mcp_sdk()`
+# returns False and every server is skipped, at debug level, with no user
+# visible message at all.
+MCP_SDK = "mcp"
+
+
+def can_import(interpreter: Path, module: str) -> bool | None:
+    """Whether another environment's interpreter can import a module.
+
+    A subprocess and not an import: Thot never loads Hermes into its own
+    process — each program authenticates and resolves as itself — and the
+    interpreter being asked about is by construction not this one.
+
+    Three answers, not two. `None` is "the question could not be put" — no
+    such interpreter, it would not start — and reporting that as "no" would
+    send someone installing a package to fix a path.
+    """
+    try:
+        done = subprocess.run(
+            [str(interpreter), "-c", f"import {module}"],
+            capture_output=True, timeout=30, check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    return done.returncode == 0
+
+
+def hermes_speaks_mcp() -> bool | None:
+    """Whether the Hermes this checkout runs can connect to any MCP server."""
+    from thot.fusion.locate import hermes_python
+
+    interpreter = hermes_python()
+    if interpreter is None:
+        return None
+    return can_import(interpreter, MCP_SDK)
 
 
 def hermes_home() -> Path:
@@ -44,12 +84,44 @@ def prime_settings_path() -> Path:
     return prime_home() / "settings.json"
 
 
+def prime_auth_path() -> Path:
+    return prime_home() / "auth.json"
+
+
+# The key Prime looks the credential up under: `mcp:<server>`, matching the
+# `mcpServers` key. Both have to be `thot` or nothing connects.
+PRIME_AUTH_KEY = f"mcp:{SERVER_NAME}"
+
+PRIME_SKILL_DIRNAME = "prime-skill"
+
+
+def prime_skill_dir() -> Path | None:
+    """The Prime skill package Thot ships, editable install or wheel.
+
+    A configuration entry is not an integration. Prime reaches an MCP server
+    through a Python class that subclasses `rlm.McpIntegration` and names the
+    server — that is how the Linear and Notion integrations it ships work,
+    and there is no generic path that connects a declared server without
+    one. So Thot carries its own, and the wiring points Prime's `skills` at
+    the directory holding it.
+    """
+    here = Path(__file__).resolve()
+    candidates = [
+        here.parents[3] / PRIME_SKILL_DIRNAME,  # repository root / editable
+        here.parents[1] / PRIME_SKILL_DIRNAME,  # packaged under thot/
+    ]
+    for candidate in candidates:
+        if candidate.is_dir():
+            return candidate
+    return None
+
+
 def server_entry() -> dict:
-    """How either agent should start Thot's MCP server.
+    """How Hermes should start Thot's MCP server: itself, over a pipe.
 
     A bare `thot` on PATH, not `sys.executable -m`: Hermes refuses a plugin
     whose command is an absolute path, so that a plugin cannot point at an
-    arbitrary binary. The bare token satisfies both agents and survives the
+    arbitrary binary. The bare token satisfies it and survives the
     virtualenv being moved.
 
     `THOT_ROOT` is deliberately not set: the server falls back to its working
@@ -57,6 +129,49 @@ def server_entry() -> dict:
     Pinning it here would hand every project the same stale map.
     """
     return {"type": "stdio", "command": "thot", "args": ["mcp", "serve"]}
+
+
+def prime_server_entry(port: int | None = None) -> dict:
+    """How Prime should reach Thot's MCP server: over HTTP, or not at all.
+
+    `mcp-manager.js` drops every configured entry whose `type` is not
+    `"http"` — its comment says "stdio servers self-manage in Python", and
+    that Python does not exist: not one occurrence of `stdio_client` in the
+    whole of `prime/`. The `stdio` entry written here before was read by
+    nobody, while `thot fusion status` counted the file and reported the
+    fusion wired.
+
+    Prime cannot start the server itself, which is the price of the
+    transport: `thot mcp serve --http` has to be running.
+    """
+    from thot.mcp_http import DEFAULT_PORT, ENDPOINT, LOOPBACK
+
+    chosen = DEFAULT_PORT if port is None else port
+    return {
+        "type": "http",
+        "url": f"http://{LOOPBACK}:{chosen}{ENDPOINT}",
+        "enabled": True,
+    }
+
+
+def prime_endpoint() -> str | None:
+    """The URL Prime is configured to dial, or None when it is not.
+
+    Read from the file Prime reads, never from `prime_server_entry()` — that
+    one says what Thot *would* write, and the whole point of asking is that
+    the two can differ: an upgrade rewrote the entry, somebody set
+    `enabled: false`, a port was changed by hand. A check built on what we
+    intended cannot notice any of those.
+    """
+    settings = _read_json(prime_settings_path()) or {}
+    servers = settings.get("mcpServers")
+    entry = servers.get(SERVER_NAME) if isinstance(servers, dict) else None
+    if not isinstance(entry, dict) or entry.get("type") != "http":
+        return None
+    if entry.get("enabled") is False:
+        return None
+    url = entry.get("url")
+    return url if isinstance(url, str) and url else None
 
 
 def on_path() -> Path | None:
@@ -136,16 +251,60 @@ def plan_hermes() -> list[Step]:
     return steps
 
 
+def _prime_settings_wanted(current: dict | None) -> dict:
+    """The user's settings, plus the two things Prime needs to reach Thot.
+
+    Merged, never replaced: this is a live file belonging to another program,
+    and the model, the theme and the skill paths in it are not Thot's to
+    rewrite.
+    """
+    settings = dict(current or {})
+    servers = settings.get("mcpServers")
+    settings["mcpServers"] = {
+        **(servers if isinstance(servers, dict) else {}),
+        SERVER_NAME: prime_server_entry(),
+    }
+    directory = prime_skill_dir()
+    if directory is not None:
+        listed = settings.get("skills")
+        paths = [item for item in listed if isinstance(item, str)] \
+            if isinstance(listed, list) else []
+        if str(directory) not in paths:
+            paths = [*paths, str(directory)]
+        settings["skills"] = paths
+    return settings
+
+
 def plan_prime() -> list[Step]:
+    """Two files, because reaching Prime takes two.
+
+    The settings carry the endpoint and the skill package; `auth.json` carries
+    the credential. Without the second, `McpIntegration._resolve_token` raises
+    `NotEnabled` before a single byte is sent, and the entry in the settings
+    is decoration.
+    """
+    steps: list[Step] = []
+
     target = prime_settings_path()
     current = _read_json(target)
+    wanted = _prime_settings_wanted(current)
     if current is None:
-        return [Step(target, "créer", "settings.json de Prime")]
-    servers = current.get("mcpServers")
-    if isinstance(servers, dict) and servers.get(SERVER_NAME) == server_entry():
-        return [Step(target, "déjà en place")]
-    return [Step(target, "mettre à jour",
-                 f"ajoute mcpServers.{SERVER_NAME}, garde le reste")]
+        steps.append(Step(target, "créer", "settings.json de Prime"))
+    elif current != wanted:
+        steps.append(Step(target, "mettre à jour",
+                          f"mcpServers.{SERVER_NAME} en http, et la bibliothèque"))
+    else:
+        steps.append(Step(target, "déjà en place"))
+
+    auth = prime_auth_path()
+    held = _read_json(auth)
+    entry = (held or {}).get(PRIME_AUTH_KEY)
+    if isinstance(entry, dict) and entry.get("key"):
+        steps.append(Step(auth, "déjà en place", "jeton du serveur local"))
+    else:
+        steps.append(Step(auth, "créer" if not auth.is_file() else "mettre à jour",
+                          f"{PRIME_AUTH_KEY} — sans lui Prime lève NotEnabled"))
+    return steps
 
 
 def hermes_config_path() -> Path:
@@ -229,14 +388,21 @@ def plan() -> list[Step]:
     return plan_hermes() + plan_enable() + plan_prime()
 
 
-def _write_json(path: Path, payload: dict) -> None:
+def _write_json(path: Path, payload: dict, *, mode: int | None = None) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     # Written whole then moved: an agent reading the file while Thot writes it
     # must never see half a document.
     temporary = path.with_suffix(path.suffix + ".thot-tmp")
-    temporary.write_text(
-        json.dumps(payload, indent=2, ensure_ascii=False) + "\n", encoding="utf-8"
-    )
+    text = json.dumps(payload, indent=2, ensure_ascii=False) + "\n"
+    if mode is None:
+        temporary.write_text(text, encoding="utf-8")
+    else:
+        # The mode goes on at creation, not after. A credentials file that is
+        # world-readable for the width of one `chmod` call has been readable,
+        # and nothing about the window is bounded.
+        descriptor = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, mode)
+        with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
+            handle.write(text)
     temporary.replace(path)
 
 
@@ -254,23 +420,37 @@ def wire_hermes() -> list[Step]:
 
 def wire_prime() -> list[Step]:
     steps = plan_prime()
-    step = steps[0]
-    if not step.changes:
-        return steps
+    settings_step, auth_step = steps[0], steps[1]
 
-    target = step.target
-    settings = _read_json(target) or {}
-    if target.is_file():
-        # The user's own settings. One backup, on the first change only, so a
-        # mistake here is recoverable without a git history they may not have.
-        backup = target.with_suffix(".json.thot-backup")
-        if not backup.exists():
-            backup.write_text(target.read_text(encoding="utf-8"), encoding="utf-8")
+    if settings_step.changes:
+        target = settings_step.target
+        if target.is_file():
+            # The user's own settings. One backup, on the first change only,
+            # so a mistake here is recoverable without a git history they may
+            # not have.
+            backup = target.with_suffix(".json.thot-backup")
+            if not backup.exists():
+                backup.write_text(target.read_text(encoding="utf-8"),
+                                  encoding="utf-8")
+        _write_json(target, _prime_settings_wanted(_read_json(target)))
 
-    servers = settings.get("mcpServers")
-    settings["mcpServers"] = {**(servers if isinstance(servers, dict) else {}),
-                              SERVER_NAME: server_entry()}
-    _write_json(target, settings)
+    if auth_step.changes:
+        target = auth_step.target
+        held: dict | None = {}
+        if target.is_file():
+            held = _read_json(target)
+            if held is None:
+                # Refusing beats rewriting. This file holds the credentials
+                # for the user's model; reconstructing it from an unreadable
+                # original would log them out of Prime to install a token.
+                steps[1] = Step(target, "refusé",
+                                "auth.json illisible — laissé intact")
+                return steps
+        from thot.mcp_http import read_or_make_token
+
+        held[PRIME_AUTH_KEY] = {"type": "api_key", "key": read_or_make_token()}
+        _write_json(target, held, mode=0o600)
+
     return steps
 
 
@@ -294,6 +474,35 @@ def unwire() -> list[Step]:
     """Remove Thot from both agents. Leaves everything else untouched."""
     done: list[Step] = []
 
+    # The config is cleaned while the plugin files are still on disk: Hermes
+    # refuses `plugins disable` for a plugin whose manifest is gone ("Plugin
+    # 'thot' is not installed or bundled.", rc=1) and leaves `plugins.enabled`
+    # untouched. Removing first therefore left Hermes loading a plugin whose
+    # every file had just been deleted, under a line saying "désactivé".
+    if hermes_enabled():
+        import subprocess
+
+        from thot.fusion.locate import hermes_command
+
+        command = hermes_command()
+        if command is not None:
+            try:
+                off = subprocess.run(
+                    [*command, "plugins", "disable", SERVER_NAME],
+                    capture_output=True, text=True, timeout=180, check=False,
+                )
+            except (OSError, subprocess.SubprocessError) as exc:
+                # Reporting nothing would replace a false claim with a silence,
+                # which is the same defect one step further away.
+                done.append(Step(hermes_config_path(), "échec", str(exc)))
+            else:
+                if off.returncode == 0:
+                    done.append(Step(hermes_config_path(), "désactivé"))
+                else:
+                    said = (off.stderr or off.stdout or "").strip().splitlines()
+                    done.append(Step(hermes_config_path(), "échec",
+                                     said[-1] if said else f"code {off.returncode}"))
+
     for name in ("plugin.json", "mcp.json"):
         target = hermes_plugin_dir() / name
         if target.is_file():
@@ -303,27 +512,30 @@ def unwire() -> list[Step]:
     if folder.is_dir() and not any(folder.iterdir()):
         folder.rmdir()
 
-    if hermes_enabled():
-        import subprocess
-
-        from thot.fusion.locate import hermes_command
-
-        command = hermes_command()
-        if command is not None:
-            try:
-                subprocess.run([*command, "plugins", "disable", SERVER_NAME],
-                               capture_output=True, timeout=180, check=False)
-                done.append(Step(hermes_config_path(), "désactivé"))
-            except (OSError, subprocess.SubprocessError):
-                pass
-
     target = prime_settings_path()
     settings = _read_json(target)
-    if settings and isinstance(settings.get("mcpServers"), dict):
-        if settings["mcpServers"].pop(SERVER_NAME, None) is not None:
-            if not settings["mcpServers"]:
+    if settings is not None:
+        removed: list[str] = []
+        servers = settings.get("mcpServers")
+        if isinstance(servers, dict) and servers.pop(SERVER_NAME, None) is not None:
+            if not servers:
                 settings.pop("mcpServers")
+            removed.append(f"mcpServers.{SERVER_NAME}")
+        directory = prime_skill_dir()
+        listed = settings.get("skills")
+        if directory is not None and isinstance(listed, list) and str(directory) in listed:
+            settings["skills"] = [item for item in listed if item != str(directory)]
+            removed.append("la bibliothèque de méthodes")
+        if removed:
             _write_json(target, settings)
-            done.append(Step(target, "retiré", f"mcpServers.{SERVER_NAME}"))
+            done.append(Step(target, "retiré", " et ".join(removed)))
+
+    auth = prime_auth_path()
+    held = _read_json(auth)
+    if held is not None and held.pop(PRIME_AUTH_KEY, None) is not None:
+        # Same mode it was written with: taking one key out of a credentials
+        # file must not be the moment it becomes world-readable.
+        _write_json(auth, held, mode=0o600)
+        done.append(Step(auth, "retiré", PRIME_AUTH_KEY))
 
     return done

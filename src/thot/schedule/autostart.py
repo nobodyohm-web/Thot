@@ -25,10 +25,15 @@ CLOSE = "# <<< thot <<<"
 BODY = """\
 # macOS refuse Desktop/Documents/Downloads à un agent launchd, donc le
 # planificateur d'audits ne peut démarrer que depuis une session. Ce test
-# ne lit qu'un fichier : seul le premier terminal après un démarrage paie
-# quelque chose. `THOT_NO_AUTOSTART=1` le désactive sans rien modifier.
+# lit un fichier et interroge un pid : seul le premier terminal après un
+# démarrage paie quelque chose. `THOT_NO_AUTOSTART=1` le désactive sans
+# rien modifier. `ps` plutôt que `kill -0` parce qu'un pid est réattribué :
+# le fichier survit à un redémarrage, et `kill -0` répondait « vivant »
+# pour le programme qui a hérité du numéro — le planificateur ne revenait
+# jamais. Se tromper coûte un `thot schedule start` qui ne fait rien.
 if [ -z "${THOT_NO_AUTOSTART:-}" ] && \\
-   ! kill -0 "$(cat "$HOME/.thot/scheduler.pid" 2>/dev/null)" 2>/dev/null; then
+   ! ps -p "$(cat "$HOME/.thot/scheduler.pid" 2>/dev/null)" -o command= \\
+     2>/dev/null | grep -q "schedule daemon"; then
   (command -v thot >/dev/null 2>&1 && thot schedule start >/dev/null 2>&1 &)
 fi"""
 

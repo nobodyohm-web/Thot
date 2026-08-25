@@ -12,6 +12,7 @@ session id so each turn resumes the same thread.
 from __future__ import annotations
 
 import json
+import re
 import shutil
 import subprocess
 import uuid
@@ -172,6 +173,9 @@ class ClaudeCli:
     last_tokens: int = 0  # what the last turn cost, learned from the result event
     context_window: int = 0  # the model's window, published by the CLI itself
     isolated: bool = False  # cut the user's own MCP servers out of the session
+    # The repository's own test command, from the manifest Thot already built.
+    # Pre-approved so the session can check its work — see `_verification`.
+    test_command: str = ""
     denied: tuple[str, ...] = ()  # CLI tools the session's posture forbids
     _started: bool = False
 
@@ -205,6 +209,7 @@ class ClaudeCli:
 
         allowed = list(ALLOWED_TOOLS)
         allowed += [f"mcp__{name}" for name in user_mcp_servers(self.root)]
+        allowed += self._verification()
 
         command = [
             binary,
@@ -231,9 +236,55 @@ class ClaudeCli:
         command.append(prompt)
         return command
 
+    def _verification(self) -> list[str]:
+        """Pre-approve the repository's own test command, and nothing else.
+
+        `PERMISSION_MODE` is `acceptEdits`: writes go through unasked, `Bash`
+        does not. Under `-p` there is nobody to ask, so a session could edit
+        code and never run it — measured, in a self-improvement run that
+        tried eight spellings of the test command, was refused each time, and
+        carried on editing production files by static reading alone. An agent
+        that can write but not verify is worse than one that can do neither.
+
+        So the gap is closed with the narrowest key that fits: the command
+        the manifest already found for this repository, scoped by prefix, and
+        nothing more. Not bare `Bash` — that would hand over arbitrary
+        execution to buy one capability.
+
+        Silent when a posture denies `Bash` outright: a read-only probe must
+        stay read-only, and deny beats allow. Silent too when the repository
+        declares no test command, since there is then nothing to approve.
+        """
+        if not self.test_command or "Bash" in self.denied:
+            return []
+        # `Bash(cmd:*)` is the CLI's own prefix form for a command rule.
+        return [f"Bash({self.test_command}:*)"]
+
     def send(self, prompt: str, *, brief: str = "", events: Events | None = None) -> str:
-        """Run one turn. Returns the assistant's final text."""
+        """Run one turn. Returns the assistant's final text.
+
+        A thread the CLI cannot open is recoverable exactly once. Anything
+        else — a usage limit above all — is reported, never retried: a retry
+        loop on a limit burns the user's quota to reproduce the same refusal.
+        """
         events = events or Events()
+        try:
+            return self._attempt(prompt, brief=brief, events=events)
+        except _LostThread as exc:
+            # The id Thot held is not one the CLI will open: it was taken by
+            # a turn that died, or it points at a conversation the CLI has
+            # since dropped. Neither is a reason to strand the user — Thot
+            # keeps the transcript itself, so a new CLI thread continues the
+            # work, only without the model's own recollection of it.
+            events.on_error(
+                f"{exc}\n   Nouveau fil ouvert — Thot garde la conversation, "
+                "le modèle repart de ce que Thot lui redonne."
+            )
+            self.forget_thread()
+            return self._attempt(prompt, brief=brief, events=events)
+
+    def _attempt(self, prompt: str, *, brief: str, events: Events) -> str:
+        """One launch of the CLI, and one reading of its stream."""
         command = self._command(prompt, brief)
 
         try:
@@ -248,8 +299,19 @@ class ClaudeCli:
         except OSError as exc:
             raise ProviderError(f"Impossible de lancer `claude` : {exc}") from exc
 
+        # The id is spent the moment the CLI starts, not when the turn
+        # succeeds. `--session-id` registers the thread before the first
+        # token is produced, so a turn that dies afterwards — a usage limit,
+        # a killed process, a lost network — leaves the id taken. Flipping
+        # this only on success is what made a single failed turn permanent:
+        # the next turn re-sent `--session-id <same uuid>`, the CLI answered
+        # "Session ID ... is already in use", and every retry after that got
+        # the identical refusal. The session could not be continued at all.
+        self._started = True
+
         answer: list[str] = []
         seen_tools: set[str] = set()
+        aside: list[str] = []
 
         assert process.stdout is not None
         for line in process.stdout:
@@ -259,15 +321,23 @@ class ClaudeCli:
             try:
                 event = json.loads(line)
             except json.JSONDecodeError:
+                # Not every line is an event. The CLI prints its own refusals
+                # as plain text on stdout — "You've hit your session limit ·
+                # resets 1am" arrives here, not on stderr — and dropping them
+                # is why a real, actionable cause was reported as "code 1".
+                if len(aside) < ASIDE_LINES:
+                    aside.append(line)
                 continue
             self._consume(event, events, answer, seen_tools)
 
         process.wait()
         if process.returncode != 0:
             stderr = (process.stderr.read() if process.stderr else "").strip()
-            raise ProviderError(_explain(process.returncode, stderr))
+            aside_text = "\n".join(aside)
+            if _lost_thread(stderr, aside_text):
+                raise _LostThread(_explain(process.returncode, stderr, aside_text))
+            raise ProviderError(_explain(process.returncode, stderr, aside_text))
 
-        self._started = True
         return "".join(answer)
 
     def _consume(
@@ -324,14 +394,61 @@ class ClaudeCli:
                 events.on_error(str(event.get("result", "erreur inconnue")))
 
 
-def _explain(code: int, stderr: str) -> str:
-    lowered = stderr.lower()
+# How many stray stdout lines to keep for diagnosis. Enough to hold a CLI
+# refusal and its reset time; small enough that a chatty run cannot grow it.
+ASIDE_LINES = 40
+
+_LOST_THREAD = (
+    "already in use",       # the id was taken by a turn that then died
+    "no conversation found",
+    "session not found",
+    "no such session",
+)
+
+
+class _LostThread(ProviderError):
+    """The CLI will not open the thread Thot asked for. Recoverable once."""
+
+
+def _lost_thread(stderr: str, aside: str = "") -> bool:
+    lowered = f"{stderr}\n{aside}".lower()
+    return any(mark in lowered for mark in _LOST_THREAD)
+
+
+def _explain(code: int, stderr: str, aside: str = "") -> str:
+    """Say what actually happened, from whichever channel said it.
+
+    The CLI does not put all of its refusals on stderr. A session limit is
+    printed on stdout, outside the JSON stream, so a reader that only knows
+    stderr reports the true cause as "code 1" — which was measured, and is
+    the reason `aside` exists.
+    """
+    lowered = f"{stderr}\n{aside}".lower()
     if "not logged in" in lowered or "authentication" in lowered:
         return (
             "Le CLI `claude` n'est pas connecté.\n"
             "   Lance `claude` dans un terminal, connecte-toi, puis reviens."
         )
+    if "session limit" in lowered:
+        # The CLI names the hour the window reopens; quoting it is the whole
+        # difference between "code 1" and knowing when to come back.
+        reset = _reset_hint(f"{stderr}\n{aside}")
+        when = f" Elle se réinitialise {reset}." if reset else ""
+        return f"Limite de session de ton abonnement Claude atteinte.{when}"
     if "usage limit" in lowered or "rate limit" in lowered:
         return "Limite d'usage de ton abonnement atteinte. Réessaie plus tard."
-    detail = stderr.splitlines()[-1] if stderr else f"code {code}"
+    if _lost_thread(stderr, aside):
+        return "Le CLI ne peut pas reprendre ce fil de conversation."
+    detail = _last_line(stderr) or _last_line(aside) or f"code {code}"
     return f"`claude` s'est arrêté : {detail}"
+
+
+def _last_line(text: str) -> str:
+    lines = [line for line in (text or "").splitlines() if line.strip()]
+    return lines[-1].strip() if lines else ""
+
+
+def _reset_hint(text: str) -> str:
+    """The CLI's own words for when the window reopens, if it said."""
+    match = re.search(r"resets?\s+([^\n·]{1,40})", text, re.IGNORECASE)
+    return match.group(1).strip() if match else ""

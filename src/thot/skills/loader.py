@@ -246,7 +246,7 @@ def digest(skill: Skill) -> str:
 
 
 def screen(
-    skills: list[Skill], *, known: set[str] | None = None
+    skills: list[Skill], *, known: set[str] | None = None, source: str = "community"
 ) -> tuple[list[Skill], list[Rejected]]:
     """Refuse skills a repository supplied that the guard calls dangerous.
 
@@ -254,6 +254,10 @@ def screen(
     model as instructions, and the repositories Thot reads are exactly the
     ones nobody has vouched for. A hostile repo dropping a SKILL.md into
     `.thot/skills/` would otherwise be writing part of the briefing.
+
+    `source` separates that repository from a library the user installed
+    themselves for a neighbouring agent. Both are screened; only the first
+    is refused on a `caution` verdict. See INSTALL_POLICY in the guard.
 
     `known` holds the digests of skills Thot already ships. A file whose
     bytes match one of them *is* that file — Hermes's library holds 73 exact
@@ -270,7 +274,7 @@ def screen(
             kept.append(skill)
             continue
         try:
-            result = scan_skill(skill.path.parent, source="community")
+            result = scan_skill(skill.path.parent, source=source)
             allowed, reason = should_allow_install(result)
         except (OSError, ValueError):
             kept.append(skill)  # a scanner that cannot run must not censor
@@ -294,31 +298,38 @@ def screen(
 def discover_report(
     root: Path | None = None, *, sources: list[Path] | None = None
 ) -> tuple[list[Skill], list[Rejected]]:
-    """Everything available here, plus what was refused and why."""
-    refused: list[Rejected] = []
+    """Everything available here, plus what was refused and why.
+
+    Three kinds of source, and the difference between the last two is the
+    whole point. `VOUCHED` is what Thot ships and what the user put in
+    Thot's own folder: on disk because the program was installed. The other
+    two are screened, but not against the same policy — a library the user
+    installed for a neighbouring agent is not the repository under audit,
+    which is the only source nobody has vouched for at all.
+    """
+    VOUCHED = None
     if sources is None:
         directory = library_dir()
-        sources = [p for p in (directory, user_dir()) if p is not None]
-        trusted = len(sources)
-        # What the other two programs have installed for this user. Screened,
-        # not trusted: they come from public registries, which is the exact
-        # case the guard exists for. Thot vouches for its own shipped
-        # library and for nothing else.
-        sources.extend(_agent_dirs())
+        plan: list[tuple[Path, str | None]] = [
+            (p, VOUCHED) for p in (directory, user_dir()) if p is not None
+        ]
+        plan.extend((p, "installed") for p in _agent_dirs())
         if root is not None:
-            sources.append(repo_dir(root))
+            plan.append((repo_dir(root), "community"))
     else:
-        trusted = len(sources)  # explicit sources are the caller's own choice
+        # Explicit sources are the caller's own choice.
+        plan = [(p, VOUCHED) for p in sources]
 
+    refused: list[Rejected] = []
     by_name: dict[str, Skill] = {}
     vouched: set[str] = set()
-    for index, source in enumerate(sources):
+    for source, origin in plan:
         found = load_from(source)
-        if index >= trusted:  # supplied by another program, or by the repo
-            found, rejected = screen(found, known=vouched)
-            refused.extend(rejected)
-        else:
+        if origin is VOUCHED:
             vouched.update(digest(skill) for skill in found)
+        else:
+            found, rejected = screen(found, known=vouched, source=origin)
+            refused.extend(rejected)
         for skill in found:
             by_name[skill.name] = skill
     return sorted(by_name.values(), key=lambda s: (s.category, s.name)), refused

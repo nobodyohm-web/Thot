@@ -47,3 +47,24 @@ def test_saving_the_same_finding_twice_keeps_one_row(tmp_path):
     store.save_findings(run_id, [make_finding(), make_finding()])
     assert len(store.findings_for_run(run_id)) == 1
     store.close()
+
+
+def test_the_scheduler_can_write_while_a_session_reads(tmp_path):
+    """The daemon audits on its own clock; a reader must not lock it out.
+
+    Outside WAL a single open read transaction makes every write wait for
+    the busy timeout and then fail — five seconds lost, then a traceback.
+    """
+    import sqlite3
+
+    path = tmp_path / "s.db"
+    store = Store.open(path)
+    reader = sqlite3.connect(path)
+    reader.execute("BEGIN")
+    reader.execute("SELECT * FROM runs").fetchall()
+    try:
+        run_id = store.start_run(root="/repo", commit=None)
+        store.save_findings(run_id, [make_finding()])
+    finally:
+        reader.close()
+        store.close()

@@ -103,20 +103,25 @@ class SessionStore:
     # -- writing ---------------------------------------------------------
 
     def start(self, root: str | Path, *, model: str = "", title: str = "",
-              parent_id: str = "") -> str:
+              parent_id: str = "", at: str = "") -> str:
         session_id = new_id()
         self._connection.execute(
             "INSERT INTO sessions (id, root, title, model, parent_id, started_at) "
             "VALUES (?, ?, ?, ?, ?, ?)",
             (session_id, str(root), title[:TITLE_CHARS], model,
-             parent_id or None, _now()),
+             parent_id or None, at or _now()),
         )
         self._connection.commit()
         return session_id
 
     def append(self, session_id: str, role: str, content: str,
-               *, tool_name: str = "") -> int:
-        """Record one turn. The first thing a user says becomes the title."""
+               *, tool_name: str = "", at: str = "") -> int:
+        """Record one turn. The first thing a user says becomes the title.
+
+        `at` overrides the clock, and only an import has any business
+        passing it: a conversation carried to another machine keeps the
+        moments it actually happened at.
+        """
         row = self._connection.execute(
             "SELECT message_count, title FROM sessions WHERE id = ?", (session_id,)
         ).fetchone()
@@ -127,7 +132,7 @@ class SessionStore:
         self._connection.execute(
             "INSERT INTO messages (session_id, seq, role, content, tool_name, created_at) "
             "VALUES (?, ?, ?, ?, ?, ?)",
-            (session_id, seq, role, content, tool_name, _now()),
+            (session_id, seq, role, content, tool_name, at or _now()),
         )
         updates = "message_count = ?"
         params: list = [seq + 1]
@@ -151,10 +156,10 @@ class SessionStore:
         """
         return self.append(session_id, kind, text)
 
-    def end(self, session_id: str) -> None:
+    def end(self, session_id: str, *, at: str = "") -> None:
         self._connection.execute(
             "UPDATE sessions SET ended_at = ? WHERE id = ? AND ended_at IS NULL",
-            (_now(), session_id),
+            (at or _now(), session_id),
         )
         self._connection.commit()
 
@@ -206,13 +211,17 @@ class SessionStore:
         return child
 
     def forget(self, session_id: str) -> bool:
-        cursor = self._connection.execute(
-            "DELETE FROM sessions WHERE id = ?", (session_id,)
-        )
-        self._connection.execute(
-            "DELETE FROM messages WHERE session_id = ?", (session_id,)
-        )
-        self._connection.commit()
+        # One transaction, because the half-done state is worse than the
+        # failure: nothing has a foreign key onto `messages` and nothing else
+        # deletes from it, so a session row that goes while its messages stay
+        # leaves them unreachable and unpurgeable for good.
+        with self._connection:
+            cursor = self._connection.execute(
+                "DELETE FROM sessions WHERE id = ?", (session_id,)
+            )
+            self._connection.execute(
+                "DELETE FROM messages WHERE session_id = ?", (session_id,)
+            )
         return cursor.rowcount > 0
 
     # -- usage -----------------------------------------------------------

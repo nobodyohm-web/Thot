@@ -4415,7 +4415,7 @@ name = "thot"
 version = "0.1.0"
 source = { editable = "." }
 dependencies = [
-    { name = "hermes-agent" },
+    { name = "hermes-agent", extra = ["mcp"] },
     { name = "httpx" },
     { name = "prompt-toolkit" },
     { name = "pyyaml" },
@@ -4429,7 +4429,7 @@ dev = [
 
 [package.metadata]
 requires-dist = [
-    { name = "hermes-agent", editable = "hermes" },
+    { name = "hermes-agent", extras = ["mcp"], editable = "hermes" },
     { name = "httpx", specifier = ">=0.28.1" },
     { name = "prompt-toolkit", specifier = ">=3.0.52" },
     { name = "pyyaml", specifier = ">=6.0" },

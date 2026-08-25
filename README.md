@@ -33,6 +33,36 @@ de Thot dans les deux agents : ils gagnent `code_map`, `find_symbol`,
 hors modèle, au lieu de la redécouvrir fichier par fichier. C'est le renfort
 mutuel : Thot sait sans demander, Hermes et Prime agissent.
 
+Les deux agents ne s'atteignent pas de la même façon, et prétendre le
+contraire ne branchait qu'un des deux. Hermes démarre le serveur lui-même et
+lui parle sur le tuyau qu'il a ouvert. Prime n'accepte que du HTTP — son
+`mcp-manager` jette toute entrée dont le type n'est pas `http`, et son
+runtime n'a aucun transport sur tuyau — donc son côté demande un serveur qui
+tourne :
+
+```bash
+thot fusion wire            # écrit les deux branchements, chacun dans sa forme
+thot mcp serve --http       # ce que Prime interroge : boucle locale, jeton bearer
+thot mcp service --install  # et pour que ce soit encore vrai demain
+```
+
+La troisième ligne existe parce que les deux premières ne tiennent qu'une
+session. `fusion wire` écrit `http://127.0.0.1:8787/mcp` dans la
+configuration de Prime, et cette adresse est vraie tant qu'un terminal reste
+ouvert : au premier redémarrage, le fichier promet un serveur que plus
+personne ne sert. `thot mcp service --install` écrit l'unité qui le relance —
+`KeepAlive` sur macOS, `Restart=always` sous systemd — et **ne la charge
+pas** : Thot imprime la commande et te laisse la lancer, parce qu'un outil
+qui enregistre des agents en tâche de fond sans le dire est un outil qu'on
+cesse de croire. `thot doctor` pose ensuite la seule question qui compte —
+est-ce que l'adresse répond *maintenant* — et non pas si le fichier existe.
+
+`fusion wire` installe aussi, chez Prime, le paquet de méthode que Thot livre
+pour lui : une entrée de configuration ne suffit pas, Prime n'atteint un
+serveur MCP qu'à travers une classe qui le nomme. Et il dépose le jeton dans
+`auth.json` sans toucher aux identifiants du modèle — sans jeton, la
+connexion échoue avant d'être ouverte.
+
 Chaque agent garde sa configuration. `thot fusion unwire` défait tout, et le
 `settings.json` de Prime est sauvegardé avant la première modification.
 
@@ -41,6 +71,11 @@ Hermes installe les plugins portables désactivés, par sécurité, donc écrire
 les deux fichiers ne branche rien tant que `plugins.enabled` ne le nomme pas.
 L'activation passe par le CLI de Hermes, jamais par une édition de son
 `config.yaml` — ce fichier est le sien, avec son schéma et ses migrations.
+Il vérifie aussi que l'interpréteur qui lance Hermes sait importer le SDK
+MCP, parce qu'un agent qui ne l'a pas n'a **aucun** outil — pas seulement pas
+ceux de Thot — et le dit en `logger.debug`, où personne ne le lit. Enfin il
+demande au serveur de Prime s'il répond : une adresse écrite dans un fichier
+n'est pas une connexion.
 
 Et le renfort marche dans les deux sens : Hermes et Prime sont aussi des
 **moteurs** pour `thot audit --deep`, l'étape qui fait argumenter puis réfuter
@@ -243,18 +278,21 @@ thot fusion audit             # auditer les trois arbres en une passe
 programme : trois commandes et une fusion mentale de trois rapports.
 
 ```
-thot       186 fichiers     4 finding(s) — 4 info · 4 réfuté(s) en mémoire
-hermes    6924 fichiers   416 finding(s) — 416 info · 416 réfuté(s) en mémoire
-prime      938 fichiers    22 finding(s) — 22 info · 22 réfuté(s) en mémoire
+thot       203 fichiers     5 finding(s) — 4 high · 1 medium · 14 sous le seuil
+hermes    7080 fichiers   127 finding(s) — 12 high · 115 medium · 806 sous le seuil
+prime      952 fichiers    13 finding(s) — 3 high · 10 medium · 28 sous le seuil
 
-442 finding(s) sur l'ensemble — 442 info · dont 442 réfuté(s) en mémoire
+145 finding(s) sur l'ensemble — 19 high · 126 medium · 848 sous le seuil (`--all`)
 ```
 
-La colonne des réfutations est ce qui sépare « rien à signaler » de « tout a
-été écarté ». Sur cette machine, un panel a argumenté les trois arbres et
-retenu 450 réfutations ; sans mémoire les mêmes arbres donnent encore 2 high
-et 2 low pour Thot seul. Une ligne qui n'afficherait que `416 info` mentirait
-par omission — et c'est exactement ce qu'elle faisait avant.
+Le seuil est celui de `thot audit`, et c'est le point : le même arbre doit
+donner le même nombre aux deux commandes. Cette vue comptait chaque `low`,
+donc elle répondait 933 pour un dépôt que `thot audit hermes` appelait 127,
+dans la même minute. Ce qui est retenu est compté, jamais tu.
+
+Quand une mémoire de verdicts a déjà tranché, la ligne le dit à part —
+`0 finding(s) · 416 réfuté(s) en mémoire`. Zéro tout seul se lit comme un
+arbre propre ; la phrase juste est qu'un panel a écarté les 416.
 
 Une partie qui ne peut pas être auditée coûte sa ligne et jamais la passe :
 un Prime absent ne doit pas cacher ce que Hermes a dit.
@@ -269,8 +307,22 @@ Il ne se porte garant que de ce qu'il livre lui-même. Mais 73 des 83 méthodes
 de Hermes sont des copies **au bit près** de celles de Thot : signaler son
 propre fichier comme une menace communautaire est un faux positif qui apprend
 à ignorer les vrais. Une méthode dont les octets correspondent à une méthode
-livrée *est* cette méthode. Le garde est passé de 42 refus à 8 — les 8 qui
-diffèrent réellement, et qui accèdent au dossier privé de l'agent.
+livrée *est* cette méthode. Le garde est passé de 42 refus à 8.
+
+Puis de 8 à 0, pour deux raisons distinctes qu'il vaut mieux ne pas
+confondre. La première est une règle fausse : `ENV[]` est une constante Ruby,
+majuscule par construction, mais le motif était compilé comme tout le
+catalogue — sans distinction de casse. Il lisait donc du Python comme du
+Ruby, et classait `env["…_TOKEN"] = jeton` deux lignes avant un
+`subprocess.run(env=env)` — la façon recommandée de passer un secret à un
+enfant — en « lecture de secret », CRITICAL. La seconde est une question de
+rang : une bibliothèque que l'utilisateur a lui-même installée dans le
+dossier d'un agent voisin n'est pas le dépôt sous audit. L'installation a
+déjà eu lieu, délibérément ; Thot décide seulement s'il lit ce qui est déjà
+sur la machine. Elle est toujours scannée et toujours rapportée, mais refusée
+sur `dangerous` seulement, là où le dépôt inspecté l'est dès `caution` — six
+des huit refus tenaient à la seule règle qui voit une exfiltration dans une
+méthode documentant l'adresse de son propre jeton.
 
 Les 13 méthodes livrées avec Prime restent chez Prime : elles documentent son
 noyau IPython (`edit(old_str, new_str)`, `refine()`). Thot a porté ce noyau,
@@ -293,7 +345,9 @@ et jamais la liste.
 ## Installation
 
 ```bash
-uv tool install --editable --from /Users/dev/Desktop/Thot thot
+git clone https://github.com/nobodyohm-web/thot.git
+cd thot
+uv tool install --editable --from . thot
 ```
 
 Un seul `uv sync` à la racine installe Thot **et** Hermes : c'est un workspace,
@@ -489,9 +543,24 @@ symboles. Une version antérieure annonçait 24 454 sans noter comment ils
 avaient été comptés ; le chiffre dépend entièrement de la définition, donc la
 définition est écrite.
 
-Mesuré sur les deux corpus : **8 chemins sur Prime, 13 sur Hermes**, sur
-3 400 fichiers JS/TS. Vingt et un, pas trois cents — c'est la forme qu'a un
+Mesuré sur les deux corpus : **31 chemins sur Prime, 41 sur Hermes**, sur
+3 552 fichiers JS/TS. Soixante-douze, pas trois mille — c'est la forme qu'a un
 moteur de teinte, et pas celle d'un scanner de motifs.
+
+Le moteur suit aussi les fonctions que personne n'appelle par leur nom : le
+*runtime* les appelle, et leur passe la valeur. `addEventListener` introduit
+la teinte — le paramètre *est* l'entrée ; `.then`, `.map`, `.forEach` la
+*portent* — le paramètre est teinté exactement quand ce qui est parcouru
+l'était, donc une liste constante reste une liste constante. C'est la
+différence entre suivre une valeur et en inventer une, et sans elle un arbre
+de code navigateur est presque entièrement invisible.
+
+`obj[clé] = valeur` où la **clé** est contrôlée est un sink à part : la charge
+utile est la clé et non la valeur, parce qu'un `__proto__` écrit à travers
+tous les objets du programme. Onze sites réels dans Hermes, trois dans Prime,
+tous de la forme `for (const [k, v] of Object.entries(x)) { out[k] = v }`. Une
+boucle qui refuse `__proto__` par son nom est corrigée, et n'est pas
+signalée.
 
 Le rapport le dit lui-même plutôt que de laisser croire à une couverture
 uniforme :
@@ -560,6 +629,42 @@ sous-chaînes (`latest/` n'est pas un dossier de test, `contest.py` n'est pas
 un fichier de test), et tout ce qui n'est pas reconnu est de la production.
 Se tromper vers « test » cacherait un vrai défaut ; se tromper vers
 « production » ne coûte qu'un cran.
+
+### D'où vient la valeur
+
+Un finding porte la règle de **source** qui a lancé son chemin —
+`source.argv`, `source.http`, `source.js.event` — et pas seulement la ligne
+où elle se trouve. Le rapport le dit en toutes lettres (« une valeur issue de
+la ligne de commande… ») et le JSON le donne en clé, `source_rule`, pour que
+ce qui filtre en aval lise le fait et non une phrase française.
+
+C'est la moitié manquante du rang. `open(args.sortie, "w")` dans un outil en
+ligne de commande, c'est l'opérateur qui nomme un fichier : celui qui fournit
+`argv` détient déjà le système de fichiers de ce processus, et l'appel ne lui
+donne rien. `open(request.args["f"])` dans un handler, c'est une lecture de
+fichier arbitraire. Même règle, même sink, deux mondes.
+
+| | source locale | source distante |
+|---|---|---|
+| `sink.fs.read` · `sink.fs.write` · `sink.js.path` | un cran plus bas | rang plein |
+| tout le reste | rang plein | rang plein |
+
+Seulement ces trois-là. Une commande construite depuis `argv` reste une
+commande, et un pickle lu depuis une variable d'environnement exécute encore
+du code : là, c'est le sink qui fait l'escalade, pas le trajet.
+
+Mesuré sur Hermes le jour où le moteur a su suivre les chaînes d'attributs :
+sans cette distinction, `sink.fs.read` seul mettait **48 findings** dans le
+rapport, dont neuf venant d'un seul script de CI, chacun un utilitaire
+ouvrant le fichier qu'on lui avait demandé d'ouvrir. Avec, ils passent sous
+le seuil et restent à une frappe (`--all`).
+
+Une provenance inconnue compte comme locale, et c'est écrit plutôt que caché :
+supposer l'inverse remettrait en haut du rapport tout chemin dont le moteur
+n'a pas su nommer la source. Ce qu'il sait nommer a doublé quand la liaison
+entre une locale et le paramètre dont elle dérive a cessé de se perdre —
+`cible = chemin.strip()` gardait le lien vers `chemin`, et sans lui le sink
+n'était rattaché à aucun paramètre, donc à aucun appelant.
 
 ### Pourquoi c'est sûr
 
@@ -790,7 +895,7 @@ Un audit qui se termine à 03:00 ne vaut rien tant que personne n'est prévenu,
 et la personne à prévenir n'est pas devant le terminal.
 
 ```bash
-thot gateway add ntfy topic=thot-topic
+thot gateway add ntfy topic=thot-$(openssl rand -hex 8)   # le sujet EST le secret
 thot gateway add telegram token=… chat_id=…
 thot gateway allow telegram <ton-id>     # obligatoire pour commander
 thot gateway test
@@ -912,21 +1017,27 @@ thot doctor
 
 ```
 ✓ fusion                 thot · hermes · prime
-✓ câblage                3/3 fichiers en place
+✓ câblage                4/4 fichiers en place · sdk mcp présent
 ✓ moteurs                claude, hermes, prime
 ✓ panel                  claude-cli contre hermes contre prime · cascade oui
-✓ indexeurs              python 9 symbole(s) · typescript 1
+✓ indexeurs              python 10 symbole(s) · typescript 1
 ✓ teinte                 python 1 chemin(s) · javascript 1
-✓ règles                 python 7 sinks · javascript 8
-✓ skills                 91 chargée(s) · 8 refusée(s)
+✓ règles                 python 8 sinks · javascript 8
+✓ skills                 91 chargée(s) · 0 refusée(s)
 ✓ plugins                4 chargé(s) · 0 refusé(s)
-✓ mémoire                450 décision(s)
+✓ mémoire                492 décision(s)
 ✓ mcp                    6 outil(s) exposé(s)
+✓ service                http://127.0.0.1:8787/mcp répond
 ✓ amélioration           daily, 8 candidats par arbre · unité launchd,
                          1 passage(s) · agents joignables depuis l'unité
 
-12/12 vérification(s) passées en 0.93 s
+13/13 vérification(s) passées en 1.83 s
 ```
+
+Instantané daté, pas un contrat : `mémoire` compte les verdicts accumulés et
+ne peut que croître, `skills` dépend de ce qui est installé sur la machine.
+Ce qui est stable, c'est la forme — chaque ligne porte un nombre mesuré, et
+`12/12`.
 
 La dernière ligne est la sortie réelle sur la machine de développement, et
 elle est gardée telle quelle : c'est ce que le contrôle sert à produire. Le
@@ -976,7 +1087,7 @@ refus. Un tiers du panel ne pouvait vérifier aucune affirmation reposant sur
 un second fichier, et rien d'autre que planter un fichier ne l'aurait montré.
 
 Chaque ligne exécute une vraie opération et rapporte ce qu'elle a **mesuré** :
-pas « skills : configuré » mais « 91 chargées, 8 refusées ». Le moteur de
+pas « skills : configuré » mais « 91 chargées, 0 refusées ». Le moteur de
 teinte cherche un chemin dans un échantillon des deux langages, le serveur MCP
 répond à son propre protocole. Une vérification qui ne peut pas tourner
 échoue au lieu de passer en silence : une ligne verte qui veut dire « non
@@ -1058,6 +1169,207 @@ Elle ne modifie jamais de code. « Amélioration » veut dire ici que le jugemen
 du programme sur lui-même devient plus net et moins cher : moins de candidats
 sans décision, plus de décisions sur disque, chacune attribuable à l'agent qui
 l'a prise.
+
+## Le thermomètre, et la boucle qui s'en sert
+
+Tout ce qui précède mesure Thot avec Thot. `improve` demande à un modèle si un
+finding est réel. `evolve` surveillait `provenance`, un rapport que le moteur
+calcule sur sa propre sortie. Les deux sont circulaires, et le cercle n'a rien
+d'académique : la passe profonde a payé **638 jugements pour 9 confirmations**
+pendant qu'une règle notée **−100 %** dormait — `xml_unsafe_parse` signalait
+`defusedxml`, c'est-à-dire exactement le remède que son propre message
+recommandait. Rien dans le programme ne pouvait le voir.
+
+`thot bench` casse le cercle. Il mesure Thot contre du code étiqueté
+*vulnérable* ou *sain* par quelqu'un d'autre, à parts égales, la classe de
+faiblesse nommée.
+
+```bash
+thot bench ~/.thot/bench              # les suites présentes, catégorie par catégorie
+thot bench ~/.thot/bench --json       # ce que la boucle d'évolution lit
+thot bench ~/.thot/bench --floor info # ce que le plancher de sévérité cache
+```
+
+Le corpus **n'est pas embarqué** — dix-huit mille fichiers tiers n'ont rien à
+faire dans ce dépôt — donc le chemin est toujours donné, et chaque suite est
+vérifiée contre l'empreinte de son manifeste. Un corpus dont les étiquettes
+ont bougé sous une mesure est pire que pas de corpus : tous les chiffres depuis
+sont faux et rien ne le dit.
+
+La note est le **J de Youden**, `TPR − FPR`. Zéro est un tirage à pile ou face,
++100 est parfait, et **négatif veut dire que la règle est inversée**. Précision
+et rappel ne l'auraient pas dit : une règle sans aucun vrai positif a une
+précision indéfinie, s'affiche vide, et se lit comme *pas de données* — c'est
+exactement comme ça qu'une règle inversée survit. Le J n'a pas ce trou.
+
+Deux façons de tricher, et les deux perdent. En trouver moins — ce qui faisait
+monter `provenance` — fait tomber le TPR. Tout signaler donne TPR 100 %, FPR
+100 %, J zéro : le corpus est équilibré 50/50 précisément pour ça.
+
+État mesuré, plancher par défaut, trois frameworks (django, fastapi, flask) :
+
+```
+                        avant      après
+TPR                      9.9 %     34.4 %
+FPR                      0.5 %      0.0 %
+J de Youden             +9.4 %    +34.4 %
+catégories actives          10         24
+catégories négatives         0          0
+```
+
+« Avant » est l'état du programme au moment où le thermomètre a existé pour la
+première fois. « Après » est le même corpus, le même plancher, la même
+commande. Le hold-out le confirme : flask tenu à l'écart note **+33,3 %**,
+django tenu à l'écart **+35,9 %** — à moins de deux points de l'entraînement,
+donc les règles marchent sur du code qu'elles n'ont pas servi à écrire.
+
+Par catégorie, ce que le moteur sait faire aujourd'hui :
+
+```
+xxe · tlsverify · weakhash · weakrand · weakcipher · weakkeylength
+hardcodedcreds · default_credentials · cleartexttransmit · errormessage
+debug_code_production · cookie_no_httponly · cookie_no_samesite
+securecookie · directory_listing_exposure                      +100,0 %
+deserial  +98,0 %   cmdi  +93,3 %   codeinj  +86,0 %
+eval_injection  +84,0 %   sqli  +82,7 %   cloud_ssrf_metadata  +78,7 %
+ssrf  +64,7 %   pathtraver  +56,0 %   xss / basic_xss  +26,7 %
+```
+
+**Zéro faux positif** sur l'ensemble des 18 300 cas, et aucune catégorie
+négative. Le point de départ était `ssrf` à −8,0 % et `xxe` à −100 %.
+
+Ce qui a produit ces vingt-cinq points, dans l'ordre où ça a été mesuré :
+
+| changement | J |
+|---|---|
+| départ | +9,4 % |
+| les routes web reconnues comme points d'entrée | +9,6 % |
+| la teinte suit une valeur dans un conteneur | +10,0 % |
+| une ternaire à branches constantes ne transporte rien | +12,4 % |
+| un `fullmatch` à classe niée est une liste noire | *incl.* |
+| gardes SSRF : liste blanche d'hôtes, plage d'IP résolue | +14,3 % |
+| `socket.create_connection` reconnu comme sink réseau | +14,9 % |
+| confinement de chemin et liste blanche nommée | +15,5 % |
+| `mark_safe` comme sink, `bleach` comme neutralisation HTML | +16,3 % |
+| douze règles de motif à une ligne | +27,8 % |
+| un motif ne paie plus la remise d'accessibilité | **+34,4 %** |
+
+Trois de ces changements ont été **refusés** après mesure, et c'est le
+thermomètre qui les a refusés : traiter une lecture en base comme une source
+non fiable (436 cas vulnérables, 343 sains — autant de bruit que de signal),
+`clickjacking` (23 faux positifs sur ce dépôt), et les cinq règles
+d'injection LDAP/XPath/NoSQL/SSTI/EL, dont le J mesuré est exactement
+**0,000** : elles tirent autant sur la moitié saine que sur l'autre.
+
+### La précision ne s'achète pas avec un angle mort
+
+Chaque garde reconnue ci-dessus a d'abord été proposée dans une version qui
+faisait monter le score **et ouvrait un trou exploitable**. Une sonde adverse
+les a tous trouvés :
+
+```python
+resolved = socket.gethostbyname(parsed.hostname or url)
+if ipaddress.ip_address(resolved).is_private:
+    return "blocked", 403
+os.system("curl -s " + url)      # ← silencieux, et exploitable
+```
+
+Le garde est une défense SSRF correcte et ne dit **rien** sur les
+métacaractères shell encore dans la chaîne. Purger la teinte partout achetait
+174 faux positifs en moins et un angle mort en injection de commande.
+
+D'où la distinction que porte le moteur : une garde qui contraint **la
+valeur** (liste blanche littérale, `fullmatch` énumérant) la blanchit pour
+tout ; une garde qui prouve **la destination** (l'hôte est autorisé,
+l'adresse résolue est publique, le chemin est confiné) ne vaut que pour la
+famille de sinks concernée. Même chose pour `bleach.clean`, qui neutralise
+du HTML et laisse `x; rm -rf /` intact.
+
+Quatre sondes adverses sont dans la suite de tests et signalent toutes
+correctement. Une « amélioration » future qui rouvrirait l'un de ces trous
+casse un test nommé.
+
+Le silence restant a deux causes, et `thot bench` les sépare parce que ce
+sont deux travaux différents :
+
+```
+règle muette — elle existe et ne matche jamais : elle a un motif à élargir
+aucune règle pour la classe : il y en a une à écrire
+```
+
+La distinction décide de l'ordre des objectifs — sans elle les catégories
+muettes sont à égalité parfaite à J = 0 et le tri retombe sur l'ordre
+alphabétique.
+
+### La fusion, là où elle change quelque chose
+
+`Cascade.turn` choisit **un** agent et l'appelle ; il ne va chercher l'autre
+que si le premier renvoie une erreur. Un tour comme ça est plafonné au
+meilleur des deux par construction : il peut perdre moins, jamais gagner plus.
+`agent_apply` faisait pareil — un moteur, au singulier.
+
+`thot evolve --fused` fait travailler les deux, sur des moitiés différentes du
+même problème :
+
+```bash
+thot bench ~/.thot/bench                      # où ça fait mal
+thot evolve --from-bench --fused \
+      --corpus ~/.thot/bench --hold-out flask # et on répare, en boucle
+```
+
+- **Hermes lit la mesure et écrit une spécification.** Il ne touche aucun
+  fichier. Sa sortie est une affirmation sur la *cause* : quelle règle, quelle
+  ligne, pourquoi ces cas-là.
+- **Prime lit la spécification et écrit le code.** On lui dit explicitement
+  qu'il peut la refuser si le code la contredit — un exécutant incapable de
+  dire non est un relais, et un relais n'ajoute rien.
+- **Aucun des deux ne décide.** La suite de tests est un plancher, le corpus
+  étiqueté est le verdict. Une spécification fausse appliquée avec conviction
+  fait baisser la note et est annulée octet par octet.
+
+L'ordre n'est pas arbitraire non plus. Concevoir-puis-construire se vérifie à
+la jointure : Prime voit le raisonnement de Hermes avant de s'y engager.
+Construire-puis-relire ne le permet pas — quand le second regarde, le premier
+a déjà décidé.
+
+Les objectifs viennent de la mesure, pas d'une phrase tapée. Jusqu'ici la
+boucle ne pouvait poursuivre que ce qu'un humain soupçonnait déjà ; un
+objectif construit depuis le score est le programme qui dit où il est faible,
+dans des chiffres qu'il n'a pas choisis — et les mêmes chiffres disent ensuite
+si la réponse a servi. Chaque objectif porte les fichiers qui ont échoué : un
+agent à qui on dit « xss est à 0 % » ne peut que deviner, un agent à qui on
+donne trois fichiers ratés a un problème à résoudre.
+
+### Le sur-apprentissage, et ce que `--hold-out` peut vraiment
+
+Une boucle notée sur un corpus a une seule vraie façon de tricher : **apprendre
+le corpus**. Une règle calée sur ce à quoi ressemble `BenchmarkTest01126` fait
+monter la note et ne sert à personne, et vu de l'extérieur c'est indiscernable
+d'un vrai progrès.
+
+`--hold-out flask` sort une suite du chiffre principal et la garde comme
+second garde-fou : un changement qui bouge les suites contre lesquelles il a
+été optimisé et pas celle qu'il n'a jamais vue a dit ce qu'il est. Les deux
+nombres sont gardés `ne_baisse_pas`.
+
+Sa limite, mesurée : les trois frameworks notent à un demi-point les uns des
+autres. Ça attrape le sur-apprentissage au fichier, pas le sur-apprentissage à
+*la forme du benchmark* — un corpus généré reste un corpus généré, et une règle
+qui n'aide que sur du code de démonstration passerait les trois. Le hold-out
+rend une tricherie visible ; il ne rend pas le corpus représentatif.
+
+Ce que la boucle retient d'un tour sur l'autre est écrit dans
+`~/.thot/evolve-log.jsonl`. Sans ça, la mesure bougeant à peine en un tour,
+le tour suivant relit les mêmes pires catégories, tend les mêmes fichiers, et
+reçoit — raisonnablement — la même spécification déjà construite, mesurée et
+annulée : `--rounds 5` serait une tentative essayée cinq fois, cinq fois plus
+cher, avec l'air d'être occupé.
+
+Ce n'est pas un oracle. Un correctif peut être vert, faire monter le J, et
+rester mauvais — c'est du sur-apprentissage et la littérature sur la réparation
+automatique de programmes ne parle que de ça. Le corpus est une preuve qu'on a
+progressé *sur lui*. La boucle rapporte ce qu'elle a changé pour qu'un humain
+puisse être en désaccord.
 
 ## Skills — les méthodes que Thot connaît
 
@@ -1201,7 +1513,36 @@ thot init /chemin/du/repo --owner "Ton Nom"   # autorisation, une fois
 thot audit /chemin/du/repo --paths            # chemins de teinte complets
 thot audit . --all                            # y compris le bruit faible
 thot audit . --json --out rapport.json
+thot audit . --out rapport.sarif              # SARIF 2.1, format déduit du nom
 thot audit . --fail-on high                   # code 1 en CI
+```
+
+### SARIF — entrer dans une chaîne qui existe déjà
+
+Un rapport qu'aucun pipeline ne sait lire vit dans un seul terminal. GitHub
+code scanning, GitLab, Azure DevOps et les éditeurs lisent tous SARIF 2.1, et
+deux propriétés de Thot y valent plus qu'ailleurs.
+
+L'identité d'un finding est *règle + fichier + symbole + empreinte du corps*,
+jamais la ligne — c'est exactement ce que `partialFingerprints` demande. Un
+tableau de bord nourri de numéros de ligne rouvre tous ses tickets dès que
+quelqu'un ajoute un import en haut d'un fichier ; nourri de ça, non.
+
+Et un chemin de teinte est une suite de positions, ce que `codeFlows` rend :
+le lecteur clique de la source au sink au lieu de croire l'outil sur parole.
+Un finding sans chemin ne porte aucune clé `codeFlows` — un flux vide se rend
+comme un chemin de teinte sans étape, ce qui se lit comme une analyse cassée
+et non comme une correspondance de motif.
+
+Un finding réfuté par le panel n'est pas supprimé : il part avec une
+`suppressions` justifiée. Un tableau qui ne le voit jamais ne peut pas
+distinguer « personne n'a regardé » de « quelqu'un a regardé et a tranché »,
+et la seconde est toute la raison d'être du panel.
+
+```yaml
+- run: thot audit . --out thot.sarif
+- uses: github/codeql-action/upload-sarif@v3
+  with: { sarif_file: thot.sarif }
 ```
 
 ### Analyse assistée — `--deep`
@@ -1382,6 +1723,49 @@ Ordre de grandeur, mesuré sur Hermes Agent (4 457 fichiers Python) : **98 s**,
 365 findings dont 25 high — 3 au-dessus du seuil par défaut une fois la mémoire
 appliquée.
 
+### Quel paramètre l'argument remplit
+
+Un helper dont *un* paramètre atteint un sink ne rend pas dangereux tout ce
+qu'on lui passe. Le moteur appariait pourtant l'appelant avec l'ensemble des
+sinks du callee, sans regarder où l'argument atterrissait :
+
+```python
+def helper(safe, cmd):
+    os.system(cmd)          # seul `cmd` atteint le shell
+
+helper(sys.argv[1], "ls")   # la donnée va dans `safe` — et c'était rapporté
+```
+
+La position est maintenant lue au site d'appel, et le nom pour un argument
+nommé. C'est ce que le moteur JavaScript faisait déjà de son côté.
+
+Mesuré, une fois l'exécution possible : sur 83 238 résolutions demandées en
+analysant Thot et `hermes/tools`, 90 % désignent un paramètre unique et 9,8 %
+n'en désignent aucun ; 0,1 % restent ouvertes (`f(*rest)`, `f(**options)`) et
+gardent la réponse large. Le callee offrait 2,68 paramètres en moyenne, donc
+près des deux tiers de l'espace de recherche disparaissent — l'analyse de
+`hermes/tools` passe de 11,4 s à 9,5 s.
+
+Sur le nombre de findings, en revanche : **aucun changement**. Thot, `prime` et
+`hermes/tools` rendent exactement les mêmes 151 candidats avant et après, dont
+zéro inventé — la propriété de sûreté tient sur le terrain. Quatre chemins de
+teinte se raccourcissent, rien de plus. La forme corrigée ci-dessus est réelle
+et le test le prouve, mais elle ne se produit dans aucun des trois arbres
+mesurés : ce correctif achète de la vitesse et des chemins plus justes, pas
+moins de bruit.
+
+Deux formes ne disent rien : `helper(*args)` étale un nombre inconnu de
+valeurs, et `helper(**options)` n'en nomme aucune. Là, le moteur garde la
+réponse large qu'il donnait avant — l'ensemble retenu est toujours **inclus**
+dans celui d'avant, donc affiner ne peut que retirer un finding, jamais en
+inventer un.
+
+Le receveur est sauté sur la foi de la signature du callee, pas de la syntaxe
+de l'appel : `Runner().go(x)` se rend en un `go` sans point, et `Cls.m(obj, x)`
+comme `obj.m(x)` sont tous deux un attribut. Une méthode étant presque toujours
+appelée liée, c'est `self` en tête des paramètres qui décide — l'appel non lié
+est la seule forme lue un cran trop court.
+
 ### Ce que le graphe ne peut pas suivre
 
 Un défaut atteint par un chemin que l'analyse ne résout pas — un handler rangé
@@ -1412,7 +1796,7 @@ métaprogrammation échappent à l'analyse.
 ## Développement
 
 ```bash
-cd ~/Desktop/Thot
+cd thot
 uv run pytest -q
 ```
 

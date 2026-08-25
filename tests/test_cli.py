@@ -788,3 +788,548 @@ def test_the_notice_below_a_real_listing_points_at_the_remedy(
 
     assert "vraie" in out, out
     assert "--forget-empty" in out, out
+
+
+# --- un chemin absent n'est pas un dépôt sans problème ---------------------
+#
+# `audit` (pipeline.py) et `init` refusent tous deux un chemin qui n'est pas
+# là ; `deps` était le seul point d'entrée à l'oublier, et il répondait
+# « 0 dépendance(s), aucune vulnérabilité connue. » avec le code 0 — un feu
+# vert de CI sur une faute de frappe.
+
+
+def test_deps_refuses_a_path_that_is_not_there(tmp_path, capsys):
+    code = cli.main(["deps", str(tmp_path / "absent"), "--fail-on", "critical"])
+    err = capsys.readouterr().err
+
+    assert code == cli.EXIT_USAGE
+    assert "absent" in err
+
+
+def test_deps_listing_refuses_a_path_that_is_not_there(tmp_path, capsys):
+    code = cli.main(["deps", str(tmp_path / "absent"), "--list"])
+    out, err = capsys.readouterr()
+
+    assert code == cli.EXIT_USAGE
+    assert "dépendance" not in out
+
+
+def test_deps_refuses_a_file(tmp_path, capsys):
+    manifest = tmp_path / "requirements.txt"
+    manifest.write_text("requests==2.19.1\n")
+
+    code = cli.main(["deps", str(manifest)])
+    capsys.readouterr()
+
+    assert code == cli.EXIT_USAGE
+
+
+# --- un chemin de sortie ne jette jamais l'audit ---------------------------
+#
+# `--out` écrivait sans garde et sans créer le parent : en CI, `--out
+# reports/x.json` sortait une pile pathlib APRÈS l'audit complet, le rapport
+# calculé n'allait nulle part, et le code 1 se lisait comme EXIT_FINDINGS.
+
+
+def test_out_creates_the_missing_parent(toy_repo, tmp_path):
+    write_authorization(toy_repo, owner="tester")
+    target = tmp_path / "reports" / "nested" / "report.md"
+
+    code = cli.main(
+        ["audit", str(toy_repo), "--markdown", "--no-store", "--out", str(target)]
+    )
+
+    assert code == 0
+    assert "Rapport d'audit Thot" in target.read_text()
+
+
+def test_an_unwritable_out_keeps_the_report_on_stdout(toy_repo, tmp_path, capsys):
+    write_authorization(toy_repo, owner="tester")
+    blocker = tmp_path / "blocker"
+    blocker.write_text("pas un dossier")
+
+    code = cli.main(
+        ["audit", str(toy_repo), "--json", "--no-store", "--out",
+         str(blocker / "report.json")]
+    )
+    out, err = capsys.readouterr()
+
+    assert code == cli.EXIT_ERROR
+    json.loads(out)
+    assert "Rapport non écrit" in err
+
+
+# --- l'identifiant imprimé est l'identifiant accepté -----------------------
+#
+# `skills list` et `skills search` impriment `catégorie/nom` ; `show` et
+# `install` ne comparaient que `nom`. Copier l'identifiant que le programme
+# venait d'afficher, juste sous l'instruction qui dit de le faire, échouait
+# en code 2. C'est l'invariant qui est testé, pas la forme du nom.
+
+
+def _printed_identifier(text: str, *, after: str = "") -> str:
+    lines = text.splitlines()
+    if after:
+        start = next(i for i, line in enumerate(lines) if after in line) + 1
+        lines = lines[start:]
+    for line in lines:
+        columns = line.split()
+        if columns and "/" in columns[0]:
+            return columns[0]
+    raise AssertionError(f"aucun identifiant qualifié dans :\n{text}")
+
+
+def test_skills_show_accepts_what_skills_list_printed(toy_repo, capsys, monkeypatch):
+    monkeypatch.chdir(toy_repo)
+    assert cli.main(["skills", "list"]) == 0
+    identifier = _printed_identifier(capsys.readouterr().out)
+
+    code = cli.main(["skills", "show", identifier])
+    out = capsys.readouterr().out
+
+    assert code == 0
+    assert identifier.split("/")[-1] in out
+
+
+def test_skills_install_accepts_what_skills_search_printed(toy_repo, capsys,
+                                                           monkeypatch):
+    from thot.skills.loader import discover, optional
+
+    monkeypatch.chdir(toy_repo)
+    candidate = optional()[0]
+    assert cli.main(["skills", "search", candidate.name]) == 0
+    identifier = _printed_identifier(capsys.readouterr().out,
+                                     after="Bibliothèque optionnelle")
+
+    code = cli.main(["skills", "install", identifier])
+    capsys.readouterr()
+
+    assert code == 0
+    assert candidate.name in {s.name for s in discover(toy_repo)}
+
+
+# --- une pipe fermée n'est pas un verdict d'audit --------------------------
+#
+# `Console.on_broken_pipe` de rich fait `raise SystemExit(1)` ; 1 est
+# EXIT_FINDINGS. `thot audit . | head -1` sortait donc en 1 sur un dépôt sans
+# rien à signaler, stderr vide, sans aucun moyen de distinguer les deux.
+
+
+def _audit_into(consumer: list[str], *arguments: str) -> tuple[int, str]:
+    """Run a real `thot audit` whose stdout is a program that closes early."""
+    import os
+    import subprocess
+    import sys
+
+    reader = subprocess.Popen(consumer, stdin=subprocess.PIPE,
+                              stdout=subprocess.DEVNULL)
+    audit = subprocess.Popen(
+        [sys.executable, "-c", "from thot.cli import run; run()", *arguments],
+        stdout=reader.stdin, stderr=subprocess.PIPE, env=dict(os.environ),
+    )
+    assert reader.stdin is not None
+    reader.stdin.close()
+    error = audit.communicate()[1].decode()
+    reader.wait()
+    return audit.returncode, error
+
+
+def test_a_pipe_closed_early_does_not_report_findings(toy_repo):
+    write_authorization(toy_repo, owner="tester")
+
+    code, error = _audit_into(["true"], "audit", str(toy_repo), "--no-store")
+
+    assert code == cli.EXIT_OK, f"code={code} stderr={error}"
+
+
+def test_a_pipe_closed_early_still_lets_fail_on_speak(toy_repo):
+    """The other half: going quiet must not swallow a real CI failure.
+
+    Answering EXIT_OK on a broken pipe would be the easy fix and the wrong
+    one — `--fail-on` is computed after the printing, and its verdict is the
+    reason the command was run.
+    """
+    write_authorization(toy_repo, owner="tester")
+
+    code, error = _audit_into(["true"], "audit", str(toy_repo),
+                              "--no-store", "--fail-on", "low")
+
+    assert code == cli.EXIT_FINDINGS, f"code={code} stderr={error}"
+
+
+def test_a_reader_that_never_reads_leaves_no_exception_behind(toy_repo):
+    """`--json` goes through print(), not rich: a second, separate path.
+
+    A consumer already gone when the report is written made the interpreter
+    fail its final flush — « Exception ignored … BrokenPipeError », code 120.
+    """
+    write_authorization(toy_repo, owner="tester")
+
+    code, error = _audit_into(["true"], "audit", str(toy_repo),
+                              "--json", "--no-store")
+
+    assert code == cli.EXIT_OK, f"code={code} stderr={error}"
+    assert "BrokenPipeError" not in error
+
+
+# --- Ctrl-C n'est pas un incident du programme ----------------------------
+#
+# `main()` n'attrape que AuthorizationError/ThotError : un Ctrl-C pendant un
+# audit déversait une pile de vingt lignes jusque dans `ast.parse`. Le code
+# de sortie, lui, était déjà bon — CPython réarme SIGINT et se re-tue — et le
+# correctif le préserve : mourir du signal, pas d'un exit(130), est ce que
+# make et les boucles shell inspectent.
+
+
+def _run_interrupted() -> tuple[int, str]:
+    """Drive `cli.run()` in a child whose `main()` receives a real SIGINT."""
+    import os
+    import subprocess
+    import sys
+
+    body = (
+        "import os, signal\n"
+        "from thot import cli\n"
+        "def interrupted(argv=None):\n"
+        "    os.kill(os.getpid(), signal.SIGINT)\n"
+        "    return 0\n"
+        "cli.main = interrupted\n"
+        "cli.run()\n"
+    )
+    done = subprocess.run([sys.executable, "-c", body], capture_output=True,
+                          text=True, env=dict(os.environ))
+    return done.returncode, done.stderr
+
+
+def test_an_interrupted_command_says_so_instead_of_unwinding():
+    code, error = _run_interrupted()
+
+    assert "Interrompu." in error, error
+    assert "Traceback" not in error, error
+
+
+def test_an_interrupted_command_still_dies_of_the_signal():
+    import signal
+
+    code, _ = _run_interrupted()
+
+    assert code == -signal.SIGINT
+
+
+# --- une base de ~/.thot illisible n'est pas une pile Python ---------------
+#
+# `Session._open_state` applique déjà la règle — « A store that will not open
+# costs history, not the session » ; le CLI, lui, sortait une traceback
+# sqlite3 sur presque toutes les commandes, en code 1, c'est-à-dire
+# EXIT_FINDINGS, sans nommer ni le fichier ni le geste qui répare.
+
+
+def _corrupt(path):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(b"ceci n'est pas une base sqlite\n" * 8)
+
+
+def test_an_unreadable_run_store_costs_history_not_the_audit(toy_repo, capsys):
+    from thot.paths import run_store
+
+    write_authorization(toy_repo, owner="tester")
+    _corrupt(run_store())
+
+    code = cli.main(["audit", str(toy_repo), "--json"])
+    out, err = capsys.readouterr()
+
+    assert code == 0
+    json.loads(out), "le rapport doit rester un rapport"
+    assert str(run_store()) in err
+
+
+def test_an_unreadable_memory_costs_verdicts_not_the_audit(toy_repo, capsys):
+    from thot.paths import memory_db
+
+    write_authorization(toy_repo, owner="tester")
+    _corrupt(memory_db())
+
+    code = cli.main(["audit", str(toy_repo), "--json", "--no-store"])
+    out, err = capsys.readouterr()
+
+    assert code == 0
+    json.loads(out)
+    assert str(memory_db()) in err
+
+
+def test_an_unreadable_session_store_names_the_file_and_the_remedy(capsys):
+    from thot.paths import sessions_db
+
+    _corrupt(sessions_db())
+
+    code = cli.main(["sessions"])
+    err = capsys.readouterr().err
+
+    assert code == cli.EXIT_ERROR, "1 se lirait comme EXIT_FINDINGS"
+    assert str(sessions_db()) in err
+    assert "supprimer" in err
+
+
+def test_an_unreadable_session_store_stops_a_search_the_same_way(capsys):
+    from thot.paths import sessions_db
+
+    _corrupt(sessions_db())
+
+    code = cli.main(["search", "parseur"])
+    err = capsys.readouterr().err
+
+    assert code == cli.EXIT_ERROR
+    assert str(sessions_db()) in err
+
+
+def test_an_unreadable_verdict_store_names_the_file_and_the_remedy(tmp_path,
+                                                                   capsys):
+    from thot.paths import memory_db
+
+    _corrupt(memory_db())
+
+    code = cli.main(["verdicts", str(tmp_path)])
+    err = capsys.readouterr().err
+
+    assert code == cli.EXIT_ERROR
+    assert str(memory_db()) in err
+    assert "supprimer" in err
+
+
+# -- `--out` sans format écrivait dans le vide ------------------------------
+#
+# Le rendu n'existe que si `--json`, `--markdown` ou `--html` est demandé ;
+# sinon `rendered is None` et la branche qui écrit le fichier n'est jamais
+# atteinte. `thot audit . --out rapport.json` imprimait donc le rapport au
+# terminal, ne créait aucun fichier, et sortait 0. Demander un fichier et
+# repartir avec un succès sans fichier est la pire des trois issues — pire
+# que la traceback d'origine, qui au moins se voyait.
+#
+# Le format se déduit du nom : c'est ce que l'utilisateur a déjà écrit.
+
+
+def _petit_depot(tmp_path):
+    tmp_path.mkdir(parents=True, exist_ok=True)
+    (tmp_path / "app.py").write_text("def main():\n    pass\n", encoding="utf-8")
+    write_authorization(tmp_path, owner="tester")
+    return tmp_path
+
+
+@pytest.mark.parametrize("nom, marqueur", [
+    ("rapport.json", '"findings"'),
+    ("rapport.md", "#"),
+    ("rapport.html", "<html"),
+])
+def test_the_format_follows_the_name_that_was_asked_for(tmp_path, monkeypatch,
+                                                        nom, marqueur):
+    from thot import cli
+
+    repo = _petit_depot(tmp_path / "repo")
+    cible = tmp_path / "sortie" / nom
+
+    code = cli.main(["audit", str(repo), "--out", str(cible)])
+
+    assert code == 0, code
+    assert cible.is_file(), "aucun fichier écrit"
+    assert marqueur in cible.read_text(encoding="utf-8").lower()
+
+
+def test_a_name_thot_cannot_render_is_refused_not_ignored(tmp_path):
+    from thot import cli
+
+    repo = _petit_depot(tmp_path / "repo")
+
+    code = cli.main(["audit", str(repo), "--out", str(tmp_path / "rapport.xyz")])
+
+    assert code != 0
+    assert not (tmp_path / "rapport.xyz").exists()
+
+
+def test_an_explicit_format_still_wins_over_the_name(tmp_path):
+    from thot import cli
+
+    repo = _petit_depot(tmp_path / "repo")
+    cible = tmp_path / "rapport.txt"
+
+    code = cli.main(["audit", str(repo), "--json", "--out", str(cible)])
+
+    assert code == 0
+    assert '"findings"' in cible.read_text(encoding="utf-8")
+
+
+# -- evolve: which judge the command hands the loop ---------------------------
+
+
+class _WritesNothing:
+    """An agent that is installed and is never called.
+
+    `_cmd_evolve` refuses before it picks a gate when no agent is available,
+    so the tests below need one to exist; none of them lets it write.
+    """
+
+    def __init__(self, root, max_parallel=1):
+        self.root = root
+
+    @classmethod
+    def available(cls):
+        return True
+
+
+@pytest.fixture
+def evolve_judge(monkeypatch, tmp_path):
+    """An evolve run with both expensive halves removed — no agent writes and
+    no gate runs — so that what the command *chose* stays visible."""
+    import thot.engine.factory as factory
+
+    monkeypatch.setattr(factory, "AGENT_ENGINES", {"hermes": _WritesNothing})
+    monkeypatch.setattr(factory, "available_engines", lambda: ["hermes"])
+
+    seen = {}
+
+    def fake_evolve(root, *, goals, gate, **kwargs):
+        seen["gate"] = gate
+        seen["goals"] = list(goals)
+        return []
+
+    monkeypatch.setattr("thot.evolve.evolve", fake_evolve)
+    (tmp_path / "repo" / "src").mkdir(parents=True)
+    seen["repo"] = tmp_path / "repo"
+    return seen
+
+
+def test_evolve_with_neither_a_goal_nor_a_measurement_to_take_one_from_is_refused(
+    evolve_judge, capsys,
+):
+    """`goal` became optional so `--from-bench` could supply it. Optional and
+    absent is a loop with nothing to do, and argparse cannot say that.
+
+    The fixture is here for the failure case rather than the passing one:
+    `--path` defaults to the working directory, so a regression that let this
+    through would otherwise turn an agent loose on the repository under test.
+    """
+    code = cli.main(["evolve"])
+
+    assert code == 2
+    assert "--from-bench" in capsys.readouterr().err
+
+
+def test_without_a_corpus_the_judge_stays_thots_opinion_of_itself(evolve_judge):
+    """The behaviour that was there before the corpus existed, unchanged."""
+    from thot.evolve import DEFAULT_GUARDS, thot_metrics
+
+    code = cli.main(["evolve", "corriger", "xss", "--path", str(evolve_judge["repo"])])
+
+    assert code == 0
+    assert evolve_judge["gate"].guards == DEFAULT_GUARDS
+    assert evolve_judge["gate"].metrics is thot_metrics
+    assert evolve_judge["goals"] == ["corriger xss"]
+
+
+def test_naming_a_corpus_moves_the_judge_onto_numbers_thot_did_not_compute(
+    evolve_judge, capsys, tmp_path
+):
+    """No test in this repository asserts a detection rate, so a rule that
+    stops firing passes green. That is what the corpus is for, and the line
+    printed before the run has to name the guards actually in force."""
+    from thot.evolve import BENCH_GUARDS
+
+    code = cli.main(["evolve", "corriger xss", "--corpus", str(tmp_path / "bp"),
+                     "--hold-out", "django", "--path", str(evolve_judge["repo"])])
+
+    assert code == 0
+    assert evolve_judge["gate"].guards == BENCH_GUARDS
+    printed = " ".join(capsys.readouterr().out.split())
+    assert "youden_holdout" in printed
+    assert "django tenue à l'écart" in printed
+
+
+def test_sans_mesure_wins_over_a_named_corpus_and_says_what_that_costs(
+    evolve_judge, capsys, tmp_path
+):
+    """The escape hatch has to stay an escape hatch: asked for both, the
+    command judges on the tests alone rather than quietly keeping the
+    expensive guard the flag exists to drop."""
+    code = cli.main(["evolve", "corriger xss", "--corpus", str(tmp_path / "bp"),
+                     "--sans-mesure", "--path", str(evolve_judge["repo"])])
+
+    assert code == 0
+    assert evolve_judge["gate"].metrics is None
+    assert evolve_judge["gate"].guards == {}
+    assert "régression silencieuse" in capsys.readouterr().out
+
+
+def test_from_bench_takes_the_goals_from_the_measurement(
+    evolve_judge, monkeypatch, tmp_path, capsys
+):
+    """The loop could only ever chase what a human already suspected. A goal
+    built from the score is the program saying where it is weakest in numbers
+    it did not choose."""
+    from thot.bench.score import Score, Tally
+
+    measured = Score(suite="total",
+                     by_category={"xxe": Tally(tp=0, fp=50, fn=50, tn=0),
+                                  "sqli": Tally(tp=40, fp=2, fn=10, tn=48)},
+                     cwe={"xxe": 611, "sqli": 89})
+    monkeypatch.setattr("thot.bench.run.measure_all",
+                        lambda path, **kwargs: ([measured], measured))
+
+    code = cli.main(["evolve", "--from-bench", "--corpus", str(tmp_path / "bp"),
+                     "--path", str(evolve_judge["repo"])])
+
+    assert code == 0
+    assert "xxe" in evolve_judge["goals"][0]
+    assert "inversée" in evolve_judge["goals"][0]
+    # Named with `goal_key`, which is what the ledger files them under: the
+    # names on the screen and the names `recall` matches on are one list.
+    assert "les pires d'abord : xxe, sqli" in " ".join(capsys.readouterr().out.split())
+
+
+def test_a_measurement_that_names_nothing_stops_the_loop_instead_of_starting_it(
+    evolve_judge, monkeypatch, tmp_path, capsys
+):
+    """`--from-bench` with no target is not an empty run to be reported at the
+    end; it is a run that must not let an agent near the source."""
+    from thot.bench.score import Score
+
+    monkeypatch.setattr("thot.bench.run.measure_all",
+                        lambda path, **kwargs: ([], Score(suite="total")))
+
+    code = cli.main(["evolve", "--from-bench", "--corpus", str(tmp_path / "bp"),
+                     "--path", str(evolve_judge["repo"])])
+
+    assert code == 2
+    assert "gate" not in evolve_judge
+    assert "aucune catégorie" in capsys.readouterr().err.lower()
+
+
+def test_a_corpus_that_cannot_be_read_stops_from_bench_rather_than_starting_blind(
+    evolve_judge, tmp_path, capsys
+):
+    code = cli.main(["evolve", "--from-bench", "--corpus",
+                     str(tmp_path / "nowhere"),
+                     "--path", str(evolve_judge["repo"])])
+
+    assert code == 2
+    assert "gate" not in evolve_judge
+    assert "corpus" in capsys.readouterr().err.lower()
+
+
+def test_the_fused_loop_refuses_with_a_way_out_when_an_agent_is_missing(
+    evolve_judge, monkeypatch, capsys
+):
+    """Two agents doing different work, or neither: a fused run that quietly
+    fell back to one agent would attribute its own history to the wrong one."""
+    import thot.engine.factory as factory
+    from thot.engine.cascade import NoAgents
+
+    def refuse(root, **kwargs):
+        raise NoAgents("aucun des deux n'est joignable")
+
+    monkeypatch.setattr(factory, "build_cascade", refuse)
+
+    code = cli.main(["evolve", "corriger xss", "--fused",
+                     "--path", str(evolve_judge["repo"])])
+
+    assert code == 2
+    assert "fusion status" in capsys.readouterr().err
+    assert "gate" not in evolve_judge

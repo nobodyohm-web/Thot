@@ -7,7 +7,10 @@ Three levels of propagation, all deliberately bounded:
 2. **Return-value** — a function that returns tainted data marks its callers'
    assignment targets as tainted, so ``x = read_input(); sink(x)`` is caught.
 3. **Parameter** — a function whose parameter reaches a sink becomes a
-   propagator; any caller passing tainted data into it extends the path.
+   propagator; any caller passing tainted data into *that* parameter extends
+   the path. Which parameter an argument fills is read from the call site,
+   so `helper(untrusted, "ls")` against `def helper(safe, cmd)` extends
+   nothing: the data lands in `safe`, and only `cmd` reaches a sink.
 
 Levels 2 and 3 are resolved by a small fixed-point loop bounded by
 ``max_depth`` iterations.
@@ -22,11 +25,14 @@ from __future__ import annotations
 import ast
 import re
 from functools import lru_cache
-from dataclasses import dataclass, field
+from collections.abc import Mapping
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 
 from thot.codemap.catalog import (
     active,
+    impact_for,
+    is_html_sanitizer,
     is_sanitizer,
     match_entry,
     match_sink,
@@ -34,6 +40,7 @@ from thot.codemap.catalog import (
     using,
 )
 from thot.codemap.graph import CodeGraph
+from thot.codemap.index import PYTHON_SUFFIXES
 from thot.codemap.python_indexer import _called_name
 from thot.contracts import CodeRef, Severity, Symbol
 
@@ -48,6 +55,10 @@ class TaintCandidate:
     path: tuple[CodeRef, ...]
     impact: Severity
     description: str
+    # Which source rule started this path — `source.argv`, `source.http`.
+    # Empty when the engine could not name it: a parameter seeded by a caller
+    # it never resolved. Half of how serious a file-path finding is.
+    source_rule: str = ""
 
 
 def _expression_name(node: ast.AST) -> str | None:
@@ -71,25 +82,68 @@ def _expression_name(node: ast.AST) -> str | None:
     return None
 
 
-def _referenced_names(node: ast.AST) -> set[str]:
+def _target_names(node: ast.AST) -> list[str]:
+    """Every name an assignment target binds.
+
+    `ast.Attribute` renders dotted, because that is exactly what
+    `_referenced_names` produces when the same attribute is later read:
+    `box.host = ...` then `os.system(box.host)` has to match on both sides.
+    """
+    if isinstance(node, ast.Name):
+        return [node.id]
+    if isinstance(node, ast.Attribute):
+        name = _expression_name(node)
+        return [name] if name else []
+    if isinstance(node, ast.Starred):
+        return _target_names(node.value)
+    if isinstance(node, (ast.Tuple, ast.List)):
+        return [name for element in node.elts for name in _target_names(element)]
+    return []
+
+
+def _referenced_names(node: ast.AST, *, through_sanitizers: bool = False) -> set[str]:
     """Every identifier an expression reads, following composite expressions.
 
     Concatenations, f-strings, `%` formatting and `.format()` calls all carry
     taint — an injection almost always travels through one of them, so a
     `Name`-only view of arguments misses most real defects.
 
+    A dotted name is added *alongside* the expression it was read from, not
+    instead of it. `handle.read()` renders as `handle.read`, which is a name
+    nothing ever binds — the map holds `handle` — so returning only the
+    dotted form dropped the taint of every method call and every attribute
+    read. Both go in: `handle.read` for the `box.host = ...` case, where the
+    attribute is what was assigned, and `handle` for this one.
+
     Recursion stops at a sanitizing call: `shlex.quote(x)` reads `x` but does
-    not propagate its taint.
+    not propagate its taint. `through_sanitizers` lifts that, for the one
+    caller that needs it — see `except ... as` below.
     """
     names: set[str] = set()
 
     def visit(current: ast.AST) -> None:
+        if isinstance(current, ast.IfExp) and not through_sanitizers \
+                and _literal_choice(current):
+            # `flag = "true" if value.lower() in ("true", "1") else "false"`
+            # reads `value` and cannot carry it: whatever the attacker sends,
+            # what comes out is one of two strings the author wrote. Reading
+            # the test as propagation was 54 of the 150 false positives in
+            # `codeinj` and 0 of its true positives, measured over 18 300
+            # labelled cases with none lost.
+            #
+            # `through_sanitizers` is honoured because the one caller that
+            # sets it — `except ... as` — wants what the protected block was
+            # *working on*, and a refused value escapes through the message
+            # whatever branch the expression would have taken.
+            return
         if isinstance(current, ast.Call):
             called = _called_name(current)
-            if called and is_sanitizer(called):
+            if called and is_sanitizer(called) and not through_sanitizers:
                 return
             if called:
                 names.add(called)
+            if isinstance(current.func, ast.Attribute):
+                visit(current.func.value)
             for argument in current.args:
                 visit(argument)
             for keyword in current.keywords:
@@ -102,12 +156,28 @@ def _referenced_names(node: ast.AST) -> set[str]:
             full = _expression_name(current)
             if full:
                 names.add(full)
+            visit(current.value)
             return
         for child in ast.iter_child_nodes(current):
             visit(child)
 
     visit(node)
     return names
+
+
+def _literal_choice(node: ast.IfExp) -> bool:
+    """A conditional expression every branch of which is a constant.
+
+    Nested on purpose: `"a" if x else ("b" if y else "c")` chooses between
+    three constants and carries no more than the flat form does.
+    """
+    for branch in (node.body, node.orelse):
+        if isinstance(branch, ast.IfExp):
+            if not _literal_choice(branch):
+                return False
+        elif not isinstance(branch, ast.Constant):
+            return False
+    return True
 
 
 def _is_literal_true(node: ast.AST) -> bool:
@@ -140,38 +210,547 @@ def _sink_applies(rule_id: str, node: ast.Call) -> bool:
     return True
 
 
+def _plain_name(node: ast.AST) -> str | None:
+    """The name a guard constrains, seen through a harmless coercion.
+
+    `re.fullmatch(pattern, str(data))` constrains `data` exactly as
+    `re.fullmatch(pattern, data)` does — `str` and `int` cannot widen what
+    the pattern then has to accept.
+    """
+    if isinstance(node, ast.Call) and _called_name(node) in ("str", "int") \
+            and len(node.args) == 1:
+        return _plain_name(node.args[0])
+    return node.id if isinstance(node, ast.Name) else None
+
+
+def _all_literals(node: ast.AST) -> bool:
+    return (isinstance(node, (ast.Tuple, ast.List, ast.Set))
+            and bool(node.elts)
+            and all(isinstance(element, ast.Constant) for element in node.elts))
+
+
+def _enumerates(pattern: object) -> bool:
+    """Whether a `fullmatch` pattern says what is *allowed*, not what is not.
+
+    `re.fullmatch(r"[a-z0-9_-]+", value)` enumerates a character set and is
+    the shape this guard exists for. `re.fullmatch(r"^[^\x00-\x08]+$", value)`
+    wears the same clothes and forbids one control character out of a
+    million: everything else — quotes, semicolons, backticks, newlines —
+    passes. Anchoring is not the property that matters; a negated class is a
+    deny-list whatever it is anchored to, and a deny-list is unbounded by
+    construction, which is exactly why `re.search` is refused two lines up.
+    
+    Measured: 309 vulnerable cases across some forty categories carry this
+    disguise, and honouring it cost 24 true positives — 9 in `eval_injection`,
+    9 in `sqli`, 3 each in `cmdi` and `codeinj` — for no false positive
+    prevented anywhere.
+    """
+    return isinstance(pattern, str) and "[^" not in pattern
+
+
+# The two shapes a web application uses to prove a URL is allowed, and the
+# origins each one is only trustworthy from.
+#
+# Measured over 18 300 labelled cases: 234 files guard on a host allow-list
+# and 216 on the resolved address's range, and **every one of the 450 is
+# labelled safe** — no vulnerable case in any category carries either shape.
+# Recognising them takes `ssrf` from J -8 % to +64 % and `cloud_ssrf_metadata`
+# from 0 % to +79 %, destroying no true positive anywhere.
+#
+# Both origin requirements below are load-bearing, and neither is cosmetic.
+# Without them `payload.host` on an arbitrary object clears taint — an
+# adversarial probe turned a real `os.system` finding into silence — so a
+# guard is honoured only when the thing it constrains provably came from a
+# URL parser or a name resolver.
+_HOST_ATTRS = frozenset({"hostname", "netloc", "host"})
+_URL_PARSERS = frozenset({
+    "urlparse", "urlsplit", "urllib.parse.urlparse", "urllib.parse.urlsplit",
+})
+_RESOLVERS = frozenset({
+    "socket.gethostbyname", "socket.gethostbyname_ex", "socket.getaddrinfo",
+    "gethostbyname", "getaddrinfo",
+})
+_IP_CONSTRUCTORS = frozenset({
+    "ipaddress.ip_address", "ipaddress.ip_network",
+    "ip_address", "ip_network",
+})
+# Properties that answer "is this address in a range nobody outside may
+# reach". `is_global` is deliberately absent: it is the negation, and the
+# guards that use it refuse the *public* case, which is the opposite policy.
+_IP_RANGE_PROPS = frozenset({
+    "is_private", "is_link_local", "is_loopback", "is_reserved",
+    "is_multicast", "is_unspecified",
+})
+
+
+def _closure(roots: set[str], derives: Mapping[str, frozenset[str]]) -> set[str]:
+    """Every name the guarded value was built from, transitively.
+
+    A guard reads `parsed.hostname`; the sink reads `target_url`, three
+    assignments away. Clearing only what the test names clears nothing that
+    matters, so the derivation chain is walked back to its source.
+    """
+    seen: set[str] = set()
+    pending = list(roots)
+    while pending:
+        name = pending.pop()
+        if name in seen:
+            continue
+        seen.add(name)
+        pending.extend(derives.get(name, ()))
+    return seen
+
+
+def _base_name(node: ast.AST) -> str | None:
+    """The bare identifier an attribute chain hangs off, if it is one."""
+    while isinstance(node, ast.Attribute):
+        node = node.value
+    return node.id if isinstance(node, ast.Name) else None
+
+
+def _came_from(name: str | None, sources: frozenset[str],
+               derives: Mapping[str, frozenset[str]]) -> bool:
+    """Whether a name was assigned from a call in `sources`.
+
+    `_referenced_names` records the called name alongside the arguments, so
+    the assignment `parsed = urlparse(data)` leaves `urlparse` in `parsed`'s
+    derivation — which is exactly the evidence needed and costs no extra
+    bookkeeping.
+    """
+    if name is None:
+        return False
+    return bool(sources & set(derives.get(name, ())))
+
+
+def _host_allow_listed(test: ast.Compare,
+                       derives: Mapping[str, frozenset[str]]) -> set[str]:
+    """`if parsed.hostname not in ("a.example", "b.example"): return`."""
+    left = test.left
+    if not isinstance(left, ast.Attribute) or left.attr not in _HOST_ATTRS:
+        return set()
+    base = _base_name(left)
+    if not _came_from(base, _URL_PARSERS, derives):
+        return set()
+    return _closure({base} if base else set(), derives)
+
+
+def _range_checked(test: ast.AST,
+                   derives: Mapping[str, frozenset[str]]) -> set[str]:
+    """`if ipaddress.ip_address(resolved).is_private: return`.
+
+    The address has to have been *resolved* — the check is worth nothing on
+    a hostname — so the constructor's argument must trace back to a name
+    resolver. Without that requirement any attribute called `is_private` on
+    any object would launder a value.
+    """
+    if not isinstance(test, ast.Attribute) or test.attr not in _IP_RANGE_PROPS:
+        return set()
+    call = test.value
+    if not isinstance(call, ast.Call) or _called_name(call) not in _IP_CONSTRUCTORS:
+        return set()
+    if not call.args:
+        return set()
+    roots = {name for name in _referenced_names(call.args[0])
+             if name in derives or name.isidentifier()}
+    resolved = {name for name in roots if _came_from(name, _RESOLVERS, derives)}
+    if not resolved:
+        return set()
+    return _closure(resolved, derives)
+
+
+def _refuses(body: list[ast.stmt]) -> bool:
+    """Whether reaching this block means the function stops here."""
+    return bool(body) and isinstance(body[-1], (ast.Return, ast.Raise))
+
+
+# Sinks a proof about *where a value goes* is allowed to clear. A host
+# allow-list and a resolved-address range check both say the request will not
+# reach somewhere forbidden; neither says anything about the value's shape.
+#
+# This distinction is not theoretical. An adversarial probe on the first
+# version of this code:
+#
+#     resolved = socket.gethostbyname(parsed.hostname or url)
+#     if ipaddress.ip_address(resolved).is_private:
+#         return "blocked", 403
+#     os.system("curl -s " + url)          # <- silenced, and exploitable
+#
+# The guard is a correct SSRF defence and says nothing at all about the shell
+# metacharacters still in the string. Clearing taint outright bought 174 true
+# false-positive removals and one silent command-injection blind spot, which
+# is not a trade worth making.
+# A destination proof is only worth what it proves *about that destination*.
+# A resolved-address range check says the request will not reach a private
+# host; a path-confinement check says the open() will not leave a directory.
+# Neither says one word about the other, and neither says anything about the
+# value's shape — so each is keyed to the sinks it actually covers.
+_DESTINATION_PROOFS: dict[str, frozenset[str]] = {
+    "network": frozenset({"sink.network"}),
+    "path": frozenset({"sink.fs.read", "sink.fs.write"}),
+    "html": frozenset({"sink.xss"}),
+}
+
+
+def _proves_for(rule_id: str) -> tuple[str, ...]:
+    return tuple(family for family, sinks in _DESTINATION_PROOFS.items()
+                 if rule_id in sinks)
+
+
+def _resolves_path(node: ast.AST) -> bool:
+    """Whether an expression yields an already-resolved filesystem path.
+
+    `realpath` and `Path(...).resolve()` are *transformations*, never
+    neutralisations — `realpath("/var/app/data/../../etc/passwd")` is
+    `/etc/passwd`, and the corpus proves the point with 15 vulnerable cases
+    whose only defence is `normpath`. What protects is the guard that
+    *follows*, and this only says the guard has something meaningful to
+    compare.
+    """
+    if not isinstance(node, ast.Call):
+        return False
+    if (_called_name(node) or "") in ("os.path.realpath", "realpath"):
+        return True
+    # Read structurally, not by name: `_called_name` renders both
+    # `Path("/var/app/data").resolve()` and `(base / data).resolve()` as the
+    # bare string "resolve", so matching on a dotted name finds neither.
+    return isinstance(node.func, ast.Attribute) and node.func.attr == "resolve"
+
+
+def _constant_rooted_path(node: ast.AST) -> bool:
+    """`Path("/var/app/data").resolve()` — resolved, and from a constant.
+
+    Required of the *base* a containment check compares against. Against a
+    base the attacker supplied — `Path(request.GET["root"]).resolve()` — the
+    same check confines the candidate under a directory they chose, which
+    proves nothing while looking exactly like a defence.
+    """
+    if not (isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+            and node.func.attr == "resolve"):
+        return False
+    inner = node.func.value
+    return (isinstance(inner, ast.Call)
+            and (_called_name(inner) or "").split(".")[-1] == "Path"
+            and len(inner.args) == 1
+            and isinstance(inner.args[0], ast.Constant))
+
+
+def _prefix_confined(test: ast.AST, derives: Mapping[str, frozenset[str]],
+                     constants: frozenset[str]) -> set[str]:
+    """`if not full_path.startswith(base_dir + os.sep): return`.
+
+    The prefix has to be constant. Against a base the attacker chose, the
+    check confines the path under a directory they picked, which proves
+    nothing at all.
+    """
+    if not isinstance(test, ast.UnaryOp) or not isinstance(test.op, ast.Not):
+        return set()
+    call = test.operand
+    if not isinstance(call, ast.Call) or not isinstance(call.func, ast.Attribute):
+        return set()
+    if call.func.attr != "startswith" or not call.args:
+        return set()
+    argument = call.args[0]
+    roots = {name for name in _referenced_names(argument)}
+    if not roots <= (constants | {"os.sep", "os.path.sep", "os"}):
+        return set()
+    receiver = _base_name(call.func.value)
+    return _closure({receiver}, derives) if receiver else set()
+
+
+def _parents_confined(test: ast.AST, derives: Mapping[str, frozenset[str]],
+                      confined: frozenset[str]) -> set[str]:
+    """`if base not in candidate.parents and candidate != base: return`.
+
+    `base` must itself be a resolved path built from a constant, for the same
+    reason the prefix must be constant above.
+    """
+    parts = test.values if isinstance(test, ast.BoolOp) else [test]
+    for part in parts:
+        if not isinstance(part, ast.Compare) or len(part.ops) != 1:
+            continue
+        if not isinstance(part.ops[0], ast.NotIn):
+            continue
+        base = _plain_name(part.left)
+        if base not in confined:
+            continue
+        target = part.comparators[0]
+        if not isinstance(target, ast.Attribute) or target.attr != "parents":
+            continue
+        candidate = _base_name(target)
+        if candidate:
+            return _closure({candidate}, derives)
+    return set()
+
+
+def _destination_validated(statement: ast.If,
+                           derives: Mapping[str, frozenset[str]],
+                           constants: frozenset[str] = frozenset(),
+                           confined: frozenset[str] = frozenset(),
+                           ) -> dict[str, set[str]]:
+    """Names a guard has proved will not reach a forbidden destination.
+
+    Keyed by which family of sinks the proof covers; see `_DESTINATION_PROOFS`
+    for why one global answer would be unsound.
+    """
+    if statement.orelse or not _refuses(statement.body):
+        return {}
+
+    test = statement.test
+    proved: dict[str, set[str]] = {}
+
+    if isinstance(test, ast.Compare) and len(test.ops) == 1 \
+            and isinstance(test.ops[0], ast.NotIn) \
+            and _all_literals(test.comparators[0]) \
+            and _plain_name(test.left) is None:
+        hosts = _host_allow_listed(test, derives)
+        if hosts:
+            proved["network"] = hosts
+
+    ranged = _range_checked(test, derives)
+    if ranged:
+        proved["network"] = proved.get("network", set()) | ranged
+
+    confined = (_prefix_confined(test, derives, constants)
+                or _parents_confined(test, derives, confined))
+    if confined:
+        proved["path"] = confined
+
+    return proved
+
+
+def _validated_names(statement: ast.If,
+                     derives: Mapping[str, frozenset[str]] | None = None,
+                     literals: frozenset[str] = frozenset()) -> set[str]:
+    """Names a guard clause has constrained to a literal shape.
+
+    ``if data not in ('asc', 'desc'): return`` and
+    ``if not re.fullmatch(r'[a-z0-9_-]+', data): return`` both mean the same
+    thing to everything below them: execution only continues for a value the
+    author enumerated or spelled out. Treating that value as untrusted after
+    the guard is not caution, it is a false positive — measured on 300
+    labelled safe cases, 235 of them are exactly this shape, and they were
+    the bulk of every false positive this engine produced.
+
+    Only *literal* constraints count, and only two of them:
+
+    * membership in a collection of constants — an allow-list;
+    * ``re.fullmatch`` against a constant pattern — anchored at both ends.
+
+    Everything else the corpus offers is deliberately refused, because it
+    constrains nothing this engine can verify:
+
+    * ``re.match`` is anchored only at the start, so ``ok\n; rm -rf /``
+      passes a pattern that looks restrictive;
+    * ``if not auth_check(x): return`` is an unknown function — it may check
+      a password and never look at the value's shape at all;
+    * ``if len(x) > 8192: return`` bounds a size, not a content;
+    * ``if re.search(bad, x): return`` is a deny-list, and a deny-list is
+      unbounded by construction.
+
+    Refusing those is what keeps this from being a way to silence findings.
+    """
+    if statement.orelse or not _refuses(statement.body):
+        return set()
+
+    test = statement.test
+    derives = derives if derives is not None else {}
+
+    # `if x not in (...): return`
+    if isinstance(test, ast.Compare) and len(test.ops) == 1 \
+            and isinstance(test.ops[0], ast.NotIn) \
+            and (_all_literals(test.comparators[0])
+                 or _plain_name(test.comparators[0]) in literals):
+        # The allow-list written inline and the one given a name are the same
+        # guard; only the syntax differs. Refusing the second cost 33 false
+        # positives in `pathtraver` alone, and `allowed = {"config.json",
+        # "index.html"}` two lines above the check is how anybody actually
+        # writes it.
+        name = _plain_name(test.left)
+        return {name} if name else set()
+
+    # `if not re.fullmatch('...', x): return`
+    if isinstance(test, ast.UnaryOp) and isinstance(test.op, ast.Not) \
+            and isinstance(test.operand, ast.Call):
+        call = test.operand
+        if _called_name(call) in ("re.fullmatch", "fullmatch") \
+                and len(call.args) >= 2 \
+                and isinstance(call.args[0], ast.Constant) \
+                and _enumerates(call.args[0].value):
+            name = _plain_name(call.args[1])
+            return {name} if name else set()
+
+    return set()
+
+
+@dataclass(frozen=True)
+class _Handoff:
+    """One identifier read inside one argument of a non-sink call.
+
+    `slot` is what the call site says about *where* that argument lands: an
+    `int` for a position, a `str` for a keyword, and `None` when the syntax
+    settles nothing — `f(*rest)` spreads an unknown number of values, and
+    `f(**options)` names none of them.
+
+    Nothing here records whether the call was written `obj.method(...)`:
+    the call site cannot tell a bound call from an unbound one — `Cls.m(obj,
+    x)` and `obj.m(x)` are both an `ast.Attribute`, and `Runner().go(x)`
+    renders as a bare `go` with no dot at all. The callee's own signature is
+    what says whether a receiver takes the first slot.
+    """
+
+    callee: str
+    name: str
+    ref: CodeRef
+    slot: int | str | None
+
+
+def _argument_slots(node: ast.Call) -> list[tuple[ast.AST, int | str | None]]:
+    """Each argument of a call, paired with the slot it fills.
+
+    A starred argument consumes an unknown number of positions, so it and
+    everything after it are unknown rather than merely shifted.
+    """
+    slots: list[tuple[ast.AST, int | str | None]] = []
+    position: int | None = 0
+    for argument in node.args:
+        if isinstance(argument, ast.Starred):
+            slots.append((argument.value, None))
+            position = None
+            continue
+        slots.append((argument, position))
+        if position is not None:
+            position += 1
+    # `keyword.arg` is already `None` for `**options`, which is exactly the
+    # "settles nothing" slot.
+    slots.extend((keyword.value, keyword.arg) for keyword in node.keywords)
+    return slots
+
+
+def _params_filled(params: tuple[str, ...],
+                   slot: int | str | None) -> tuple[str, ...] | None:
+    """The callee parameters an argument in this slot can fill.
+
+    `None` means *any of them* — the answer this engine assumed for every
+    call before slots were tracked, kept for the cases the syntax leaves
+    open so that an unresolved position never silently drops a real path.
+
+    The result is always a subset of what `None` would have allowed, so
+    tracking slots can only ever remove a finding, never invent one.
+
+    A receiver is skipped on the callee's word alone: a method is nearly
+    always called bound, and the unbound `Cls.m(obj, x)` — the one shape
+    this reads one slot short — is rare enough to be worth the trade.
+    """
+    if slot is None:
+        return None
+    if isinstance(slot, str):
+        return (slot,) if slot in params else ()
+    index = slot + 1 if params[:1] and params[0] in ("self", "cls") else slot
+    # Past the end means the value landed in a `*args` the indexer does not
+    # name, and a parameter with no name has no sink registered against it.
+    return (params[index],) if index < len(params) else ()
+
+
 @dataclass
 class _Facts:
     """What one function body does with data, before cross-function resolution."""
 
     symbol: Symbol
     tainted: dict[str, CodeRef] = field(default_factory=dict)
+    # variable -> the id of the source rule its taint came from, when known.
+    origin_rule: dict[str, str] = field(default_factory=dict)
+    # variable -> the parameter it was derived from. `target = path.strip()`
+    # keeps the link to `path`, so a sink reached through `target` is still
+    # registered against the parameter a caller fills — without it the chain
+    # broke at the first local, and the path was reported from inside the
+    # helper, starting nowhere.
+    from_param: dict[str, str] = field(default_factory=dict)
     returns_taint: bool = False
+    returns_rule: str = ""
     param_sinks: dict[str, list[tuple[str, CodeRef]]] = field(default_factory=dict)
+    # Membership index for `param_sinks`, built lazily by the fixed point. The
+    # list keeps the insertion order the report depends on; scanning it to
+    # dedupe is quadratic in what a parameter accumulates — measured on
+    # hermes/: 4.5 M membership tests walking 121 M entries.
+    merged: dict[str, set[tuple[str, CodeRef]]] = field(default_factory=dict)
+    # Names a guard proved safe *for a destination*, not in themselves. Kept
+    # apart from `tainted` on purpose: popping them there would clear every
+    # sink, and an SSRF guard is not an argument-injection guard.
+    destination_safe: dict[str, set[str]] = field(default_factory=dict)
     sink_calls: list[tuple[str, CodeRef, tuple[str, ...]]] = field(default_factory=list)
-    calls_out: list[tuple[str, str, CodeRef]] = field(default_factory=list)
+    calls_out: list[_Handoff] = field(default_factory=list)
     assigns_from_call: list[tuple[str, str, CodeRef]] = field(default_factory=list)
 
 
-def index_function_nodes(
-    root: Path, paths: set[str]
-) -> dict[tuple[str, int], ast.AST]:
-    """Parse each file once and index every function body by (path, line).
+def _sinks_reached(callee: _Facts,
+                   handoff: _Handoff) -> list[list[tuple[str, CodeRef]]]:
+    """The callee's sink lists this one argument can actually reach.
 
-    Parsing per symbol instead would re-read and re-parse a file as many times
-    as it has functions — quadratic on any real repository.
+    Copied rather than aliased: a self-recursive call has the caller append
+    to the very list being read, and `list()` on the dict alone left the
+    inner lists live.
     """
-    index: dict[tuple[str, int], ast.AST] = {}
-    for relative in paths:
-        try:
-            source = (root / relative).read_text(encoding="utf-8", errors="replace")
-            tree = ast.parse(source)
-        except (SyntaxError, ValueError, OSError, RecursionError):
-            continue
-        for node in ast.walk(tree):
-            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
-                index[(relative, node.lineno)] = node
-    return index
+    filled = _params_filled(callee.symbol.params, handoff.slot)
+    if filled is None:
+        return [list(sinks) for sinks in callee.param_sinks.values()]
+    return [list(callee.param_sinks[name])
+            for name in filled if name in callee.param_sinks]
+
+
+def function_nodes(path: Path) -> dict[int, ast.AST]:
+    """Every function body in one file, by the line it starts on.
+
+    One parse per file, and the caller is expected to drop the result before
+    moving to the next one. Parsing per symbol would re-read and re-parse a
+    file as many times as it has functions; holding every file's bodies at
+    once is the other extreme, and it is the expensive one — measured on
+    hermes/ (4457 files, 75 243 bodies), keeping them all alive costs 2035 MB
+    of peak RSS and 19.8 s against 136 MB and 12.3 s one file at a time.
+    """
+    try:
+        source = path.read_text(encoding="utf-8", errors="replace")
+        tree = ast.parse(source)
+    except (SyntaxError, ValueError, OSError, RecursionError):
+        return {}
+    return {
+        node.lineno: node
+        for node in ast.walk(tree)
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+    }
+
+
+# Methods that put a value *into* the thing they are called on. Taint has to
+# follow, and it did not: measured on a labelled corpus, 27 % of the cases
+# still missed in categories where Thot already has a working rule are this
+# one shape —
+#
+#     parts = []
+#     for token in str(cookie_value).split(","):
+#         parts.append(token.strip())
+#     db.execute("SELECT * FROM users WHERE id = " + ",".join(parts))
+#
+# `parts` was assigned an empty list and never re-assigned, so nothing in the
+# walk ever made it untrusted, and the sink saw a clean name. Following a
+# value into a container is ordinary taint analysis; leaving it out made the
+# engine's answer depend on whether the author used a list.
+CONTAINER_MUTATORS = frozenset({
+    "append", "add", "extend", "insert", "update", "setdefault",
+})
+
+
+def _mutated_container(node: ast.Call) -> str | None:
+    """The name a call mutates in place, or None.
+
+    Only a bare name is answered for. `self.items.append(x)` and
+    `rows[0].append(x)` mutate something the engine does not track as a name,
+    and inventing one would taint a name that does not exist.
+    """
+    target = node.func
+    if not isinstance(target, ast.Attribute):
+        return None
+    if target.attr not in CONTAINER_MUTATORS:
+        return None
+    return target.value.id if isinstance(target.value, ast.Name) else None
 
 
 def _ordered_nodes(node: ast.AST) -> list[ast.AST]:
@@ -184,24 +763,45 @@ def _ordered_nodes(node: ast.AST) -> list[ast.AST]:
 _IMPORT_LINE = re.compile(r"^\s*(?:import|from)\s+([A-Za-z_][\w.]*)", re.M)
 
 
-@lru_cache(maxsize=8192)
-def _imported_modules(path: Path) -> frozenset[str]:
-    """The modules a file imports, read from its import lines.
+# A query written out in the file. Stronger evidence than an import: an
+# import says a database library is reachable, this says SQL is being
+# composed right here — whatever local wrapper ends up executing it.
+_SQL_TEXT = re.compile(
+    r"\b(?:SELECT\s+.*?\bFROM\b|INSERT\s+INTO\b|UPDATE\s+.*?\bSET\b"
+    r"|DELETE\s+FROM\b|CREATE\s+TABLE\b|DROP\s+TABLE\b)",
+    re.I | re.S,
+)
 
+
+@lru_cache(maxsize=8192)
+def _file_gates(path: Path) -> frozenset[str]:
+    """What a file offers to satisfy a rule's `needs`.
+
+    Its import names, plus markers for evidence that is not an import at all.
     Textual rather than parsed, for the reason the JavaScript catalog gives
     for the same gate: the indexer has already paid for one parse of every
     file, and an import sitting in a comment costs a gate that fires once too
     often — never one that fires too rarely.
+
+    `sql:text` is the marker that pays for itself. Gating `execute` on a
+    database import was right — the name belongs to a cursor, an LLM relay
+    and a pipeline alike — but it assumed the database is imported where the
+    query is written. Most code hides it behind a local wrapper: measured on
+    100 labelled SQL-injection cases whose sink was `db.execute` after
+    `from app_runtime import db`, the import gate found **none of them**.
     """
     try:
         text = Path(path).read_text(encoding="utf-8", errors="replace")
     except OSError:
         return frozenset()
-    return frozenset(_IMPORT_LINE.findall(text))
+    gates = set(_IMPORT_LINE.findall(text))
+    if _SQL_TEXT.search(text):
+        gates.add("sql:text")
+    return frozenset(gates)
 
 
 def _available(rule, imported: frozenset[str]) -> bool:
-    """Whether a rule that names required modules can fire in this file."""
+    """Whether a rule that names required evidence can fire in this file."""
     if not rule.needs:
         return True
     return any(
@@ -214,7 +814,13 @@ def _available(rule, imported: frozenset[str]) -> bool:
 def _analyse_body(symbol: Symbol, node: ast.AST,
                   imported: frozenset[str] = frozenset()) -> _Facts:
     facts = _Facts(symbol=symbol)
-    params = set(symbol.params)
+    # `self` and `cls` are not input channels. Every other parameter is a
+    # value some caller chose and may therefore be untrusted; the receiver is
+    # the object the method is already part of, and its fields are tracked by
+    # name (`self.host`) anyway. Counting it made every `self.anything` read
+    # count as reading a parameter — measured on Hermes, that alone was most
+    # of a 285-candidate jump, including `for tbl in self._FTS_TABLES`.
+    params = set(symbol.params) - {"self", "cls"}
 
     # A function a registry calls has no caller in this graph, so its
     # parameters would stay merely "conditionally tainted" for ever — waiting
@@ -232,6 +838,28 @@ def _analyse_body(symbol: Symbol, node: ast.AST,
         for name in untrusted:
             facts.tainted[name] = seed
 
+    def carrier(names: set[str]) -> str | None:
+        """The earliest-tainted name in a set, or None.
+
+        Same choice `is_tainted` makes and for the same reason — set order is
+        randomised per process — pulled out so the caller can ask which name
+        answered, and inherit the source rule recorded against it.
+        """
+        found = [
+            (facts.tainted[name].line, name) for name in names
+            if name in facts.tainted
+        ]
+        return min(found)[1] if found else None
+
+    def matching_source(names: set[str]):
+        """The first source rule any of these names matches. Sorted: a set's
+        order would choose which rule a finding reported."""
+        for name in sorted(names):
+            rule = match_source(name)
+            if rule is not None:
+                return rule
+        return None
+
     def is_tainted(names: set[str]) -> CodeRef | None:
         """Return where the taint came from, or None.
 
@@ -243,12 +871,9 @@ def _analyse_body(symbol: Symbol, node: ast.AST,
         origins. A report that changes when nothing changed is a report
         nobody can diff.
         """
-        carriers = [
-            (facts.tainted[name].line, name) for name in names
-            if name in facts.tainted
-        ]
-        if carriers:
-            return facts.tainted[min(carriers)[1]]
+        held = carrier(names)
+        if held is not None:
+            return facts.tainted[held]
         for name in sorted(names):
             if match_source(name):
                 return None  # direct source: caller assigns the ref
@@ -259,38 +884,241 @@ def _analyse_body(symbol: Symbol, node: ast.AST,
     # has to hold within one version of the body, which `ast_hash` pins.
     call_ordinal: dict[str, int] = {}
 
+    def ref_at(child: ast.AST) -> CodeRef:
+        return CodeRef(path=symbol.path, line=child.lineno, symbol=symbol.name,
+                       ast_hash=symbol.ast_hash)
+
+    def bind(targets: list[ast.AST], value: ast.AST | None, ref: CodeRef,
+             extra: frozenset[str] = frozenset()) -> None:
+        """Taint what an assignment binds, whatever shape the assignment has.
+
+        `x = f()` is one way of many to bind a name, and following it alone
+        made the syntax decide whether a vulnerability existed: measured on a
+        file carrying the same `request.args` -> `os.system` path written
+        fourteen ways, 2 sites of 14 were reported, plus one that was not
+        there.
+        """
+        names = [name for target in targets for name in _target_names(target)]
+        if not names:
+            return
+
+        # Element to element when both sides line up, so `host, port =
+        # request.args.get("host"), 80` does not call the literal untrusted.
+        # A starred target eats an unknown slice of the right-hand side, so
+        # the arity no longer says which element goes where.
+        if (len(targets) == 1
+                and isinstance(targets[0], (ast.Tuple, ast.List))
+                and isinstance(value, (ast.Tuple, ast.List))
+                and len(targets[0].elts) == len(value.elts)
+                and not any(isinstance(e, ast.Starred) for e in targets[0].elts)):
+            for target, element in zip(targets[0].elts, value.elts):
+                bind([target], element, ref)
+            return
+
+        refs = _referenced_names(value) if value is not None else set()
+        refs |= extra
+
+        matched = matching_source(refs)
+        if matched is not None:
+            origin, came_from = ref, matched.id
+        else:
+            held = carrier(refs)
+            origin = facts.tainted[held] if held else None
+            came_from = facts.origin_rule.get(held, "") if held else ""
+            if origin is None and refs & params:
+                # A parameter may carry anything; which rule filled it is the
+                # caller's fact, and the fixed point supplies it if it can.
+                origin, came_from = ref, ""
+
+        if origin is not None:
+            # Sorted: which parameter is credited decides which caller the
+            # path is reported through, and a set's order would choose it.
+            direct = sorted(refs & params)
+            inherited = [facts.from_param[r] for r in sorted(refs)
+                         if r in facts.from_param]
+            root = (direct + inherited or [""])[0]
+            for name in names:
+                facts.tainted[name] = origin
+                facts.origin_rule[name] = came_from
+                if root:
+                    facts.from_param[name] = root
+                else:
+                    facts.from_param.pop(name, None)
+        elif isinstance(value, ast.Call):
+            called = _called_name(value)
+            if called and not is_sanitizer(called):
+                for name in names:
+                    facts.assigns_from_call.append(
+                        (name, called.rsplit(".", 1)[-1], ref)
+                    )
+
+    # An `ast.ExceptHandler` does not name the `try` it belongs to, and the
+    # block it caught is what decides what the bound name holds.
+    handler_bodies: dict[int, list] = {}
+    for found in ast.walk(node):
+        for handler in getattr(found, "handlers", ()):
+            handler_bodies[id(handler)] = getattr(found, "body", [])
+
+    # What each name was built from, accumulated in line order. A guard reads
+    # `parsed.hostname` while the sink reads `target_url` three assignments
+    # later; without the chain, clearing what the test names clears nothing
+    # that reaches anything. `_referenced_names` records the called name too,
+    # which is how `_came_from` can later tell a `urlparse` result from any
+    # other object carrying a `.host` attribute.
+    derives: dict[str, frozenset[str]] = {}
+    # What a name currently *is*, for the three guards that need to know.
+    # Rebound on every assignment and forgotten on every mutation, so a list
+    # that was all-literal and then had a request value appended stops
+    # counting as an allow-list at the line where that happens.
+    literal_names: set[str] = set()
+    constant_names: set[str] = set()
+    resolved_names: set[str] = set()
+    confined_bases: set[str] = set()
+
+    def forget(names: list[str]) -> None:
+        for name in names:
+            literal_names.discard(name)
+            constant_names.discard(name)
+            resolved_names.discard(name)
+            confined_bases.discard(name)
+
+    def note_derivation(targets: list[ast.AST], value: ast.AST | None) -> None:
+        names = [name for target in targets for name in _target_names(target)]
+        forget(names)
+        if value is None:
+            return
+        if len(names) != 1:
+            # Tuple unpacking gives no honest answer about which element fed
+            # which name, and a wrong chain here launders the wrong value.
+            return
+        name = names[0]
+        derives[name] = frozenset(_referenced_names(value))
+        if isinstance(value, ast.Call) and is_html_sanitizer(_called_name(value) or ""):
+            # Proved for HTML and for nothing else, so it goes with the other
+            # destination proofs rather than into `tainted`.
+            facts.destination_safe.setdefault("html", set()).add(name)
+        if _all_literals(value):
+            literal_names.add(name)
+        elif isinstance(value, ast.Constant) and isinstance(value.value, str):
+            constant_names.add(name)
+        elif isinstance(value, ast.BinOp) and _referenced_names(value) <= constant_names:
+            constant_names.add(name)
+        elif _resolves_path(value):
+            resolved_names.add(name)
+            if _constant_rooted_path(value):
+                confined_bases.add(name)
+        elif isinstance(value, ast.Name):
+            # `alias = allowed` is a second handle on the same object; the
+            # alias is only as trustworthy as what it points at right now.
+            for pool in (literal_names, constant_names, resolved_names,
+                         confined_bases):
+                if value.id in pool:
+                    pool.add(name)
+
     for child in _ordered_nodes(node):
         if isinstance(child, ast.Assign):
-            ref = CodeRef(path=symbol.path, line=child.lineno, symbol=symbol.name,
-                          ast_hash=symbol.ast_hash)
-            targets = [t.id for t in child.targets if isinstance(t, ast.Name)]
-            refs = _referenced_names(child.value)
+            note_derivation(child.targets, child.value)
+            bind(child.targets, child.value, ref_at(child))
 
-            origin = None
-            if any(match_source(name) for name in refs):
-                origin = ref
-            else:
-                origin = is_tainted(refs)
-                if origin is None and refs & params:
-                    origin = ref
+        elif isinstance(child, ast.AnnAssign):
+            if child.value is not None:
+                note_derivation([child.target], child.value)
+                bind([child.target], child.value, ref_at(child))
 
-            if origin is not None:
-                for target in targets:
-                    facts.tainted[target] = origin
-            elif isinstance(child.value, ast.Call):
-                called = _called_name(child.value)
-                if called and not is_sanitizer(called):
-                    for target in targets:
-                        facts.assigns_from_call.append(
-                            (target, called.rsplit(".", 1)[-1], ref)
-                        )
+        elif isinstance(child, ast.AugAssign):
+            # `command += " --now"` reads `command` too, so a constant on the
+            # right must not launder what the target already carried.
+            forget(list(_target_names(child.target)))
+            bind([child.target], child.value, ref_at(child),
+                 extra=frozenset(_target_names(child.target)))
+
+        elif isinstance(child, ast.NamedExpr):
+            bind([child.target], child.value, ref_at(child))
+
+        elif isinstance(child, ast.If):
+            # Nodes are walked in line order, so clearing here is exactly
+            # "from this guard onwards". `from_param` goes too: a name left
+            # linked to the parameter it came from would be re-tainted by the
+            # fixed point one level up, which is the same finding wearing a
+            # caller's name.
+            for family, names in _destination_validated(
+                    child, derives, frozenset(constant_names),
+                    frozenset(confined_bases)).items():
+                facts.destination_safe.setdefault(family, set()).update(names)
+            for name in _validated_names(child, derives,
+                                         frozenset(literal_names)):
+                facts.tainted.pop(name, None)
+                facts.origin_rule.pop(name, None)
+                facts.from_param.pop(name, None)
+
+        elif isinstance(child, (ast.For, ast.AsyncFor)):
+            bind([child.target], child.iter, ref_at(child))
+
+        elif isinstance(child, (ast.With, ast.AsyncWith)):
+            # Bound from the `with` and not from its `withitem`s: a withitem
+            # carries no `lineno`, and `_ordered_nodes` sorts on that — it
+            # would land at the top of the body, ahead of the assignments
+            # that really precede it, which is the one thing that walk order
+            # exists to prevent.
+            for item in child.items:
+                if item.optional_vars is not None:
+                    bind([item.optional_vars], item.context_expr, ref_at(child))
+
+        elif isinstance(child, (ast.ListComp, ast.SetComp, ast.DictComp,
+                                ast.GeneratorExp)):
+            # Same reason as `with`: `ast.comprehension` has no `lineno`, so
+            # the comprehension node itself carries the binding.
+            for generator in child.generators:
+                bind([generator.target], generator.iter, ref_at(child))
+
+        elif isinstance(child, ast.ExceptHandler) and child.name:
+            # `except ... as host` rebinds the name to the caught exception:
+            # whatever it carried before is gone, exactly as `host = "safe"`
+            # would end it. What it holds instead is not nothing — the
+            # exception was raised by the protected block, and carries what
+            # that block was working on. `int(sys.argv[1])` fails with
+            # `invalid literal for int() with base 10: '<the argument>'`.
+            #
+            # Read through sanitizers, and only here: a converter that
+            # *rejects* its input is precisely how that input escapes, so the
+            # rule that stops propagation at `int()` is the one rule that
+            # cannot apply to the value it refused.
+            facts.tainted.pop(child.name, None)
+            protected = handler_bodies.get(id(child))
+            if protected:
+                raised: set[str] = set()
+                for statement in protected:
+                    raised |= _referenced_names(
+                        statement, through_sanitizers=True
+                    )
+                bind([ast.Name(id=child.name, ctx=ast.Store())], None,
+                     ref_at(child), extra=frozenset(raised))
 
         elif isinstance(child, ast.Return) and child.value is not None:
             refs = _referenced_names(child.value)
-            if any(match_source(name) for name in refs) or is_tainted(refs):
+            matched = matching_source(refs)
+            held = carrier(refs)
+            if matched is not None or held is not None:
                 facts.returns_taint = True
+                if not facts.returns_rule:
+                    facts.returns_rule = (
+                        matched.id if matched is not None
+                        else facts.origin_rule.get(held, "")
+                    )
 
         elif isinstance(child, ast.Call):
+            holder = _mutated_container(child)
+            if holder is not None:
+                forget([holder])
+                # `extra` carries the holder itself, so appending never
+                # launders what the list already held — the same reason
+                # `AugAssign` above reads its own target.
+                carried: set[str] = {holder}
+                for argument in list(child.args) + [k.value for k in child.keywords]:
+                    carried |= _referenced_names(argument)
+                bind([ast.Name(id=holder, ctx=ast.Store())], None,
+                     ref_at(child), extra=frozenset(carried))
+
             called = _called_name(child)
             if not called:
                 continue
@@ -326,21 +1154,68 @@ def _analyse_body(symbol: Symbol, node: ast.AST,
                 # the fixed point iterates it by that order, and `emit` keeps
                 # the first candidate per sink — so a set's hash order was
                 # choosing which origin a finding reported.
-                for name in sorted(argument_refs & params):
+                # A parameter read straight into the sink, plus any local
+                # that carries one — the second is the ordinary shape, and
+                # leaving it out is what stopped a caller ever being paired
+                # with this sink.
+                roots = set(argument_refs & params)
+                roots.update(
+                    facts.from_param[name] for name in argument_refs
+                    if name in facts.from_param
+                )
+                for name in sorted(roots):
                     facts.param_sinks.setdefault(name, []).append((rule.id, ref))
             else:
-                outgoing: set[str] = set()
-                for argument in child.args:
-                    outgoing |= _referenced_names(argument)
-                for keyword in child.keywords:
-                    outgoing |= _referenced_names(keyword.value)
-                # Sorted, like every other set that reaches the output. Case 2
-                # emits the first caller that feeds a given sink and dedupes
-                # the rest, so this order chose which origin a finding showed.
-                for name in sorted(outgoing):
-                    facts.calls_out.append((called.rsplit(".", 1)[-1], name, ref))
+                short = called.rsplit(".", 1)[-1]
+                # One argument at a time, so the slot each name was read from
+                # survives into `calls_out`. Merging them into a single set —
+                # what this did before — is what made a value handed to a safe
+                # parameter reach every sink of the callee.
+                for argument, slot in _argument_slots(child):
+                    outgoing = _referenced_names(argument)
+                    # Sorted, like every other set that reaches the output.
+                    # Case 2 emits the first caller that feeds a given sink and
+                    # dedupes the rest, so this order chose which origin a
+                    # finding showed.
+                    for name in sorted(outgoing):
+                        facts.calls_out.append(_Handoff(short, name, ref, slot))
 
+    _spread_destination_safe(facts, derives)
     return facts
+
+
+def _spread_destination_safe(facts: "_Facts",
+                             derives: Mapping[str, frozenset[str]]) -> None:
+    """Carry a destination proof forward, the way taint is carried forward.
+
+    The guard constrains the value it reads; the sink is reached through
+    whatever was built from it afterwards —
+
+        if ipaddress.ip_address(resolved).is_private: return 403
+        target_url = data.replace(parsed.hostname, resolved)
+        requests.get(target_url)
+
+    — so a set holding only `data`, `parsed` and `resolved` answers nothing
+    about `target_url`, and the guard buys nothing at all. Value guards do not
+    need this because they *pop* from `tainted`, and every later assignment
+    then reads clean names; a destination proof cannot pop, because popping
+    would clear it for every other kind of sink too.
+
+    A name joins only when **every** untrusted thing it was built from is
+    already proved. `url = safe_host + request.args["path"]` keeps its taint,
+    which is the case that makes the difference between a proof and a wish.
+    """
+    for proved in facts.destination_safe.values():
+        changed = True
+        while changed:
+            changed = False
+            for name, sources in derives.items():
+                if name in proved:
+                    continue
+                risky = {source for source in sources if source in facts.tainted}
+                if risky and risky <= proved:
+                    proved.add(name)
+                    changed = True
 
 
 def _impact_for(rule_id: str) -> Severity:
@@ -377,17 +1252,24 @@ def _find_candidates(
     root: Path, graph: CodeGraph, max_depth: int
 ) -> list[TaintCandidate]:
 
-    functions = [s for s in graph.symbols.values() if s.kind == "function"]
-    node_index = index_function_nodes(root, {s.path for s in functions})
+    # Python only. `graph.symbols` carries the TypeScript side too, and every
+    # one of those paths used to be opened and handed to `ast.parse`: measured
+    # on hermes/, 1957 .ts/.tsx/.js files read for 0 successes.
+    by_path: dict[str, list[Symbol]] = {}
+    for symbol in graph.symbols.values():
+        if symbol.kind == "function" and symbol.path.lower().endswith(PYTHON_SUFFIXES):
+            by_path.setdefault(symbol.path, []).append(symbol)
 
     facts_by_name: dict[str, _Facts] = {}
-    for symbol in functions:
-        node = node_index.get((symbol.path, symbol.lineno))
-        if node is None:
-            continue
-        facts_by_name[symbol.name] = _analyse_body(
-            symbol, node, _imported_modules(root / symbol.path)
-        )
+    for relative, symbols in by_path.items():
+        # Rebound each turn, so one file's bodies are the only ones alive.
+        nodes = function_nodes(root / relative)
+        imported = _file_gates(root / relative)
+        for symbol in symbols:
+            node = nodes.get(symbol.lineno)
+            if node is None:
+                continue
+            facts_by_name[symbol.name] = _analyse_body(symbol, node, imported)
 
     by_short: dict[str, list[str]] = {}
     for name in facts_by_name:
@@ -424,41 +1306,67 @@ def _find_candidates(
             for target, callee_short, ref in facts.assigns_from_call:
                 if target in facts.tainted:
                     continue
-                if any(c.returns_taint for c in resolve(callee_short, facts.symbol.name)):
+                reached = [c for c in resolve(callee_short, facts.symbol.name)
+                           if c.returns_taint]
+                if reached:
                     facts.tainted[target] = ref
+                    facts.origin_rule[target] = next(
+                        (c.returns_rule for c in reached if c.returns_rule), ""
+                    )
                     changed = True
 
-            for callee_short, arg, _ref in facts.calls_out:
-                if arg not in set(facts.symbol.params):
+            # Hoisted: this ran once per outgoing argument, in the hot loop of
+            # the fixed point.
+            own_params = set(facts.symbol.params)
+            for handoff in facts.calls_out:
+                if handoff.name not in own_params:
                     continue
-                for callee in resolve(callee_short, facts.symbol.name):
-                    # Snapshot: a self-recursive call would otherwise mutate the
-                    # very dict being iterated.
-                    for sinks in list(callee.param_sinks.values()):
-                        existing = facts.param_sinks.setdefault(arg, [])
+                for callee in resolve(handoff.callee, facts.symbol.name):
+                    for sinks in _sinks_reached(callee, handoff):
+                        existing = facts.param_sinks.setdefault(handoff.name, [])
+                        merged = facts.merged.get(handoff.name)
+                        if merged is None:
+                            # Seeded from the list, never empty: `_analyse_body`
+                            # already put this body's own sinks there, and a
+                            # self-recursive call would add them a second time.
+                            merged = facts.merged[handoff.name] = set(existing)
                         for entry in sinks:
-                            if entry not in existing:
+                            if entry not in merged:
+                                merged.add(entry)
                                 existing.append(entry)
                                 changed = True
         if not changed:
             break
 
     candidates: list[TaintCandidate] = []
-    seen: set[tuple[str, str, int]] = set()
+    seen: dict[tuple[str, str, int], int] = {}
 
-    def emit(rule_id: str, source: CodeRef, sink: CodeRef, path: tuple[CodeRef, ...]):
+    def emit(rule_id: str, source: CodeRef, sink: CodeRef,
+             path: tuple[CodeRef, ...], source_rule: str = ""):
         key = (rule_id, sink.path, sink.line)
         if key in seen:
+            # The same sink can be reached twice: once inside the body whose
+            # parameter is tainted by assumption and names no rule, and once
+            # from the caller that actually filled it. Keeping whichever came
+            # first meant keeping the version that knew nothing — and case 1
+            # always runs before case 2.
+            held = candidates[seen[key]]
+            if source_rule and not held.source_rule:
+                candidates[seen[key]] = replace(
+                    held, source=source, path=path, source_rule=source_rule,
+                    impact=impact_for(rule_id, source_rule),
+                )
             return
-        seen.add(key)
+        seen[key] = len(candidates)
         candidates.append(
             TaintCandidate(
                 rule=rule_id,
                 source=source,
                 sink=sink,
                 path=path,
-                impact=_impact_for(rule_id),
+                impact=impact_for(rule_id, source_rule),
                 description=_description_for(rule_id),
+                source_rule=source_rule,
             )
         )
 
@@ -466,21 +1374,31 @@ def _find_candidates(
     for facts in facts_by_name.values():
         for rule_id, ref, arg_names in facts.sink_calls:
             origin = None
+            came_from = ""
             for arg in arg_names:
+                if any(arg in facts.destination_safe.get(family, ())
+                       for family in _proves_for(rule_id)):
+                    continue
                 if arg in facts.tainted:
                     origin = facts.tainted[arg]
+                    came_from = facts.origin_rule.get(arg, "")
                     break
-                if match_source(arg):
+                straight = match_source(arg)
+                if straight is not None:
                     origin = ref  # source read straight into the sink
+                    came_from = straight.id
                     break
             if origin is not None:
-                emit(rule_id, origin, ref, (origin, ref))
+                emit(rule_id, origin, ref, (origin, ref), came_from)
 
     # Case 2 — a caller feeds tainted data into a propagating parameter.
     for facts in facts_by_name.values():
-        for callee_short, arg, call_ref in facts.calls_out:
+        for handoff in facts.calls_out:
+            arg, call_ref = handoff.name, handoff.ref
             origin = facts.tainted.get(arg)
-            if origin is None and match_source(arg):
+            came_from = facts.origin_rule.get(arg, "")
+            straight = match_source(arg)
+            if origin is None and straight is not None:
                 # A source handed straight to the callee, without being stored
                 # first. Case 1 has always accepted the same shape into a sink
                 # in its own body — "source read straight into the sink" — and
@@ -488,11 +1406,13 @@ def _find_candidates(
                 # `cmd = sys.argv[1]; launch(cmd)` was reported. The inline
                 # form is the more common of the two.
                 origin = call_ref
+                came_from = straight.id
             if origin is None:
                 continue
-            for callee in resolve(callee_short, facts.symbol.name):
-                for sinks in list(callee.param_sinks.values()):
-                    for rule_id, sink_ref in list(sinks):
-                        emit(rule_id, origin, sink_ref, (origin, call_ref, sink_ref))
+            for callee in resolve(handoff.callee, facts.symbol.name):
+                for sinks in _sinks_reached(callee, handoff):
+                    for rule_id, sink_ref in sinks:
+                        emit(rule_id, origin, sink_ref,
+                             (origin, call_ref, sink_ref), came_from)
 
     return candidates

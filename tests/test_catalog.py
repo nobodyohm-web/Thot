@@ -71,3 +71,52 @@ def test_an_unrelated_attribute_is_not_a_source():
     assert match_source("self.request_count") is None
     assert match_source("payload.get") is None
     assert match_source("config.args.get") is None
+
+
+# -- ouvrir un fichier dont l'appelant choisit le chemin --------------------
+#
+# La traversée de chemin passait entièrement au travers : `sink.fs.write`
+# couvre `shutil.move` et `os.remove`, jamais `open`. Un corpus de onze
+# classes de vulnérabilité en montrait sept détectées ; celle-ci était l'une
+# des quatre manquantes, et c'est CWE-22.
+#
+# Le prix, mesuré avant d'ajouter la règle : 0 candidat supplémentaire sur
+# Thot (14), sur Prime (25) et sur Hermes (401 → 401). Elle ne se déclenche
+# que lorsqu'une valeur teintée atteint l'appel, ce qu'aucun de ces trois
+# arbres ne fait — et elle transforme au passage trois détections « motif
+# seul » du corpus (pickle, yaml.load, `with open(...) as`) en chemins de
+# teinte prouvés, puisque le fichier ouvert était déjà le vecteur.
+
+
+def test_open_is_a_filesystem_sink():
+    rule = match_sink("open")
+
+    assert rule is not None
+    assert rule.id == "sink.fs.read"
+
+
+def test_a_method_named_open_is_not_the_builtin():
+    """`socket.open`, `driver.open`, `self.open` n'ouvrent pas un chemin."""
+    assert match_sink("connexion.open") is None
+
+
+def test_a_tainted_path_reaching_open_is_found(tmp_path):
+    from thot.codemap.graph import CodeGraph
+    from thot.codemap.index import forget_symbols, index_files
+    from thot.pipeline import findings_from_graph
+    from thot.scope.detect import detect_scope
+
+    (tmp_path / "lecture.py").write_text(
+        "import sys\n"
+        "def main():\n"
+        "    return open('/data/' + sys.argv[1]).read()\n",
+        encoding="utf-8",
+    )
+    forget_symbols()
+    manifest = detect_scope(tmp_path)
+    symbols = index_files(tmp_path, manifest.files)
+    findings = findings_from_graph(
+        tmp_path, CodeGraph.build(symbols, manifest.entrypoints)
+    )
+
+    assert any(f.rule == "sink.fs.read" for f in findings), [f.rule for f in findings]

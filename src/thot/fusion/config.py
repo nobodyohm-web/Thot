@@ -62,7 +62,11 @@ def _hermes_choice() -> ModelChoice:
     path = hermes_config_path()
     try:
         loaded = yaml.safe_load(path.read_text(encoding="utf-8"))
-    except (OSError, ValueError):
+    except (OSError, ValueError, yaml.YAMLError):
+        # `yaml.YAMLError` inherits from neither of the other two, so a
+        # half-written `config.yaml` came out as a traceback instead of the
+        # `(config illisible)` line below. `ValueError` stays: it is what
+        # catches `UnicodeDecodeError` on a binary file.
         loaded = None
     section = (loaded or {}).get("model") if isinstance(loaded, dict) else None
     if not isinstance(section, dict):

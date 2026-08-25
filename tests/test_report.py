@@ -379,3 +379,29 @@ def test_a_deterministic_markdown_report_claims_no_panel(tmp_path):
     # Pas seulement l'absence du mot : la ligne entière ne doit pas paraître,
     # sinon elle s'affiche « Jugé par None : » sur un audit déterministe.
     assert "Jugé par" not in text, text
+
+
+def test_the_json_carries_the_rule_that_started_the_path():
+    """A CI gate re-ranking findings needs the fact the rank came from, not
+    a French sentence to parse."""
+    import json
+
+    from thot.contracts import CodeRef, Confidence, Finding, Severity
+    from thot.report.json_report import render_json
+
+    finding = Finding(
+        id="x", rule="sink.fs.read", severity=Severity.LOW,
+        confidence=Confidence.PLAUSIBLE,
+        location=CodeRef(path="a.py", line=1, symbol="main"),
+        failure_scenario="peu importe",
+        provenance={"source_rule": "source.argv"},
+    )
+    from pathlib import Path
+
+    from thot.scope.manifest import ScopeManifest
+
+    manifest = ScopeManifest(root=Path("."), files=(), languages={},
+                             entrypoints=())
+    payload = json.loads(render_json([finding], manifest, 0.0))
+
+    assert payload["findings"][0]["source_rule"] == "source.argv"

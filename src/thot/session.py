@@ -88,14 +88,22 @@ class Session:
         self.toolset = (toolset or toolsets.DEFAULT).lower()
         self.recon: Recon = sweep(root)
         self.provider: Provider | None = None
+        # Thot is the fusion of Hermes and Prime, and this is where it is
+        # one: the session's backend *is* the two of them. Built before the
+        # single-model clients, because a fused session has neither.
+        self.agent = self._open_agents()
         self.claude: ClaudeCli | None = (
             ClaudeCli(root=root, model=config.model,
-                      denied=toolsets.denied_cli_tools(self.toolset))
-            if config.provider == "claude-cli"
+                      denied=toolsets.denied_cli_tools(self.toolset),
+                      test_command=self.recon.manifest.test_command or "")
+            if config.provider == "claude-cli" and self.agent is None
             else None
         )
         self.messages: list[Message] = []
+        self.spent_input = 0
+        self.spent_output = 0
         self.carry = ""  # a summary handed forward across a /compact
+        self.head: list[Message] = []   # the opening turns, kept across compactions
         self.sandbox = self._open_sandbox()
         self.kernel = None      # opened on first use: starting one costs a beat
         self.harness = self._open_harness()
@@ -104,6 +112,39 @@ class Session:
         self._prompt = (
             PromptSession(history=self._history()) if self._interactive else None
         )
+
+    def _open_agents(self):
+        """The cascade, when this session runs on Hermes and Prime.
+
+        None for every other provider, and the session behaves exactly as it
+        always did. A backend that cannot be built raises here rather than at
+        the first turn: discovering at the first question that neither agent
+        is installed is discovering it too late.
+        """
+        from thot.engine.factory import FUSED, build_cascade
+
+        if self.config.provider not in FUSED:
+            return None
+        return build_cascade(self.root, prefer=self.config.provider)
+
+    def _reach_for_agents(self):
+        """Build the cascade mid-session, or return None if it cannot be.
+
+        `_open_agents` only builds one when the *configured* provider is the
+        fusion. This is the other door: the session is already running on
+        something else, that something else has stopped answering, and the
+        two agents are sitting there installed. Refusing to use them because
+        of how the session started is refusing for no reason.
+
+        Failure is not an error here — it means they are not installed, and
+        the caller says so.
+        """
+        from thot.engine.factory import build_cascade
+
+        try:
+            return build_cascade(self.root)
+        except Exception:
+            return None
 
     # -- persistent state -------------------------------------------------
 
@@ -278,6 +319,8 @@ class Session:
 
     def _charge(self, input_tokens: int, output_tokens: int) -> None:
         """Record what the turn cost, against the session and the goal."""
+        self.spent_input += input_tokens
+        self.spent_output += output_tokens
         if self.store is not None and self.session_id:
             try:
                 self.store.charge(self.session_id, input_tokens, output_tokens)
@@ -305,6 +348,8 @@ class Session:
 
     def _model_label(self) -> str:
         """What to show in the header — as precise as currently known."""
+        if self.agent is not None:
+            return " + ".join(self.agent.names) + " · la fusion"
         if self.claude is not None:
             from thot.llm.claude_cli import configured_model
 
@@ -356,6 +401,15 @@ class Session:
         "supplied by this repository" accuses the audited code of something
         the user's own installation did. On a third-party repository that
         accusation is both alarming and false.
+
+        The two lines say different things because the two refusals now mean
+        different things. A repository's skill is refused on `caution`: the
+        bar is low because nobody vouched for that code. An installed
+        library is refused only on `dangerous`, so when this fires about
+        `~/.hermes/skills` it is not a provenance note — something in a
+        folder the user trusts tripped a CRITICAL rule, and saying "it does
+        not come from the audited code" would file the loudest signal the
+        guard can raise under the heading of a formality.
         """
         from thot.skills.loader import discover_report
 
@@ -384,7 +438,8 @@ class Session:
         if theirs:
             theme.warn(
                 f"{len(theirs)} skill(s) installés sur cette machine (Hermes, "
-                f"Prime) ont été refusés — ils ne viennent pas du code audité."
+                f"Prime) ont été refusés — une règle critique s'y déclenche, "
+                f"dans un dossier que vous avez pourtant installé vous-même."
             )
         for item in mine + theirs:
             theme.console.print(theme.entry(item.name, item.summary()[:70], width=20))
@@ -595,7 +650,14 @@ class Session:
                 padding=(0, 1),
             )
         )
-        answer = input("   valider ? [o/N] ").strip().lower()
+        try:
+            answer = input("   valider ? [o/N] ").strip().lower()
+        except (EOFError, KeyboardInterrupt, RuntimeError):
+            # Nobody there to answer — a piped session, a closed stdin, and
+            # RuntimeError for `input(): lost sys.stdin`. Silence is a
+            # refusal; it is never an authorisation to write.
+            theme.console.print()
+            return False
         theme.console.print()
         return answer in {"o", "oui", "y", "yes"}
 
@@ -616,6 +678,17 @@ class Session:
     # -- the loop --------------------------------------------------------
 
     def run(self) -> int:
+        # try/finally around the whole loop: whatever ends the session — the
+        # expected EOF as much as a failure nobody foresaw — the kernel
+        # process and the session row are put away. They used to be left
+        # running and open.
+        try:
+            return self._loop()
+        finally:
+            self._close_kernel()
+            self._close_state()
+
+    def _loop(self) -> int:
         self.greet()
         while True:
             try:
@@ -623,8 +696,6 @@ class Session:
             except (EOFError, KeyboardInterrupt):
                 theme.console.print()
                 theme.hint("À bientôt.")
-                self._close_kernel()
-                self._close_state()
                 return 0
 
             if not line:
@@ -633,8 +704,6 @@ class Session:
             if line.startswith("/"):
                 outcome = self._command(line)
                 if outcome is False:
-                    self._close_kernel()
-                    self._close_state()
                     return 0
                 if not isinstance(outcome, str):
                     continue
@@ -649,6 +718,13 @@ class Session:
             except ProviderError as exc:
                 theme.console.print()
                 theme.error(str(exc))
+                # An error that ends the turn must not end the work. When the
+                # backend that just failed is not the fusion, and the fusion
+                # is installed, the session can carry on immediately — the
+                # user should not have to know that, or restart to find out.
+                if self.agent is None and self._reach_for_agents() is not None:
+                    theme.hint("Hermes et Prime sont installés — `/auto` pour "
+                               "continuer sans attendre.")
                 theme.console.print()
             except KeyboardInterrupt:
                 theme.console.print()
@@ -660,9 +736,14 @@ class Session:
         if self._prompt is not None:
             return self._prompt.prompt(ANSI("\x1b[38;5;179m   › \x1b[0m")).strip()
         theme.console.print(f"   [{theme.ACCENT}]›[/] ", end="")
-        return input().strip()
+        try:
+            return input().strip()
+        except RuntimeError as exc:   # `input(): lost sys.stdin`
+            raise EOFError(str(exc)) from exc
 
     def _turn(self) -> None:
+        if self.agent is not None:
+            return self._turn_via_agents()
         if self.claude is not None:
             return self._turn_via_cli()
         if self.provider is None:
@@ -710,6 +791,64 @@ class Session:
                     context = self._tool_context()
 
         theme.warn("Trop d'appels d'outils enchaînés — tour interrompu.")
+
+    def _turn_via_agents(self) -> None:
+        """Hand the turn to Hermes or Prime, and hold the thread across them.
+
+        Both are one-shot: `hermes -z` and `prime -p` answer once and forget.
+        So everything the turn depends on travels with it — the repository
+        map, the objective, what was said before. That is not compensation
+        for a limitation of theirs; it is the persistent memory and the long
+        context Thot exists to provide, doing the one job neither agent can
+        do for itself.
+
+        Which one took the turn is printed. A routing decision the user
+        cannot see is a routing decision the user cannot correct, and the
+        rule that makes it is a verb list, not an oracle.
+        """
+        from thot.engine.cascade import NoAgents
+
+        assert self.agent is not None
+        instruction = self.messages[-1].content
+        history = self.messages[:-1]
+
+        brief = self._brief()
+        if self.carry:
+            # A compacted thread starts empty for a stateless agent, so the
+            # summary has to travel. It goes *after* the map, not before:
+            # the map is the same bytes on every turn and the summary is
+            # rewritten at every compaction, and a volatile prefix means no
+            # reusable prefix exists even in principle. Most stable first —
+            # map, then summary, then the transcript, then the question.
+            brief = f"{brief}\n\nRésumé des tours précédents :\n\n{self.carry}"
+
+        theme.console.print()
+        try:
+            turn = self.agent.turn(instruction, history=history, brief=brief)
+        except NoAgents as exc:
+            theme.error(str(exc))
+            theme.console.print()
+            return
+
+        theme.console.print(theme.field(f"   {turn.agent}", turn.why))
+        if turn.error:
+            theme.console.print()
+            theme.error(turn.error)
+            theme.hint("Le fil est gardé par Thot : la question suivante repart d'ici.")
+            theme.console.print()
+            return
+
+        theme.console.print()
+        # `markup=False`: an agent writes `[prime]`, `[0]`, `[WARN]` all the
+        # time, and Rich reads square brackets as style tags — the answer
+        # came back whole and was printed with holes in it.
+        theme.console.print(turn.text, markup=False, highlight=False)
+        self.messages.append(Message(role="assistant", content=turn.text))
+        self._record("assistant", turn.text)
+        self._charge(turn.usage.input_tokens, turn.usage.output_tokens)
+        self._refresh()   # the agent has its own tools and may have edited
+        self._compact_if_needed()
+        theme.console.print()
 
     def _turn_via_cli(self) -> None:
         """Delegate the turn to the official CLI, rendering its event stream.
@@ -762,6 +901,31 @@ class Session:
         command, _, argument = line[1:].partition(" ")
         command = command.lower()
 
+        if command in {"hermes", "prime", "auto"}:
+            # Openable on demand, not only when the session started fused.
+            # A Claude session that runs into its limit used to be stuck for
+            # hours with Hermes and Prime installed and idle, because these
+            # commands were gated on a cascade built at startup.
+            if self.agent is None:
+                self.agent = self._reach_for_agents()
+            if self.agent is None:
+                theme.warn("Ni Hermes ni Prime n'est installé.")
+                return None
+            self.agent.forced = "" if command == "auto" else command
+            if command == "auto":
+                theme.ok("Répartition automatique — le verbe décide.")
+            elif command in self.agent.members:
+                theme.ok(f"Tous les tours vont à {command}.")
+            else:
+                self.agent.forced = ""
+                theme.warn(f"{command} n'est pas installé — répartition automatique.")
+            # `/auto continue` means both things: switch, then carry on. The
+            # dispatch already has a way to say "and now run this" — hand the
+            # rest of the line back as the prompt. Dropping it would switch
+            # backend and silently swallow the instruction, which reads as
+            # the command having done nothing at all.
+            return argument.strip() or None
+
         if command in {"q", "quit", "exit"}:
             theme.hint("À bientôt.")
             return False
@@ -791,6 +955,9 @@ class Session:
                 ("/export", "écrire la session en JSON : /export chemin.json"),
                 ("/import", "recharger une session exportée : /import chemin.json"),
                 ("/scan", "recalculer la carte du dépôt"),
+                ("/hermes", "envoyer tous les tours à Hermes"),
+                ("/prime", "envoyer tous les tours à Prime"),
+                ("/auto", "laisser le verbe décider — Prime agit, Hermes raisonne"),
                 ("/model", "changer de modèle"),
                 ("/clear", "oublier la conversation en cours"),
                 ("/quit", "quitter"),
@@ -1025,6 +1192,7 @@ class Session:
 
         if command == "clear":
             self.messages.clear()
+            self.head.clear()   # what frames the task is part of the task
             theme.ok("Conversation oubliée.")
             theme.console.print()
             return None
@@ -1041,7 +1209,8 @@ class Session:
                 self.provider = None
                 self.claude = (
                     ClaudeCli(root=self.root, model=config.model,
-                              denied=toolsets.denied_cli_tools(self.toolset))
+                              denied=toolsets.denied_cli_tools(self.toolset),
+                              test_command=self.recon.manifest.test_command or "")
                     if config.provider == "claude-cli"
                     else None
                 )
@@ -1506,6 +1675,7 @@ class Session:
                 self.store.forget(self.session_id)
 
         self.session_id = resolved
+        self.head = []   # another conversation, another opening
         self.store.reopen(resolved)
 
         restored = ""
@@ -1616,8 +1786,15 @@ class Session:
             # thread; the summary and the tail ride in with the next prompt.
             self.claude.forget_thread()
             self.store.link_cli(child, self.claude.session_id)
-            self.carry = self._carry_text(kept)
-            self.messages = []
+            head = self._protected_head()
+            # The carry is injected into one prompt and then cleared, and it
+            # was never put back into the list — so the second compaction saw
+            # only the turns that followed the first, and dropped the
+            # statement of the task itself. Reseeding with the head puts it
+            # back in front of `compaction.plan`, which protects it again.
+            overlap = len(head) if kept[:len(head)] == head else 0
+            self.carry = self._carry_text(head + kept[overlap:])
+            self.messages = list(head)
         else:
             self.messages = kept
 
@@ -1665,6 +1842,20 @@ class Session:
         # shape: there is little of Thot's own to summarise, and restarting the
         # CLI thread is what actually frees the context.
         self._compact("", budget=budget, force=full)
+
+    def _protected_head(self) -> list[Message]:
+        """The opening turns, captured once and kept for every compaction.
+
+        Read from the live list rather than from disk: `store.turns(limit=)`
+        returns the tail, not the head, and the head has to be the same
+        objects `compaction.apply` protects, so the carry can be built
+        without repeating them.
+        """
+        from thot.state import compaction
+
+        if not self.head:
+            self.head = list(self.messages[:compaction.PROTECT_FIRST])
+        return self.head
 
     @staticmethod
     def _carry_text(messages) -> str:

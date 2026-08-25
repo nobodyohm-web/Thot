@@ -172,3 +172,111 @@ os.environ.setdefault("X", "1")
     assert len(module) == 1
     assert "helper" in module[0].references
     assert any("setdefault" in call for call in module[0].calls)
+
+
+# -- l'inconnu se propage le long des appels ---------------------------------
+#
+# Une vue décorée est bien marquée « échappée » ; le helper qu'elle appelle ne
+# l'est pas, puisqu'il est appelé et n'apparaît donc dans les `references` de
+# personne. Le sink prouvé se retrouvait à 0.2 au lieu de 0.8 dès qu'un
+# `main()` sans rapport existait ailleurs dans le dépôt : le chemin de teinte
+# prouvé passait sous le chemin non prouvé de la règle motif, et sous le seuil
+# d'affichage par défaut.
+
+
+def test_a_helper_called_by_an_escaped_view_inherits_its_unknown_reach(tmp_path):
+    from thot.codemap.graph import CodeGraph
+
+    symbols = _index(tmp_path, """
+import sqlite3
+
+app = object()
+
+
+def lookup(uid):
+    conn = sqlite3.connect("app.db")
+    return conn.execute("SELECT * FROM users WHERE id = " + uid)
+
+
+@app.route("/u")
+def user_view():
+    return lookup(request.args.get("id"))
+""")
+    graph = CodeGraph.build(symbols, entrypoints=("cli.main",))
+
+    # La vue est atteinte par une route que le graphe ne suit pas...
+    assert graph.reach_unknown("app.user_view") is True
+    # ...et le helper qu'elle appelle est sur cette même route.
+    assert graph.distance_from_entrypoints("app.lookup") is None
+    assert graph.reach_unknown("app.lookup") is True
+
+
+def test_only_what_an_escaped_symbol_calls_inherits_from_it(tmp_path):
+    """La remise doit continuer de mordre, ou elle cesse d'être un filtre."""
+    from thot.codemap.graph import CodeGraph
+
+    symbols = _index(tmp_path, """
+app = object()
+
+
+@app.route("/u")
+def vue():
+    return "ok"
+
+
+def morte():
+    pass
+
+
+def aussi_morte():
+    morte()
+""")
+    graph = CodeGraph.build(symbols, entrypoints=("cli.main",))
+
+    assert graph.reach_unknown("app.vue") is True
+    assert graph.reach_unknown("app.morte") is False
+    assert graph.reach_unknown("app.aussi_morte") is False
+
+
+# -- les points d'entrée ne couvrent qu'une langue ---------------------------
+
+
+def _mixed_graph(tmp_path):
+    from thot.codemap.graph import CodeGraph
+    from thot.codemap.index import index_files
+    from thot.scope.detect import detect_scope
+
+    (tmp_path / "cli.py").write_text(
+        "def main():\n    return 0\n\n\ndef oubliee():\n    pass\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "named.ts").write_text(
+        'import { exec } from "child_process";\n'
+        "export function handle(req: any) {\n"
+        '  exec("ping " + req.query.host);\n'
+        "}\n",
+        encoding="utf-8",
+    )
+    manifest = detect_scope(tmp_path)
+    symbols = index_files(tmp_path, manifest.files)
+    return CodeGraph.build(symbols, manifest.entrypoints)
+
+
+def test_a_python_entrypoint_says_nothing_about_a_typescript_symbol(tmp_path):
+    """Aucun symbole TypeScript n'est atteignable depuis un `main()` Python.
+
+    Répondre « injoignable » là-dessus enterre la moitié d'un dépôt mixte sur
+    l'autorité d'un graphe qui ne l'a jamais couverte.
+    """
+    graph = _mixed_graph(tmp_path)
+
+    assert graph.entrypoints == ("cli.main",)
+    assert graph.distance_from_entrypoints("named.handle") is None
+    assert graph.reach_unknown("named.handle") is True
+
+
+def test_the_python_half_of_a_mixed_repository_keeps_the_discount(tmp_path):
+    graph = _mixed_graph(tmp_path)
+
+    assert graph.distance_from_entrypoints("cli.oubliee") is None
+    assert graph.reach_unknown("cli.oubliee") is False

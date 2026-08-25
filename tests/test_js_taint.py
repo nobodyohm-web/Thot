@@ -707,3 +707,307 @@ def test_an_empty_slot_costs_no_second_pass(tmp_path, monkeypatch):
 
     assert found == []  # the tainted value reached no named parameter
     assert reads.count("helpers.ts") == 1, reads
+
+
+# --- le corps d'un rappel est du code comme un autre ------------------------
+#
+# La forme la plus répandue d'un handler web est une flèche anonyme passée à
+# une route. `_statements` ne reconnaissait un bloc qu'à profondeur zéro : la
+# parenthèse de `app.get(` tenait la profondeur à un, l'accolade du corps
+# passait pour un objet littéral, et tout le `app.get(…)` restait UN seul
+# statement. Aucune coupure, donc aucune propagation, donc aucun chemin.
+# Et le fichier de routes pur, qui ne définit aucune fonction nommée,
+# n'était même pas ouvert : la boucle partait des symboles indexés.
+
+
+def test_a_file_with_no_named_function_is_still_scanned(tmp_path):
+    found = scan(tmp_path, REQUIRE + """
+        app.get("/ping", (req, res) => {
+          exec("ping -c1 " + req.query.host);
+        });
+        """, name="routes.ts")
+
+    assert [c.rule for c in found] == ["sink.js.exec"], found
+    assert found[0].sink.path == "routes.ts"
+
+
+def test_a_variable_bound_inside_a_route_callback_carries_taint(tmp_path):
+    found = scan(tmp_path, REQUIRE + """
+        function unrelated() { return 1; }
+
+        app.get("/ping", (req, res) => {
+          const host = req.query.host;
+          exec("ping -c1 " + host);
+        });
+        """)
+
+    assert [c.rule for c in found] == ["sink.js.exec"], found
+
+
+def test_a_variable_bound_inside_a_then_callback_carries_taint(tmp_path):
+    found = scan(tmp_path, REQUIRE + """
+        function unrelated() { return 1; }
+
+        load().then((report) => {
+          const target = process.env.TARGET;
+          exec("echo " + target);
+        });
+        """)
+
+    assert [c.rule for c in found] == ["sink.js.exec"], found
+
+
+def test_a_variable_bound_inside_an_event_listener_carries_taint(tmp_path):
+    """A callback, an assignment sink, and no named function in the file."""
+    found = scan(tmp_path, """
+        window.addEventListener("message", function (event) {
+          const raw = event.data;
+          document.body.innerHTML = raw;
+        });
+        """, name="listener.js")
+
+    assert [c.rule for c in found] == ["sink.js.html"], found
+
+
+def test_a_destructuring_inside_a_callback_is_not_shredded(tmp_path):
+    """The brace that must stay part of its statement, one level deeper."""
+    found = scan(tmp_path, REQUIRE + """
+        app.get("/ping", (req, res) => {
+          const { host } = req.query;
+          exec("ping -c1 " + host);
+        });
+        """, name="routes.ts")
+
+    assert [c.rule for c in found] == ["sink.js.exec"], found
+
+
+def test_a_jsx_expression_container_is_not_a_block():
+    """`>` before a brace closes a JSX tag as often as a type argument list."""
+    from thot.taint.js_engine import _statements
+
+    assert len(_statements("render(<div>{x}</div>);", 0)) == 1
+
+
+def test_a_generic_return_type_still_opens_a_block():
+    from thot.taint.js_engine import _statements
+
+    body = "function f(): Map<string, number> {\n  const a = 1;\n  b(a);\n}"
+
+    assert [piece.strip() for _, piece in _statements(body, 0)] == [
+        "function f(): Map<string, number>", "const a = 1", "b(a)",
+    ]
+
+
+# --- un paramètre relie le nom qu'il porte, comme une réaffectation ---------
+#
+# La carte de teinte est plate sur le fichier pour que les fermetures héritent
+# de ce qui les entoure — c'est correct. Mais deux fonctions sœurs qui
+# réutilisent un nom de variable ne sont pas une fermeture : le paramètre de
+# la seconde relie le nom, et le chemin rapporté partait de la ligne d'une
+# fonction qui n'appelle pas l'autre.
+
+
+def test_a_parameter_shadows_the_name_a_sibling_tainted(tmp_path):
+    found = scan(tmp_path, REQUIRE + """
+        function readLength(req) {
+          const value = req.query.value;
+          return value.length;
+        }
+
+        function runFixed(value) {
+          exec("echo " + value);
+        }
+        """)
+
+    assert found == []
+
+
+def test_a_closure_still_inherits_what_it_does_not_shadow(tmp_path):
+    """The over-approximation that is wanted: nesting really does see it."""
+    found = scan(tmp_path, REQUIRE + """
+        function read(req) {
+          const host = req.query.host;
+          function inner(count) {
+            exec("ping " + host);
+          }
+          inner(1);
+        }
+        """)
+
+    assert [c.rule for c in found] == ["sink.js.exec"], found
+
+
+def test_a_file_the_masker_cannot_lex_costs_only_itself(tmp_path):
+    """Scanning the tree means opening files the indexer refused to index."""
+    (tmp_path / "bad.ts").write_text(
+        "const x = " + "`${" * 1500 + "1" + "}`" * 1500 + ";", encoding="utf-8"
+    )
+
+    found = scan(tmp_path, REQUIRE + """
+        app.get("/ping", (req, res) => {
+          exec("ping -c1 " + req.query.host);
+        });
+        """, name="routes.ts")
+
+    assert [c.rule for c in found] == ["sink.js.exec"], found
+
+
+# --- callbacks: the parameter is where the value actually arrives ----------
+#
+# Three shapes the engine used to walk straight past. Each one is a function
+# nobody calls by name: the runtime calls it, and hands it the value. An
+# engine that only follows `f(x)` sees the sink, sees no source, and reports
+# nothing — which on a browser tree is most of the code there is.
+
+
+def test_a_dom_event_handler_carries_untrusted_data(tmp_path):
+    found = scan(tmp_path, 'import { exec } from "child_process";\n' + """
+        document.addEventListener("click", (event) => {
+          exec(event.target.dataset.cmd);
+        });
+        """)
+    assert [c.rule for c in found] == ["sink.js.exec"]
+
+
+def test_only_the_named_apis_introduce_an_event(tmp_path):
+    """A callback is not untrusted for being a callback.
+
+    `subscribe` hands its callback whatever this program put on the queue.
+    An engine that taints every parameter of every arrow it walks past would
+    report this, and would be guessing.
+    """
+    found = scan(tmp_path, REQUIRE + """
+        function handler(req, res) {
+          res.send(req.query.label);
+          queue.subscribe((job) => { exec(job.command); });
+        }
+        """)
+    assert found == []
+
+
+def test_a_promise_callback_inherits_the_taint_of_its_chain(tmp_path):
+    found = scan(tmp_path, REQUIRE + """
+        fetch("/config").then((r) => r.json()).then((cfg) => {
+          exec(cfg.command);
+        });
+        """, name="then.js")
+    assert [c.rule for c in found] == ["sink.js.exec"]
+
+
+def test_iterating_a_tainted_list_taints_each_element(tmp_path):
+    found = scan(tmp_path, REQUIRE + """
+        function handler(req, res) {
+          req.body.hosts.forEach((host) => { exec("ping -c1 " + host); });
+        }
+        """)
+    assert [c.rule for c in found] == ["sink.js.exec"]
+
+
+def test_a_callback_on_a_constant_list_is_not_a_path(tmp_path):
+    """The carrier only carries what the receiver holds.
+
+    The handler around it is not decoration: without a source somewhere in
+    the file the engine never opens it, and the test would pass on the
+    strength of a filter instead of the rule it claims to check.
+    """
+    found = scan(tmp_path, REQUIRE + """
+        function handler(req, res) {
+          res.send(req.query.label);
+          ["alpha", "beta"].forEach((name) => { exec("ping -c1 " + name); });
+        }
+        """)
+    assert found == []
+
+
+# --- prototype pollution: the key is the payload, not the value -----------
+
+
+def test_a_merge_loop_with_a_controlled_key_is_prototype_pollution(tmp_path):
+    found = scan(tmp_path, """
+        function merge(target, source) {
+          for (const key in source) { target[key] = source[key]; }
+          return target;
+        }
+        merge({}, JSON.parse(location.hash.slice(1)));
+        """, name="merge.js")
+    assert [c.rule for c in found] == ["sink.js.prototype"]
+
+
+def test_a_fixed_key_is_not_prototype_pollution(tmp_path):
+    """A tainted *value* under a constant key is storage, not pollution."""
+    found = scan(tmp_path, """
+        function store(bag) {
+          bag["fragment"] = location.hash;
+        }
+        """, name="store.js")
+    assert found == []
+
+
+def test_a_guarded_merge_is_not_reported(tmp_path):
+    """`__proto__` refused by name is the fix; reporting it anyway is noise."""
+    found = scan(tmp_path, """
+        function merge(target, source) {
+          for (const key in source) {
+            if (key === "__proto__" || key === "constructor") continue;
+            target[key] = source[key];
+          }
+        }
+        merge({}, JSON.parse(location.hash.slice(1)));
+        """, name="guarded.js")
+    assert found == []
+
+
+def test_a_loop_counter_is_a_binding_like_any_other(tmp_path):
+    """`for (let i = 8; …)` rebinds `i`, so an `i` tainted elsewhere in the
+    file stops there. Without it, a byte-array write borrows the taint of an
+    index variable from another function and reads as prototype pollution."""
+    found = scan(tmp_path, """
+        const args = process.argv.slice(2);
+        const flag = (name) => { const i = args.indexOf(name); return i; };
+        function fill(bytes) {
+          for (let i = 8; i < bytes.length; i += 1) {
+            bytes[i] = (i * 2654435761) & 0xff;
+          }
+        }
+        """, name="bench.mjs")
+    assert found == []
+
+
+def test_a_javascript_candidate_says_which_source_started_it(tmp_path):
+    found = scan(tmp_path, REQUIRE + """
+        function handler(req, res) {
+          exec(req.query.cmd);
+        }
+        """)
+    assert [c.source_rule for c in found] == ["source.js.request"]
+
+
+def test_a_path_from_the_environment_ranks_below_one_from_a_request(tmp_path):
+    """Same rule the Python engine applies, for the same reason: whoever
+    sets the environment already holds this process's filesystem."""
+    from thot.contracts import Severity
+
+    local = scan(tmp_path, 'const fs = require("fs");\n' + """
+        function main() {
+          fs.readFileSync(process.env.REPORT);
+        }
+        """)
+    remote = scan(tmp_path, 'const fs = require("fs");\n' + """
+        function handler(req, res) {
+          fs.readFileSync(req.query.path);
+        }
+        """)
+
+    assert [c.impact for c in local] == [Severity.LOW]
+    assert [c.impact for c in remote] == [Severity.MEDIUM]
+
+
+def test_the_discount_does_not_reach_the_shell_in_javascript(tmp_path):
+    from thot.contracts import Severity
+
+    found = scan(tmp_path, REQUIRE + """
+        function main() {
+          exec(process.env.COMMAND);
+        }
+        """)
+    assert [c.impact for c in found] == [Severity.CRITICAL]

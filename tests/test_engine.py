@@ -53,7 +53,12 @@ print(json.dumps({{"type": "result", "is_error": False, "result": out,
 
 # Hermes one-shot: the prompt arrives in argv after `-z`, and only the final
 # answer goes to stdout — no banner, no tool previews, no token counts.
-FAKE_HERMES = '#!{python}\nimport sys\nargv = sys.argv[1:]\nprompt = argv[argv.index("-z") + 1]\n# The system instruction rides at the head of the prompt; the real agent\n# consumes it the same way.\nprompt = prompt.split("\\n\\n", 1)[-1]\nif "BOOM" in prompt:\n    sys.stderr.write("fake hermes failure\\n")\n    raise SystemExit(2)\nprint(prompt[::-1])\n'
+#
+# Two preamble blocks ride ahead of the task: the system instruction, then
+# the repository root (`_anchor`, because `--in` is inert in one-shot). The
+# fake drops exactly as many as the engine adds, so adding a third breaks
+# these tests loudly instead of silently changing what the fake answers.
+FAKE_HERMES = '#!{python}\nimport sys\nargv = sys.argv[1:]\nprompt = argv[argv.index("-z") + 1]\n# The system instruction rides at the head of the prompt; the real agent\n# consumes it the same way.\nprompt = prompt.split("\\n\\n", 2)[-1]\nif "BOOM" in prompt:\n    sys.stderr.write("fake hermes failure\\n")\n    raise SystemExit(2)\nprint(prompt[::-1])\n'
 
 # Prime one-shot: a JSON event stream, carrying real token counts.
 FAKE_PRIME = '#!{python}\nimport json, sys\nargv = sys.argv[1:]\nprompt = argv[argv.index("--") + 1]\nif "BOOM" in prompt:\n    sys.stderr.write("fake prime failure\\n")\n    raise SystemExit(2)\nout = prompt[::-1]\nmessage = {{"role": "assistant",\n           "content": [{{"type": "text", "text": out}}],\n           "usage": {{"input": 1, "output": 4, "cacheRead": 2, "cacheWrite": 0}}}}\nprint(json.dumps({{"type": "agent_start"}}))\nprint(json.dumps({{"type": "turn_end", "message": message}}))\nprint(json.dumps({{"type": "agent_end", "messages": [message]}}))\n'
@@ -223,15 +228,84 @@ def test_prime_stops_flag_parsing_before_the_prompt(dumping, tmp_path):
     assert argv[argv.index("--") + 1] == "--verbose n'est pas un drapeau"
 
 
-def test_the_tier_chooses_effort_not_a_model(dumping, tmp_path):
-    """Naming a model would override what the user configured in their own
-    agent; effort is the part that belongs to the task."""
-    HermesEngine(root=tmp_path).run(
-        AgentTask(id="t1", instructions="x", tier="deep")
-    )
+def test_hermes_asks_for_no_effort_it_cannot_obtain(dumping, tmp_path):
+    """`hermes -z` honours no effort flag, so Thot stops sending one.
+
+    `--reasoning` is declared on the top-level parser, so argparse accepted
+    it and nothing ever complained — but the one-shot dispatch drops it (see
+    the signature pinned below), and `_run_agent` builds its `AIAgent`
+    without a `reasoning_config` at all. The `deep` tier therefore bought
+    nothing on Hermes, and `cheap` saved nothing. Naming a model instead
+    would override what the user configured in their own agent, so the
+    honest answer is to claim no tier rather than to price one that does not
+    happen.
+    """
+    engine = HermesEngine(root=tmp_path)
+    assert engine.capabilities.tiering is False
+
+    engine.run(AgentTask(id="t1", instructions="x", tier="deep"))
+
     argv = json.loads((tmp_path / "argv.json").read_text())
-    assert argv[argv.index("--reasoning") + 1] == "high"
+    assert "--reasoning" not in argv
     assert "-m" not in argv and "--model" not in argv
+
+
+def test_the_vendored_hermes_still_drops_the_effort_flag_in_one_shot():
+    """Pins the reason the tier is off, in the tree Thot actually runs.
+
+    The day `-z` forwards an effort level, this fails and `TIER_REASONING`
+    can come back — which is the only way anyone would notice.
+    """
+    import inspect
+
+    from hermes_cli import main, oneshot
+
+    forwarded = inspect.signature(main._run_and_exit_oneshot).parameters
+    accepted = inspect.signature(oneshot.run_oneshot).parameters
+    assert "reasoning" not in forwarded and "reasoning" not in accepted
+
+
+def test_hermes_is_told_where_the_repository_is(dumping, tmp_path):
+    """The root rides in the prompt, because the flag that should carry it
+    is inert.
+
+    Thot passes `--in <root>`, and Hermes reads `--in` in `cmd_chat` only —
+    the one-shot dispatch exits before that code runs. Measured against the
+    real binary: `hermes -z 'pwd' --in <repo> -t terminal` answers with the
+    home directory, and `Popen(cwd=...)` does not survive either. Prime, on
+    the same measurement, honours `--cwd`.
+
+    Nothing raises when this goes wrong. Hermes simply audits whichever tree
+    it landed in and reports it with confidence, which is worse than an
+    error. Callers do pass the root today — it is the first line of every
+    `context_brief` — but the engine must not depend on their remembering.
+    """
+    engine = HermesEngine(root=tmp_path)
+    engine.run(AgentTask(id="t1", instructions="où suis-je ?"))
+
+    argv = json.loads((tmp_path / "argv.json").read_text())
+    prompt = argv[argv.index("-z") + 1]
+    assert str(tmp_path) in prompt
+
+
+def test_the_vendored_hermes_still_ignores_the_directory_flag_in_one_shot():
+    """Pins why the root is duplicated into the prompt, in the tree Thot runs.
+
+    `in_dir` has exactly one reader, and it lives inside `cmd_chat`; the
+    one-shot path never reaches it. The day `-z` honours `--in`, this fails
+    and the belt in `_anchor` can come off — which is the only way anyone
+    would find out.
+    """
+    import inspect
+
+    from hermes_cli import main
+
+    reader = 'getattr(args, "in_dir", None)'
+    assert inspect.getsource(main).count(reader) == 1
+    assert inspect.getsource(main.cmd_chat).count(reader) == 1
+    # It leaves by `os._exit`, past interpreter finalization — there is
+    # no path from the one-shot dispatch back into `cmd_chat`.
+    assert "os._exit" in inspect.getsource(main._exit_after_oneshot)
 
 
 @pytest.mark.parametrize("engine_class", [HermesEngine, PrimeEngine])
@@ -511,3 +585,313 @@ def test_the_audit_engines_are_narrowed_to_what_an_audit_needs():
         )
         assert "-t" in command and TOOLSETS in command
         assert "terminal" not in TOOLSETS and "code_execution" not in TOOLSETS
+
+
+def _dead(pid: int, *, within: float = 10.0) -> bool:
+    import signal
+    import time
+
+    deadline = time.monotonic() + within
+    while time.monotonic() < deadline:
+        try:
+            os.kill(pid, 0)
+        except OSError:
+            return True
+        time.sleep(0.05)
+    try:  # never leak a survivor into the rest of the suite
+        os.kill(pid, signal.SIGKILL)
+    except OSError:
+        pass
+    return False
+
+
+def test_an_interrupted_panel_leaves_no_agent_running(tmp_path):
+    """Ctrl-C during a panel fan_out must not hand the user a bill.
+
+    The workers are daemon threads: the interrupt hits the main thread inside
+    `join()`, the interpreter drops the workers where they stand — inside
+    `communicate()`, before their own cleanup — and `start_new_session` has
+    already put the children out of reach of the shell's Ctrl-C. Measured
+    before the fix: the four agents ran to completion, forty-five seconds
+    after python had exited.
+    """
+    import signal
+    import subprocess
+    import time
+    from pathlib import Path
+
+    import thot
+
+    source = str(Path(thot.__file__).resolve().parent.parent)
+    pids = tmp_path / "pids"
+    pids.mkdir()
+    child_source = (
+        "import os, time\n"
+        f"open(os.path.join({str(pids)!r}, str(os.getpid())), 'w').close()\n"
+        "time.sleep(60)\n"
+    )
+    script = tmp_path / "panel_run.py"
+    script.write_text(
+        "import sys\n"
+        "from thot.engine import process as process_group\n"
+        "from thot.engine.base import AgentResult, AgentTask, EngineCapabilities\n"
+        "from thot.engine.panel import PanelEngine\n"
+        f"CHILD = {child_source!r}\n"
+        "\n"
+        "class Slow:\n"
+        "    def __init__(self, name):\n"
+        "        self._name = name\n"
+        "    @property\n"
+        "    def capabilities(self):\n"
+        "        return EngineCapabilities(name=self._name, max_parallel=2)\n"
+        "    def run(self, task):\n"
+        "        process_group.run([sys.executable, '-c', CHILD],\n"
+        f"                          cwd={str(tmp_path)!r}, timeout=600)\n"
+        "        return AgentResult(task_id=task.id, text=self._name)\n"
+        "    def fan_out(self, tasks):\n"
+        "        return [self.run(t) for t in tasks]\n"
+        "\n"
+        "panel = PanelEngine(members=[Slow('hermes'), Slow('prime')])\n"
+        "panel.fan_out([AgentTask(id='probe:f%d' % i, instructions='x')\n"
+        "               for i in range(4)])\n"
+    )
+
+    runner = subprocess.Popen(
+        [sys.executable, str(script)],
+        env={**os.environ, "PYTHONPATH": source},
+        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+    )
+    try:
+        deadline = time.monotonic() + 30
+        while len(list(pids.iterdir())) < 4 and time.monotonic() < deadline:
+            time.sleep(0.05)
+        assert len(list(pids.iterdir())) == 4, "les 4 agents n'ont pas démarré"
+
+        runner.send_signal(signal.SIGINT)
+        assert runner.wait(timeout=30) != 0, "l'interruption doit rester une erreur"
+    finally:
+        if runner.poll() is None:
+            runner.kill()
+
+    survivors = [
+        entry.name for entry in pids.iterdir() if not _dead(int(entry.name))
+    ]
+    assert not survivors, f"agents orphelins encore vivants : {survivors}"
+
+
+def test_a_member_that_raises_is_named_rather_than_reported_as_no_engine():
+    """`aucun moteur disponible` blamed the panel for one agent's fault.
+
+    The hole was real: the index had already left `pending`, so nobody picked
+    the task up again, and the message named neither the member nor the cause.
+    """
+    from thot.engine.base import EngineCapabilities
+    from thot.engine.panel import PanelEngine
+
+    class _Raises(_Fake):
+        def run(self, task):
+            raise UnicodeDecodeError("utf-8", b"\xe9", 0, 1, "invalid start byte")
+
+    panel = PanelEngine(members=[_Raises("hermes"), _Fake("prime")])
+    results = panel.fan_out([_task("probe:f1"), _task("probe:f2")])
+
+    assert all(r.error is None or "aucun moteur" not in r.error for r in results)
+    broken = [r for r in results if r.error]
+    assert broken, "l'échec du membre doit rester visible"
+    assert all("hermes" in r.error for r in broken)
+
+
+def test_an_interrupt_stops_the_panel_from_handing_out_more_work():
+    """The flag is not what saves the children — a worker blocked inside
+    `communicate()` never reads it — but it is what stops the queue from
+    starting a fresh agent after the user has already asked to stop.
+    """
+    import signal
+    import threading
+    import time
+
+    from thot.engine.base import AgentResult, EngineCapabilities
+    from thot.engine.panel import PanelEngine
+
+    class _Slow:
+        def __init__(self, name):
+            self._name = name
+            self.seen = []
+
+        @property
+        def capabilities(self):
+            return EngineCapabilities(name=self._name, max_parallel=1)
+
+        def run(self, task):
+            self.seen.append(task.id)
+            time.sleep(0.5)
+            return AgentResult(task_id=task.id, text=self._name)
+
+        def fan_out(self, tasks):
+            return [self.run(t) for t in tasks]
+
+    members = [_Slow("hermes"), _Slow("prime")]
+    panel = PanelEngine(members=members)
+    tasks = [_task(f"probe:f{i}") for i in range(6)]
+
+    threading.Timer(0.1, lambda: os.kill(os.getpid(), signal.SIGINT)).start()
+    with pytest.raises(KeyboardInterrupt):
+        panel.fan_out(tasks)
+
+    time.sleep(1.0)  # let the two tasks in flight finish on their own
+    started = sum(len(member.seen) for member in members)
+    assert started == 2, f"{started} tâches lancées malgré l'interruption"
+
+
+# -- Prime's event stream, read honestly --------------------------------------
+#
+# `--mode json` never sets a non-zero exit code — print-mode.ts gates that on
+# `mode === "text"` — and a provider error never reaches stderr. The stream is
+# the only place a dead turn is visible.
+
+
+def _prime_stdout(*events) -> str:
+    return "\n".join(json.dumps(event) for event in events) + "\n"
+
+
+def _assistant(text, **extra):
+    return {"role": "assistant", "content": [{"type": "text", "text": text}], **extra}
+
+
+def _replayed(*messages):
+    """The shape Prime really emits: each message in three events."""
+    events = []
+    for message in messages:
+        events.append({"type": "message_end", "message": message})
+        events.append({"type": "turn_end", "message": message})
+    events.append({"type": "agent_end", "messages": list(messages)})
+    return _prime_stdout(*events)
+
+
+def test_a_turn_prime_could_not_finish_is_not_a_verdict(tmp_path):
+    """Seen against a real Prime driven through a failing provider: the agent
+    emitted a provisional `{"verdict": "refuted"}`, called a tool, got a 400
+    back, and stopped. Thot returned the provisional JSON as the answer, so a
+    live finding was buried as refuted by an agent that never concluded.
+    """
+    answered = _assistant(
+        '{"verdict": "refuted", "raison": "provisoire"}',
+        timestamp="t1", responseId="r1", stopReason="toolUse",
+        usage={"input": 2, "output": 166, "cacheWrite": 16371},
+    )
+    dead = {
+        "role": "assistant", "content": [], "timestamp": "t2", "responseId": "r2",
+        "stopReason": "error",
+        "errorMessage": "Provider rejected the request (400): prompt is too long",
+    }
+    task = AgentTask(id="refute:f1", instructions="x", schema={"type": "object"})
+
+    result = PrimeEngine(root=tmp_path)._parse(task, _replayed(answered, dead))
+
+    assert not result.ok
+    assert "prompt is too long" in result.error
+    assert result.data is None, "le verdict provisoire ne doit pas passer"
+
+
+def test_an_aborted_turn_is_reported_even_without_a_message(tmp_path):
+    dead = {"role": "assistant", "content": [], "stopReason": "aborted"}
+    task = AgentTask(id="probe:f1", instructions="x")
+
+    result = PrimeEngine(root=tmp_path)._parse(task, _replayed(dead))
+
+    assert not result.ok
+    assert "aborted" in result.error
+
+
+def test_a_long_answer_is_only_suspect_when_a_schema_was_expected(tmp_path):
+    """Truncation destroys a JSON object; it merely shortens free prose."""
+    truncated = _assistant("bla bla", stopReason="length")
+    stdout = _replayed(truncated)
+    engine = PrimeEngine(root=tmp_path)
+
+    free = engine._parse(AgentTask(id="t1", instructions="x"), stdout)
+    assert free.ok and free.text == "bla bla"
+
+    strict = engine._parse(
+        AgentTask(id="t1", instructions="x", schema={"type": "object"}), stdout
+    )
+    assert not strict.ok and "length" in strict.error
+
+
+def test_every_turn_is_billed_once_and_only_once(tmp_path):
+    """Prime bills per message and replays each message three times, so the
+    naive read charged the last turn only. Measured on a real two-turn run:
+    16559/7 reported for 32932/173 actually spent — the output column, which
+    never accumulates in the cache, was off by a factor of 24.7.
+    """
+    first = _assistant(
+        "je lis les fichiers", timestamp="t1", responseId="r1",
+        usage={"input": 2, "cacheRead": 0, "cacheWrite": 16371, "output": 166},
+    )
+    second = _assistant(
+        "voici mon verdict", timestamp="t2", responseId="r2",
+        usage={"input": 2, "cacheRead": 16371, "cacheWrite": 186, "output": 7},
+    )
+
+    result = PrimeEngine(root=tmp_path)._parse(
+        AgentTask(id="probe:f1", instructions="x"), _replayed(first, second)
+    )
+
+    assert result.usage == Usage(input_tokens=32932, output_tokens=173)
+    assert result.text == "voici mon verdict", "le dernier texte reste le verdict"
+
+
+def test_a_stream_without_identifiers_undercounts_rather_than_triples(tmp_path):
+    """`responseId` is optional and `timestamp` can be absent: with no stable
+    key the replays are indistinguishable, and the honest failure mode is to
+    charge once rather than three times."""
+    message = _assistant("ok", usage={"input": 10, "output": 5})
+
+    result = PrimeEngine(root=tmp_path)._parse(
+        AgentTask(id="probe:f1", instructions="x"), _replayed(message)
+    )
+
+    assert result.usage == Usage(input_tokens=10, output_tokens=5)
+
+
+LATIN1_HERMES = (
+    '#!{python}\n'
+    'import sys\n'
+    'sys.stdout.buffer.write("Le fichier café.py contient une faille.".encode("latin-1"))\n'
+)
+
+
+def test_an_agent_quoting_a_latin1_file_reports_instead_of_raising(
+    tmp_path, monkeypatch
+):
+    """`An engine never raises for a failed task: it reports` (base.py).
+
+    One 0xE9 copied out of a latin-1 file used to leave `Engine.run` as a
+    UnicodeDecodeError — a ValueError, so neither the `Timeout` nor the
+    `OSError` arm caught it — and took the whole deep pass down mid-batch,
+    losing the verdicts already produced.
+    """
+    binary = _install(tmp_path, monkeypatch, "hermes-latin1", LATIN1_HERMES)
+    monkeypatch.setattr("thot.fusion.locate.hermes_command", lambda: [str(binary)])
+
+    result = HermesEngine(root=tmp_path).run(AgentTask(id="t1", instructions="x"))
+
+    assert result.ok
+    assert result.text.startswith("Le fichier caf")
+    assert result.text.endswith("contient une faille.")
+
+
+def test_prime_carries_the_tier_into_the_flag_it_honours(dumping, tmp_path):
+    """The other half of the ruling on tiers, pinned.
+
+    Hermes declares none because `-z` drops the flag; Prime keeps all three
+    levels because `--thinking` is parsed in print mode and reaches the
+    model. `standard` is mapped on purpose: unmapped, the probe would run at
+    whatever the user set as their own default, `off` included.
+    """
+    for tier, level in (("cheap", "low"), ("standard", "medium"), ("deep", "high")):
+        PrimeEngine(root=tmp_path).run(
+            AgentTask(id="t1", instructions="x", tier=tier)
+        )
+        argv = json.loads((tmp_path / "argv.json").read_text())
+        assert argv[argv.index("--thinking") + 1] == level

@@ -169,6 +169,124 @@ def test_an_agent_that_leaves_the_disk_alone_passes(tmp_path):
     assert "n'a pas écrit" in detail
 
 
+# -- et la sonde doit être appelée -------------------------------------------
+#
+# `_cannot_write` existait, marchait, et n'était atteinte que pour `claude` :
+# les lignes `écriture · hermes` et `écriture · prime` étaient deux
+# `Check(..., True, <phrase constante>)`. La docstring du module pose
+# pourtant le contraire — « every check here runs a real operation » — et le
+# README dit que la capacité d'écriture est « mesurée en leur demandant de
+# créer un fichier, puis en regardant le disque ». C'étaient les deux seules
+# lignes qui voulaient dire « non testé ».
+
+
+def _fake_engine(*, writes: bool, seen: list):
+    from thot.engine.base import AgentResult, EngineCapabilities
+
+    class _Engine:
+        def __init__(self, root, max_parallel=1):
+            self.root = Path(root)
+
+        @classmethod
+        def available(cls):
+            return True
+
+        @property
+        def capabilities(self):
+            return EngineCapabilities(name="faux", max_parallel=1)
+
+        def run(self, task):
+            seen.append(task.id)
+            if writes and task.id == "probe:doctor-write":
+                (self.root / "ecrit-par-la-sonde.txt").write_text("ECRIT")
+            verdict = doctor.CANARY if task.id == "probe:doctor" else "fait"
+            return AgentResult(task_id=task.id, data={"verdict": verdict})
+
+        def fan_out(self, tasks):
+            return [self.run(t) for t in tasks]
+
+    return _Engine
+
+
+def test_the_write_line_of_an_unrestrictable_agent_is_measured(monkeypatch):
+    """Verte dans les deux cas — l'absence de mode lecture seule est une
+    portée, pas un défaut sur lequel agir — mais elle rapporte ce qui vient
+    d'être observé, pas une phrase écrite d'avance."""
+    from thot.engine import factory
+
+    seen: list[str] = []
+    monkeypatch.setattr(factory, "AGENT_ENGINES",
+                        {"hermes": _fake_engine(writes=False, seen=seen)})
+
+    checks = {check.name: check for check in doctor.run_agents()}
+
+    assert "probe:doctor-write" in seen
+    assert checks["écriture · hermes"].ok is True
+    assert checks["écriture · hermes"].detail == "n'a pas écrit cette fois"
+
+
+def test_an_unrestrictable_agent_that_writes_keeps_the_sentence_that_says_so(
+    monkeypatch,
+):
+    from thot.engine import factory
+
+    seen: list[str] = []
+    monkeypatch.setattr(factory, "AGENT_ENGINES",
+                        {"prime": _fake_engine(writes=True, seen=seen)})
+
+    checks = {check.name: check for check in doctor.run_agents()}
+
+    assert "probe:doctor-write" in seen
+    assert checks["écriture · prime"].ok is True
+    assert "noyau IPython" in checks["écriture · prime"].detail
+
+
+def test_a_write_probe_that_raises_is_not_read_as_a_measurement(monkeypatch):
+    """Sinon l'exception se lirait comme « a pu écrire » : une phrase de
+    portée affichée à la place d'une panne de la sonde."""
+    from thot.engine import factory
+
+    class _Broken:
+        def __init__(self, root, max_parallel=1):
+            pass
+
+        @classmethod
+        def available(cls):
+            return True
+
+        def run(self, task):
+            if task.id == "probe:doctor-write":
+                raise RuntimeError("la sonde n'a pas démarré")
+            from thot.engine.base import AgentResult
+
+            return AgentResult(task_id=task.id, data={"verdict": doctor.CANARY})
+
+        def fan_out(self, tasks):
+            return [self.run(t) for t in tasks]
+
+    monkeypatch.setattr(factory, "AGENT_ENGINES", {"hermes": _Broken})
+
+    checks = {check.name: check for check in doctor.run_agents()}
+
+    assert checks["écriture · hermes"].ok is False
+    assert "la sonde n'a pas démarré" in checks["écriture · hermes"].detail
+
+
+def test_the_write_probes_can_be_left_out(monkeypatch):
+    """Elles coûtent un appel modèle par agent — mesuré : 16,9 s pour hermes,
+    5,6 s pour prime. `writes=False` doit vraiment ne rien dépenser."""
+    from thot.engine import factory
+
+    seen: list[str] = []
+    monkeypatch.setattr(factory, "AGENT_ENGINES",
+                        {"hermes": _fake_engine(writes=False, seen=seen)})
+
+    names = {check.name for check in doctor.run_agents(writes=False)}
+
+    assert "écriture · hermes" not in names
+    assert "probe:doctor-write" not in seen
+
+
 def test_the_wiring_check_notices_a_plugin_that_was_disabled(monkeypatch):
     """`parts` says the trees are on disk and nothing about the wiring.
 
@@ -867,3 +985,58 @@ def test_the_remedy_that_needs_nothing_is_named_first(monkeypatch, tmp_path):
     ok, detail = doctor._loop()
     assert not ok
     assert "thot schedule start" in detail
+
+
+# -- une préférence n'est pas une installation incomplète -------------------
+#
+# `thot doctor` sur une machine neuve sortait rouge, et non nul, parce que la
+# boucle d'amélioration n'était pas programmée. Or `doctor` répond à « cette
+# installation est-elle entière », il est fait pour tenir dans un `&&` de CI,
+# et la première chose qu'un nouvel utilisateur voyait était un échec sur une
+# installation parfaitement saine.
+#
+# Programmer la boucle reste une bonne idée, et la ligne le dit. Ce qui
+# change, c'est qu'elle ne prétend plus que quelque chose est cassé — alors
+# qu'une boucle programmée mais qui n'atteint pas ses agents, elle, casse
+# vraiment et doit continuer d'échouer.
+
+
+def test_an_unscheduled_loop_is_a_hint_not_a_failure(monkeypatch):
+    from thot import doctor
+    from thot.schedule import jobs
+
+    monkeypatch.setattr(jobs, "load", lambda: [])
+
+    ok, detail = doctor._loop()
+
+    assert ok is True
+    assert "thot improve" in detail
+
+
+def test_a_scheduled_loop_whose_unit_cannot_judge_still_fails(tmp_path, monkeypatch):
+    """Une unité écrite mais sans PATH ne trouvera aucun agent et ne jugera rien."""
+    from thot import doctor
+    from thot.schedule import daemon, install, jobs
+
+    class _Job:
+        whole_program = True
+        deep = True
+        schedule = "daily"
+        budget = 8
+        name = "improve"
+
+    unit = tmp_path / "thot.improve.plist"
+    unit.write_text("<plist><dict></dict></plist>", encoding="utf-8")
+
+    monkeypatch.setattr(jobs, "load", lambda: [_Job()])
+    monkeypatch.setattr(install, "LAUNCH_AGENTS", tmp_path)
+    monkeypatch.setattr(install, "label", lambda job: "thot.improve")
+    monkeypatch.setattr(install, "launchd_runs", lambda label: 0)
+    monkeypatch.setattr(daemon, "running", lambda: None)
+    monkeypatch.setattr(doctor, "unreachable_from_launchd",
+                        lambda paths, home=None: [])
+
+    ok, detail = doctor._loop()
+
+    assert ok is False
+    assert "PATH" in detail

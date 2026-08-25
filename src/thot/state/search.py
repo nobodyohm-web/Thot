@@ -99,21 +99,41 @@ def _fts_search(
     if not match:
         return []
 
-    sql = (
-        f"SELECT m.session_id, m.seq, m.role, "
-        f"snippet(messages_fts, 0, '{OPEN}', '{CLOSE}', '…', {SNIPPET_TOKENS}), "
-        "m.created_at, s.root, s.title "
-        "FROM messages_fts "
-        "JOIN messages m ON m.id = messages_fts.rowid "
-        "JOIN sessions s ON s.id = m.session_id "
+    # The cut happens in the inner select, before the joins and before
+    # snippet(): ordering on the FTS rowid is the order fts5 already walks,
+    # so it returns `limit` rows and stops. Ordering on `m.id` instead reads
+    # every match, joins it, renders its snippet and sorts the lot in a temp
+    # b-tree, whose cost is the whole match set: measured on 150 000 short
+    # messages, 58 ms against 1.3 ms, and the gap widens with message length
+    # because the sorter renders every snippet before it sorts.
+    inner = (
+        "SELECT messages_fts.rowid AS rid FROM messages_fts "
+        "JOIN messages mm ON mm.id = messages_fts.rowid "
+        "JOIN sessions ss ON ss.id = mm.session_id "
         "WHERE messages_fts MATCH ?"
     )
     params: list = [match]
     if root:
-        sql += " AND s.root = ?"
+        # Inside, not outside: cutting on the unscoped set would hand back
+        # the twenty newest matches anywhere and then filter them down.
+        inner += " AND ss.root = ?"
         params.append(root)
-    sql += " ORDER BY m.id DESC LIMIT ?"
+    inner += " ORDER BY messages_fts.rowid DESC LIMIT ?"
     params.append(limit)
+
+    # messages_fts is joined a second time, with the same MATCH, because
+    # snippet() needs the query it is highlighting.
+    sql = (
+        f"SELECT m.session_id, m.seq, m.role, "
+        f"snippet(messages_fts, 0, '{OPEN}', '{CLOSE}', '…', {SNIPPET_TOKENS}), "
+        "m.created_at, s.root, s.title "
+        f"FROM ({inner}) f "
+        "JOIN messages_fts ON messages_fts.rowid = f.rid AND messages_fts MATCH ? "
+        "JOIN messages m ON m.id = f.rid "
+        "JOIN sessions s ON s.id = m.session_id "
+        "ORDER BY f.rid DESC"
+    )
+    params.append(match)
 
     try:
         return _rows_to_hits(connection.execute(sql, params).fetchall())
@@ -125,7 +145,12 @@ def _like_search(
     connection: sqlite3.Connection, query: str, *, root: str, limit: int
 ) -> list[Hit]:
     """The slow path: substring matching, always available."""
-    needle = f"%{query.strip().replace('%', '').replace('_', '')}%"
+    # Escaped, not stripped: `find_symbol` and `run_command` are the names
+    # one actually searches for in a Python repository, and deleting their
+    # underscore made every one of them unfindable. The backslash goes first
+    # so it does not double-escape what the next two replacements add.
+    body = query.strip().replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+    needle = f"%{body}%"
     sql = (
         "SELECT m.session_id, m.seq, m.role, m.content, m.created_at, s.root, s.title "
         "FROM messages m JOIN sessions s ON s.id = m.session_id "

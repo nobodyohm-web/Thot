@@ -74,29 +74,99 @@ def prime_root() -> Path | None:
     return _rooted(_override(PRIME_ENV), PRIME_DIRNAME, "package.json")
 
 
-def _venv_script(name: str) -> Path | None:
-    """A console script from the interpreter running Thot.
+def _bindir(venv: Path) -> Path:
+    return venv / ("Scripts" if os.name == "nt" else "bin")
 
-    Resolved next to `sys.executable` before falling back to PATH: in a
-    workspace the two programs share one environment, and picking up some
-    other Hermes from PATH would run a different install than the one this
-    checkout builds.
-    """
-    here = Path(sys.executable).parent / name
-    if here.is_file() and os.access(here, os.X_OK):
-        return here
-    found = shutil.which(name)
-    return Path(found) if found else None
+
+def _executable(directory: Path, name: str) -> Path | None:
+    candidate = directory / name
+    if candidate.is_file() and os.access(candidate, os.X_OK):
+        return candidate
+    return None
 
 
 def hermes_command() -> list[str] | None:
-    script = _venv_script("hermes")
-    if script is not None:
-        return [str(script)]
-    if hermes_root() is None:
+    """The entry point that runs the Hermes `hermes_root()` names, or nothing.
+
+    PATH is not a candidate. It used to be the second try, right after
+    `sys.executable`'s own directory — and Thot is normally installed as a uv
+    tool, whose interpreter has no `hermes` beside it. So on any machine
+    where Hermes was also installed the ordinary way, PATH won: `thot fusion`
+    printed `✓ hermes  <checkout>/hermes` and `thot hermes` ran
+    `~/.hermes/hermes-agent`, a different tree with a different version.
+
+    The two candidates that do not name the root — the interpreter's own
+    directory and the checkout's venv — are tried only while the root *is*
+    the bundled tree. `hermes` is a workspace member, so every environment
+    that installs Thot puts a `hermes` script beside `sys.executable`, and it
+    would win over `THOT_HERMES_ROOT` in the one case that variable exists
+    for: the same two trees on one line again, spelt differently.
+
+    Announcing one tree and running another is worse than reporting none, so
+    the last resort is Hermes's own launcher under the current interpreter:
+    it runs the right code (flat layout, so `sys.path[0]` beats site-packages)
+    and says so when the dependencies are missing. For an overridden root
+    there is no last resort after that — `-m hermes_cli.main` would import
+    the installed `hermes_cli`, which is precisely the other tree.
+    """
+    root = hermes_root()
+    if root is None:
+        return None
+    bundled = root.resolve() == (repo_root() / HERMES_DIRNAME).resolve()
+    directories: list[Path] = []
+    if bundled:
+        directories += [
+            Path(sys.executable).parent,     # a workspace: one env for both
+            _bindir(repo_root() / ".venv"),  # the checkout's own venv
+        ]
+    directories += [
+        _bindir(root / "venv"),   # Hermes installed under itself
+        _bindir(root / ".venv"),  # …and the way a recent checkout spells it
+    ]
+    for directory in directories:
+        script = _executable(directory, "hermes")
+        if script is not None:
+            return [str(script)]
+    launcher = root / "hermes"
+    if launcher.is_file():
+        return [sys.executable, str(launcher)]
+    if not bundled:
         return None
     # Importable but not installed: the module entry point still works.
     return [sys.executable, "-m", "hermes_cli.main"]
+
+
+def hermes_python() -> Path | None:
+    """The interpreter that will run Hermes, or nothing when it cannot be told.
+
+    A different question from `hermes_command()`, and the fusion depends on
+    the difference. Half of what wiring buys — Hermes gaining `code_map`,
+    `find_symbol`, `callers` — needs the MCP SDK importable *by the
+    interpreter that runs Hermes*, which is not Thot's own: `thot` is
+    documented as a uv tool install, with its own environment, and the
+    console script it hands back names its interpreter on its first line.
+
+    `#!/usr/bin/env python3` names the finder rather than the interpreter,
+    and guessing which `python3` that resolves to would be inventing an
+    answer. Nothing is returned instead, so the caller can say it does not
+    know rather than say no.
+    """
+    command = hermes_command()
+    if not command:
+        return None
+    if len(command) > 1:
+        return Path(command[0])  # already an interpreter: [python, -m, …]
+    try:
+        with Path(command[0]).open("rb") as handle:
+            first_line = handle.readline(512)
+    except OSError:
+        return None
+    if not first_line.startswith(b"#!"):
+        return None
+    named = first_line[2:].strip().decode("utf-8", "replace").split()
+    if not named or named[0].rsplit("/", 1)[-1] == "env":
+        return None
+    return Path(named[0])
 
 
 def prime_entry() -> Path | None:

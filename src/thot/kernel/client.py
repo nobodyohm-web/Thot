@@ -204,8 +204,21 @@ class Kernel:
                     continue
 
                 calls_here += 1
-                reply = self._serve(message, calls_here)
-                self._write(reply)
+                # Belt. `_serve` guards itself; this keeps the invariant
+                # true the day someone rewrites it without one.
+                try:
+                    reply = self._serve(message, calls_here)
+                except Exception as exc:
+                    reply = {"op": REPLY, "for": message.get("id"),
+                             "error": str(exc)}
+                try:
+                    self._write(reply)
+                except Exception as exc:
+                    # The worker died between its request and this answer.
+                    # Nobody will read the reply, and nobody will send the
+                    # RESULT this loop is waiting for either.
+                    self.stop()
+                    return Outcome(error=f"le noyau s'est arrêté : {exc}")
 
     # -- what a cell may ask for -----------------------------------------
 
@@ -214,19 +227,28 @@ class Kernel:
         payload = message.get("payload") or {}
         answer: dict = {"op": REPLY, "for": message.get("id")}
 
-        if kind == "rlm":
-            text, error = self._rlm(payload, calls_here)
-            if error:
-                answer["error"] = error
+        # Guarded here rather than around the call, so every `kind` — the two
+        # below and whatever is added later — inherits it. A host call that
+        # raises used to leave the worker blocked in `Host.request` for ever:
+        # the next cell then waited out its whole budget and `stop()` threw
+        # the persistent namespace away, which is the only thing the kernel has.
+        try:
+            if kind == "rlm":
+                text, error = self._rlm(payload, calls_here)
+                if error:
+                    answer["error"] = error
+                else:
+                    answer["result"] = {"text": text}
+            elif kind == "harness":
+                result = self._harness(payload)
+                if result.get("error"):
+                    answer["error"] = result["error"]
+                else:
+                    answer["result"] = result
             else:
-                answer["result"] = {"text": text}
-            return answer
-
-        if kind == "harness":
-            answer["result"] = self._harness(payload)
-            return answer
-
-        answer["error"] = f"demande inconnue : {kind}"
+                answer["error"] = f"demande inconnue : {kind}"
+        except Exception as exc:
+            answer["error"] = str(exc)
         return answer
 
     def _rlm(self, payload: dict, calls_here: int) -> tuple[str, str]:
@@ -270,10 +292,16 @@ class Kernel:
             return {"id": ""}
         action = str(payload.get("action") or "")
         if action == "remember":
-            entry = self.harness.remember(
-                title=str(payload.get("title") or ""),
-                content=str(payload.get("content") or ""),
-                kind=str(payload.get("kind") or "memory"),
-            )
+            try:
+                entry = self.harness.remember(
+                    title=str(payload.get("title") or ""),
+                    content=str(payload.get("content") or ""),
+                    kind=str(payload.get("kind") or "memory"),
+                )
+            except Exception as exc:
+                # Named rather than swallowed: an empty body and a read-only
+                # directory both land here, and a cell handed an empty id
+                # cannot tell which it was.
+                return {"error": f"remember() a échoué : {exc}"}
             return {"id": entry.id}
         return {"id": ""}

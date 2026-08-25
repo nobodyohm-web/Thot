@@ -40,7 +40,11 @@ def test_store_persists_the_run(toy_repo, tmp_path):
     result = run_audit(toy_repo, store=store)
     assert result.run_id is not None
     assert len(store.findings_for_run(result.run_id)) == len(result.findings)
-    assert store.cached_symbol_hashes()
+    # `symbol_cache` n'est plus alimenté : personne ne le relisait, et il ne
+    # pouvait pas l'être — la clé est le nom du symbole, sans chemin ni
+    # version de fichier. L'écriture coûtait 101 533 lignes par audit de
+    # `hermes/` pour rien.
+    assert store.cached_symbol_hashes() == {}
     store.close()
 
 
@@ -223,3 +227,49 @@ def test_a_list_exactly_at_the_limit_says_nothing_extra():
     from thot.pipeline import touched_lines
 
     assert len(touched_lines(tuple(f"f{i}.py" for i in range(10)))) == 10
+
+
+def test_the_parallel_sweeps_say_exactly_what_the_serial_ones_said(toy_repo, monkeypatch):
+    """Le pool ne change pas ce qu'un audit trouve, seulement en combien de temps.
+
+    Ce test descend le seuil pour emprunter POUR DE VRAI le chemin
+    multiprocessus, et il exige la preuve qu'un pool a démarré : sans elle il
+    comparerait la version en série à elle-même. Il attrape aussi le piège
+    du spawn — un worker réimporte le module, donc tout état que le parent
+    avait posé dans un global lui parvient vide.
+    """
+    from thot import parallel
+    from thot.pipeline import run_audit
+
+    monkeypatch.setenv("THOT_JOBS", "1")
+    serial = run_audit(toy_repo, require_authorization=False)
+
+    monkeypatch.setenv("THOT_JOBS", "2")
+    monkeypatch.setattr(parallel, "PARALLEL_THRESHOLD", 1)
+    started = []
+    real_pool = parallel.ProcessPoolExecutor
+
+    def counting(*args, **kwargs):
+        started.append(kwargs.get("max_workers"))
+        return real_pool(*args, **kwargs)
+
+    monkeypatch.setattr(parallel, "ProcessPoolExecutor", counting)
+    spread = run_audit(toy_repo, require_authorization=False)
+
+    assert started, "aucun pool démarré : le chemin parallèle n'a pas été pris"
+    assert [f.id for f in spread.findings] == [f.id for f in serial.findings]
+    assert [(f.severity, f.location.path, f.location.line) for f in spread.findings] == \
+           [(f.severity, f.location.path, f.location.line) for f in serial.findings]
+
+
+def test_a_finding_names_the_kind_of_source_it_came_from(toy_repo):
+    """Two findings of the same rule can sit at two different ranks now,
+    because one path started at a request and the other at a command line.
+    A rank whose reason is invisible is a rank nobody can argue with."""
+    write_authorization(toy_repo, owner="tester")
+
+    finding = next(f for f in run_audit(toy_repo).findings
+                   if f.rule == "sink.os.system")
+
+    assert "ligne de commande" in finding.failure_scenario
+    assert (finding.provenance or {}).get("source_rule") == "source.argv"

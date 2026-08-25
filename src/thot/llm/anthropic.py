@@ -32,6 +32,32 @@ def is_subscription_token(token: str) -> bool:
     return token.startswith("sk-ant-oat")
 
 
+def system_blocks(system: str) -> list[dict]:
+    """The system prompt, marked as the end of a cacheable prefix.
+
+    `engine/base.py` documents that `AgentTask` keeps `context` apart from
+    `instructions` "so an engine that supports prompt caching can cache the
+    bulky half without touching the question". The separation was made and
+    the breakpoint was never placed — `cache_control` appeared nowhere in
+    this package — so the repository map was re-read, and re-billed, on
+    every single turn of every session.
+
+    One marker is enough. The API caches everything up to and including the
+    block that carries it, and the request order is tools, then system, then
+    messages: a breakpoint here covers the tool schemas too. Below the
+    minimum cacheable length the header is ignored rather than refused, so a
+    short system prompt costs nothing to mark.
+    """
+    if not system:
+        # A breakpoint on an empty prefix is a header the API rejects.
+        return []
+    return [{
+        "type": "text",
+        "text": system,
+        "cache_control": {"type": "ephemeral"},
+    }]
+
+
 class AnthropicProvider:
     name = "anthropic"
 
@@ -111,8 +137,9 @@ class AnthropicProvider:
             "messages": self._encode(messages),
             "stream": True,
         }
-        if system:
-            payload["system"] = system
+        blocks = system_blocks(system)
+        if blocks:
+            payload["system"] = blocks
         if tools:
             payload["tools"] = [
                 {

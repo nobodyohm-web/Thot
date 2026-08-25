@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import os
+import subprocess
+import time
 from pathlib import Path
 
 from thot.schedule import autostart
@@ -57,3 +60,62 @@ def test_bash_prefers_a_profile_that_exists(tmp_path):
     (tmp_path / ".bash_profile").write_text("")
     assert autostart.startup_file("/bin/bash", tmp_path) \
         == tmp_path / ".bash_profile"
+
+
+def _stage(tmp_path: Path) -> tuple[Path, Path, Path]:
+    """A HOME, a `thot` on PATH that only says it was called, and the trace."""
+    home = tmp_path / "home"
+    (home / ".thot").mkdir(parents=True)
+    binaries = tmp_path / "bin"
+    binaries.mkdir()
+    trace = tmp_path / "appelé"
+    stub = binaries / "thot"
+    stub.write_text(f'#!/bin/sh\nprintf "%s\\n" "$*" >> {trace}\n')
+    stub.chmod(0o755)
+    return home, binaries, trace
+
+
+def _decide(home: Path, binaries: Path, *, wait: float = 5.0) -> bool:
+    """Run the startup block itself and report whether it relaunched."""
+    environment = dict(os.environ)
+    environment.pop("THOT_NO_AUTOSTART", None)
+    environment["HOME"] = str(home)
+    environment["PATH"] = f"{binaries}:{environment['PATH']}"
+    subprocess.run(["/bin/sh", "-c", autostart.BODY], env=environment,
+                   check=True)
+    trace = binaries.parent / "appelé"
+    deadline = time.monotonic() + wait   # the block starts in the background
+    while time.monotonic() < deadline:
+        if trace.exists():
+            return True
+        time.sleep(0.05)
+    return False
+
+
+def test_only_a_real_scheduler_stops_the_line_from_relaunching(tmp_path):
+    """`kill -0` on a bare pid answers for whoever holds it today.
+
+    The pidfile outlives a reboot and a `kill -9`, and pids are reused: the
+    test said "alive", the block stayed quiet, and the scheduler this line
+    exists to revive never came back.
+    """
+    home, binaries, _ = _stage(tmp_path)
+    pidfile = home / ".thot" / "scheduler.pid"
+
+    # A pid of the user's that is emphatically not the scheduler: this one.
+    pidfile.write_text(str(os.getpid()))
+    assert _decide(home, binaries), \
+        "un pid étranger doit faire relancer le planificateur"
+
+    (tmp_path / "appelé").unlink()
+    impostor = tmp_path / "faux.sh"
+    impostor.write_text("#!/bin/sh\nsleep 30\n")
+    scheduler = subprocess.Popen(["/bin/sh", str(impostor),
+                                  "schedule", "daemon"])
+    try:
+        pidfile.write_text(str(scheduler.pid))
+        assert not _decide(home, binaries, wait=1.5), \
+            "un planificateur vivant ne doit pas en faire démarrer un second"
+    finally:
+        scheduler.kill()
+        scheduler.wait()

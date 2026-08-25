@@ -20,6 +20,11 @@ from typing import Callable
 @dataclass(frozen=True)
 class DeepResult:
     findings: list
+    # Candidates a measured-noise rule produced, held back from the model
+    # rather than argued. Counted so the report can say it out loud: a
+    # budget that quietly skips two thirds of a pool is indistinguishable
+    # from one that found nothing there.
+    deferred: int = 0
     # Files the pass itself changed. Empty is the normal answer, and the only
     # one worth trusting: two of the three agents can write.
     touched: tuple[str, ...] = ()
@@ -45,7 +50,9 @@ def run_deep_pass(
     """
     from thot.analysis import attempts, tripwire
     from thot.analysis.probe import analyse
-    from thot.memory.base import record_verdicts
+    from thot.contracts import Confidence
+    from thot.memory.base import carries_decision, record_verdicts
+    from thot.scoring.prior import Prior
 
     root = Path(root)
     engine_name = engine.capabilities.name
@@ -62,9 +69,19 @@ def run_deep_pass(
         if on_decided is not None:
             on_decided(finding)
 
+    prior = Prior.from_home()
+    deferred = sum(
+        1 for f in findings
+        if prior.noisy(f.rule)
+        and f.confidence is not Confidence.REFUTED
+        and not carries_decision(f)
+    )
+
     judged = analyse(
         root, findings, engine,
         limit=limit, on_decided=settled, skip=skip, demote=attempts.demoted(),
+        prior=prior,
     )
     touched = tripwire.touched(before, tripwire.snapshot(root, files))
-    return DeepResult(findings=judged, touched=touched, engine=engine_name)
+    return DeepResult(findings=judged, touched=touched, engine=engine_name,
+                      deferred=deferred)

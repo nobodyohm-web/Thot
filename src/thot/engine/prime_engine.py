@@ -10,10 +10,8 @@ Prime is a TypeScript program; Thot drives its CLI and never imports it.
 from __future__ import annotations
 
 import json
-import subprocess
 
 from thot.engine import process as process_group
-from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -28,6 +26,12 @@ SYSTEM = (
 
 DEFAULT_PARALLEL = 4
 
+# All three tiers, `standard` included — deliberately, and unlike Hermes,
+# which declares no tiering at all because `-z` drops the flag. Prime's
+# `--thinking` is parsed in print mode (cli/args.ts) and accepts
+# off/minimal/low/medium/high/xhigh/max, so every level here lands. Leaving
+# `standard` unmapped would hand the probe whatever the user's own default
+# is — including `off` — which is the tier deciding itself.
 TIER_THINKING = {"cheap": "low", "standard": "medium", "deep": "high"}
 
 MAX_PROMPT = 100_000
@@ -119,6 +123,46 @@ class PrimeEngine:
     def _parse(self, task: AgentTask, stdout: str) -> AgentResult:
         text = ""
         usage = Usage()
+        stop: str | None = None
+        error: str | None = None
+        billed: set[tuple[object, object]] = set()
+
+        def absorb(message: object) -> None:
+            """Fold one assistant message into the state of the run.
+
+            Shared between `message` and `messages[]` on purpose: reading them
+            in two places let the branch decide which `stopReason` was the
+            last one seen, which is not a property of the run.
+            """
+            nonlocal text, usage, stop, error
+            if not (isinstance(message, dict) and message.get("role") == "assistant"):
+                return
+            # Every message event carries the whole message, so the last one
+            # wins: no need to reassemble the deltas. This has to happen
+            # before the de-duplication below, or `agent_end` replaying the
+            # run would drop the final answer.
+            text = _text_of(message) or text
+            stop = message.get("stopReason")
+            error = message.get("errorMessage")
+
+            # Prime bills per message — one API call each — and emits the
+            # same message three times: `message_end`, `turn_end`, and again
+            # inside `agent_end.messages`. Summing without a stable key would
+            # charge it three times; overwriting charged only the last turn,
+            # measured at 16559/7 tokens for a run that spent 32932/173.
+            # `responseId` and `timestamp` are both optional, and a stream
+            # carrying neither collapses to one entry: under-counting beats
+            # tripling.
+            key = (message.get("timestamp"), message.get("responseId"))
+            if key in billed:
+                return
+            billed.add(key)
+            counts = _usage_of(message)
+            if counts is not None:
+                usage = Usage(
+                    input_tokens=usage.input_tokens + counts.input_tokens,
+                    output_tokens=usage.output_tokens + counts.output_tokens,
+                )
 
         for line in stdout.splitlines():
             line = line.strip()
@@ -131,19 +175,24 @@ class PrimeEngine:
             if not isinstance(event, dict):
                 continue
 
-            # Every message event carries the whole message, so the last one
-            # wins: no need to reassemble the deltas.
             if event.get("type") in {"turn_end", "message_end", "agent_end"}:
-                message = event.get("message")
-                if isinstance(message, dict) and message.get("role") == "assistant":
-                    text = _text_of(message) or text
-                    usage = _usage_of(message) or usage
+                absorb(event.get("message"))
                 for message in event.get("messages") or []:
-                    if isinstance(message, dict) and message.get("role") == "assistant":
-                        text = _text_of(message) or text
-                        usage = _usage_of(message) or usage
+                    absorb(message)
 
         text = text.strip()
+        # A turn that died still has the text of the previous one behind it,
+        # and `--mode json` exits 0 whatever happened (print-mode.ts sets the
+        # code only when `mode === "text"`), with nothing on stderr. Without
+        # this, a provisional answer came back as the verdict of a run that
+        # never concluded. Truncation only matters when a schema is due: a
+        # free-form answer that ran long is still an answer.
+        suspect = {"error", "aborted"} | ({"length"} if task.schema else set())
+        if stop in suspect:
+            return AgentResult(
+                task_id=task.id, text=text, usage=usage,
+                error=str(error or f"Prime a interrompu le tour ({stop})"),
+            )
         if not text:
             return AgentResult(task_id=task.id, error="réponse vide de Prime")
 
@@ -160,8 +209,9 @@ class PrimeEngine:
             return []
         if len(tasks) == 1 or self.max_parallel <= 1:
             return [self.run(task) for task in tasks]
-        with ThreadPoolExecutor(max_workers=self.max_parallel) as pool:
-            return list(pool.map(self.run, tasks))
+        return process_group.parallel_map(
+            self.run, tasks, max_workers=self.max_parallel
+        )
 
 
 def _text_of(message: dict) -> str:

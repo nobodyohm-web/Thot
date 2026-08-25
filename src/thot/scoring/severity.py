@@ -55,15 +55,17 @@ def accessibility_weight(
         # is Python-only — `scope.detect._python_entrypoints` is its sole
         # producer. So a repository holding one Python `main()` and nine
         # hundred TypeScript files answers True here for its TypeScript
-        # symbols too, and buries them on the authority of entry points that
-        # could never reach them. Prime is exactly that shape.
+        # symbols too. The per-language answer is `escapes`, decided by
+        # `CodeGraph.reach_unknown`, which reports unknown reach for every
+        # symbol outside the language the entry points describe.
         #
-        # Left alone on purpose, and measured before deciding: recomputing
-        # every JavaScript and TypeScript candidate on both shipped trees
-        # with `entrypoints_known=False` moves not one severity. Those rules
-        # carry too little impact for 0.2 against 0.8 to cross a threshold.
-        # A per-language answer is the honest one and would be worth writing
-        # the day a JavaScript rule carries enough impact to notice.
+        # This comment used to claim the gap cost nothing, having measured
+        # that no severity moved on the two shipped trees. That measurement
+        # was wrong: `sink.js.exec` and `sink.js.spawn` carry CRITICAL
+        # impact, and 1.0 x 0.8 x 0.6 = 0.48 against 1.0 x 0.2 x 0.6 = 0.12
+        # crosses two thresholds. Re-measured, on hermes/ alone three
+        # JavaScript findings move from low to medium — from hidden to shown
+        # at the default threshold — one of them in `electron/terminal-ipc`.
         if escapes:
             return 0.8
         return 0.2 if entrypoints_known else 0.8
@@ -82,6 +84,7 @@ def compute_severity(
     entrypoints_known: bool = True,
     escapes: bool = False,
     role: Role = Role.PRODUCTION,
+    reachable: bool = False,
 ) -> Severity:
     """`role` is the fourth term the graph cannot supply.
 
@@ -90,10 +93,14 @@ def compute_severity(
     example — and on the two programs Thot ships with, half the HIGH findings
     were exactly that.
     """
+    # `reachable` is for a finding that is a property of the line rather than
+    # of a path to it — a pattern match. There is no route to discount,
+    # because the rule never claimed one.
     score = (
         _IMPACT_SCORE[impact]
-        * accessibility_weight(distance, entrypoints_known=entrypoints_known,
-                               escapes=escapes)
+        * (1.0 if reachable else
+           accessibility_weight(distance, entrypoints_known=entrypoints_known,
+                                escapes=escapes))
         * _CONFIDENCE_SCORE[confidence]
         * role_weight(role)
     )

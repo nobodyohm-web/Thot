@@ -8,11 +8,12 @@ from dataclasses import replace
 from pathlib import Path
 
 from thot import __version__
+from thot.bench.run import DEFAULT_CORPUS, DEFAULT_FLOOR
 from thot.contracts import Severity
 from thot.output import local_time
 from thot.schedule.jobs import SCHEDULES
 from thot.analysis.probe import DEFAULT_LIMIT
-from thot.errors import AuthorizationError, ThotError
+from thot.errors import AuthorizationError, StateError, ThotError
 from thot.gateway.config import PLATFORMS as GATEWAY_PLATFORMS
 
 EXIT_OK = 0
@@ -236,9 +237,38 @@ def build_parser() -> argparse.ArgumentParser:
         "mcp", help="Les serveurs MCP disponibles et connectés"
     )
     mcp_sub = mcp_cmd.add_subparsers(dest="action")
-    mcp_sub.add_parser(
+    mcp_serve = mcp_sub.add_parser(
         "serve",
-        help="Servir la carte de Thot en MCP sur stdio (lancé par un agent)",
+        help="Servir la carte de Thot en MCP (lancé par un agent)",
+    )
+    # Two transports because the two agents accept different ones, not because
+    # anybody wanted a choice. Hermes starts the server itself and speaks over
+    # the pipe it opened; Prime's client is streamable HTTP and nothing else —
+    # `mcp-manager.js` drops every entry whose type is not "http".
+    mcp_serve.add_argument(
+        "--http", action="store_true",
+        help="Écouter en HTTP sur la boucle locale, pour Prime",
+    )
+    mcp_serve.add_argument(
+        "--port", type=int, default=None,
+        help="Port d'écoute avec --http (défaut : 8787)",
+    )
+    mcp_service = mcp_sub.add_parser(
+        "service",
+        help="Tenir le serveur HTTP en vie, au démarrage de la session",
+    )
+    mcp_service.add_argument(
+        "--install", action="store_true",
+        help="Écrire l'unité (elle n'est jamais chargée sans toi)",
+    )
+    mcp_service.add_argument(
+        "--remove", action="store_true", help="Dire comment la retirer",
+    )
+    mcp_service.add_argument(
+        "--port", type=int, default=None, help="Port servi (défaut : 8787)",
+    )
+    mcp_service.add_argument(
+        "--root", default="", help="Arbre servi (défaut : le dossier courant)",
     )
     mcp_list = mcp_sub.add_parser("list", help="Le catalogue et ce qui est connecté")
     mcp_list.add_argument("--json", action="store_true", help="Sortie JSON")
@@ -312,6 +342,87 @@ def build_parser() -> argparse.ArgumentParser:
         help="Rendre la boucle permanente au lieu de la lancer une fois",
     )
 
+    evolve = subparsers.add_parser(
+        "evolve",
+        help="Faire modifier le code par les agents, la suite de tests pour juge",
+    )
+    # `*` and not `+`: `--from-bench` takes the goals from the measurement,
+    # and a loop that is told where it is weakest should not also have to be
+    # told. The empty-and-no-flag case is refused in `_cmd_evolve`.
+    evolve.add_argument("goal", nargs="*", help="Ce qu'il faut améliorer")
+    evolve.add_argument(
+        "--rounds", type=int, default=1,
+        help="Tentatives par objectif ; s'arrête quand rien ne change",
+    )
+    evolve.add_argument(
+        "--engine", choices=["hermes", "prime", "claude"], default="",
+        help="Qui écrit (défaut : le premier installé)",
+    )
+    evolve.add_argument(
+        "--scope", default="src,tests",
+        help="Ce que la boucle peut toucher — et donc ce qui est sauvegardé",
+    )
+    evolve.add_argument(
+        "--gate", default="",
+        help="La commande qui juge (défaut : la suite de tests)",
+    )
+    evolve.add_argument("--path", default=".", help="Le dépôt à faire évoluer")
+    evolve.add_argument(
+        "--sans-mesure", action="store_true",
+        help="Ne juger que sur les tests — la boucle peut alors régresser en silence",
+    )
+    evolve.add_argument(
+        "--from-bench", action="store_true",
+        help="Prendre les objectifs dans la mesure : les pires catégories "
+             "du corpus, les plus mauvaises d'abord",
+    )
+    evolve.add_argument(
+        "--corpus", metavar="CHEMIN", default="",
+        help="Le corpus étiqueté qui juge, et qui fournit les objectifs "
+             f"(défaut : {DEFAULT_CORPUS})",
+    )
+    evolve.add_argument(
+        "--hold-out", metavar="SUITE", default="",
+        help="Suite exclue du score gardé et surveillée à part — le "
+             "contrôle de surapprentissage",
+    )
+    evolve.add_argument(
+        "--fused", action="store_true",
+        help="Hermes conçoit, Prime écrit — au lieu d'un seul agent",
+    )
+
+    bench = subparsers.add_parser(
+        "bench",
+        help="Mesurer Thot sur un corpus étiqueté par quelqu'un d'autre",
+    )
+    bench.add_argument(
+        "path", nargs="?", default="",
+        help=f"Le corpus, ou une seule suite (défaut : {DEFAULT_CORPUS})",
+    )
+    bench.add_argument(
+        "--json", action="store_true",
+        help="La mesure en JSON sur la sortie standard, et rien d'autre",
+    )
+    bench.add_argument(
+        "--floor", choices=[s.value for s in Severity], default=DEFAULT_FLOOR,
+        help="Le seuil du rapport mesuré — ce qu'un lecteur verrait "
+             f"vraiment (défaut : {DEFAULT_FLOOR})",
+    )
+    bench.add_argument(
+        "--match", choices=["cwe", "filename"], default="cwe",
+        help="cwe : le finding doit nommer la classe étiquetée. filename : "
+             "tout finding sur le fichier compte — où Thot regarde, pas ce "
+             "qu'il comprend",
+    )
+    bench.add_argument(
+        "--hold-out", metavar="SUITE", default="",
+        help="Suite rapportée à part : le contrôle de surapprentissage",
+    )
+    bench.add_argument(
+        "--limit", type=int, default=12,
+        help="Catégories affichées, les pires d'abord",
+    )
+
     plugins_cmd = subparsers.add_parser(
         "plugins", help="Les plugins chargés, et ceux qu'un dépôt propose"
     )
@@ -358,6 +469,14 @@ def build_parser() -> argparse.ArgumentParser:
     export.add_argument("--out", help="Fichier de sortie")
     export.add_argument("--html", action="store_true",
                         help="Écrire une page HTML autonome plutôt que du JSON")
+
+    rules = subparsers.add_parser(
+        "rules", help="Ce que chaque règle a valu, mesuré sur les runs passés"
+    )
+    rules.add_argument(
+        "--all", action="store_true",
+        help="Y compris les règles jamais jugées, dont on ne sait rien",
+    )
 
     importer = subparsers.add_parser("import", help="Recharger une session exportée")
     importer.add_argument("file")
@@ -417,6 +536,10 @@ def build_parser() -> argparse.ArgumentParser:
                        help="Où s'exécutent les commandes de la session")
     audit.add_argument("--json", action="store_true", help="Sortie JSON")
     audit.add_argument("--markdown", action="store_true", help="Sortie Markdown")
+    audit.add_argument(
+        "--sarif", action="store_true",
+        help="Sortie SARIF 2.1 (GitHub code scanning, GitLab, éditeurs)",
+    )
     audit.add_argument("--html", action="store_true",
                        help="Sortie HTML autonome (un seul fichier, aucun réseau)")
     audit.add_argument("--paths", action="store_true",
@@ -436,6 +559,11 @@ def build_parser() -> argparse.ArgumentParser:
     audit.add_argument(
         "--all", action="store_true",
         help="Tout afficher, y compris le bruit de faible sévérité",
+    )
+    audit.add_argument(
+        "--jobs", type=int, default=None, metavar="N",
+        help="Processus pour l'indexation et les balayages "
+             "(défaut : les cœurs ; 1 pour tout faire en série)",
     )
     audit.add_argument(
         "--no-store", action="store_true", help="Ne pas persister le run"
@@ -517,6 +645,38 @@ def _cmd_init(args) -> int:
     return EXIT_OK
 
 
+# What `--out` writes when no format flag says which. Reading the name the
+# user already typed beats making them type it twice — and beats what it
+# replaces: `--out` was only ever consulted inside the `rendered is not None`
+# branch, so `thot audit . --out rapport.json` printed to the terminal, wrote
+# nothing, and exited 0. A request for a file, answered with success and no
+# file, is worse than the traceback it was meant to fix.
+_FORMAT_BY_SUFFIX = {
+    ".json": "json",
+    ".md": "markdown",
+    ".markdown": "markdown",
+    ".html": "html",
+    ".htm": "html",
+    ".sarif": "sarif",
+}
+
+
+def _output_format(args) -> str | None | bool:
+    """`"json"`, `"markdown"`, `"html"`, `"sarif"`; None for the terminal,
+    False to refuse."""
+    if args.json:
+        return "json"
+    if args.markdown:
+        return "markdown"
+    if getattr(args, "sarif", False):
+        return "sarif"
+    if args.html:
+        return "html"
+    if not args.out:
+        return None
+    return _FORMAT_BY_SUFFIX.get(Path(args.out).suffix.lower(), False)
+
+
 def _cmd_audit(args) -> int:
     from thot.console import print_paths, print_report
     from thot.pipeline import run_audit
@@ -526,6 +686,28 @@ def _cmd_audit(args) -> int:
     from thot.store.db import Store
 
     root = Path(args.path).resolve()
+
+    # Decided before a single file is read: an audit of a large tree takes
+    # minutes, and discovering the output path is unusable at the end of it
+    # is the whole complaint.
+    if getattr(args, "jobs", None) is not None:
+        # Put in the environment rather than threaded through six call sites:
+        # `parallel.over_files` already reads it there, and the two ways of
+        # asking must not be able to disagree.
+        import os as _os
+
+        from thot.parallel import JOBS_ENV
+
+        _os.environ[JOBS_ENV] = str(max(1, args.jobs))
+
+    chosen = _output_format(args)
+    if chosen is False:
+        print(
+            f"Format indéterminé pour « {args.out} ». Nomme le fichier .json, "
+            ".md ou .html, ou passe --json, --markdown ou --html.",
+            file=sys.stderr,
+        )
+        return EXIT_USAGE
 
     engine = None
     if getattr(args, "engine", "") and not args.deep:
@@ -561,13 +743,32 @@ def _cmd_audit(args) -> int:
             file=sys.stderr,
         )
 
-    store = None if args.no_store else Store.open(run_store())
+    import sqlite3
+
+    store = None
+    if not args.no_store:
+        try:
+            store = Store.open(run_store())
+        except (sqlite3.Error, OSError) as exc:
+            # The rule Session._open_state already applies: a store that will
+            # not open costs history, not the run.
+            print(f"Historique indisponible : {run_store()} ({exc}) — la "
+                  "supprimer la recrée ; l'audit continue sans le mémoriser.",
+                  file=sys.stderr)
 
     memory = None
     if not args.no_memory:
         from thot.memory import build_memory
 
-        memory = build_memory(root)
+        try:
+            memory = build_memory(root)
+        except (sqlite3.Error, OSError) as exc:
+            from thot.paths import memory_db
+
+            # An audit without remembered verdicts is a whole audit, only
+            # less filtered — the one thing it must not be is a traceback.
+            print(f"Verdicts mémorisés indisponibles : {memory_db()} ({exc}) "
+                  "— la supprimer la recrée.", file=sys.stderr)
 
     progress = _deep_progress() if engine is not None else None
 
@@ -618,6 +819,14 @@ def _cmd_audit(args) -> int:
             file=sys.stderr,
         )
 
+    if result.deferred:
+        print(
+            f"{result.deferred} finding(s) laissés `plausible` : leur règle "
+            f"n'a jamais rien confirmé sur assez de cas pour mériter un "
+            f"modèle (`thot rules` pour le détail).",
+            file=sys.stderr,
+        )
+
     floor = 0 if args.all else _SEVERITY_RANK.index(Severity(args.min_severity))
     kept = [
         f for f in result.findings
@@ -626,17 +835,24 @@ def _cmd_audit(args) -> int:
     hidden = len(result.findings) - len(kept)
     shown = replace(result, findings=kept)
 
-    if args.json:
+    if chosen == "json":
         rendered = render_json(
             shown.findings, shown.manifest, shown.elapsed, hidden=hidden,
             judged=result.findings, engine=result.engine,
         )
-    elif args.markdown:
+    elif chosen == "markdown":
         rendered = render_markdown(
             shown.findings, shown.manifest, shown.elapsed, hidden=hidden,
             judged=result.findings, engine=result.engine,
         )
-    elif args.html:
+    elif chosen == "sarif":
+        from thot.report.sarif_report import render_sarif
+
+        rendered = render_sarif(
+            shown.findings, shown.manifest, shown.elapsed, hidden=hidden,
+            judged=result.findings, engine=result.engine,
+        )
+    elif chosen == "html":
         from thot.report.html_report import audit_page
 
         rendered = audit_page(shown, root=str(root)).html
@@ -645,7 +861,19 @@ def _cmd_audit(args) -> int:
 
     if rendered is not None:
         if args.out:
-            Path(args.out).write_text(rendered, encoding="utf-8")
+            out = Path(args.out)
+            try:
+                # The commonest failure is a parent CI has not created yet.
+                # mkdir is inside the try because it raises on its own:
+                # PermissionError on a read-only parent, FileExistsError when
+                # a component of the path is a file.
+                out.parent.mkdir(parents=True, exist_ok=True)
+                out.write_text(rendered, encoding="utf-8")
+            except OSError as exc:
+                print(f"Rapport non écrit ({out}) : {exc}", file=sys.stderr)
+                # Minutes of audit are never thrown away over an output path.
+                print(rendered)
+                return EXIT_ERROR
             print(f"Rapport écrit : {args.out}")
         else:
             print(rendered)
@@ -797,7 +1025,7 @@ def _run_scheduled(name: str | None) -> int:
     from thot.schedule.runner import MISSING_ENGINE
 
     MISSING_ENGINE.clear()
-    store = Store.open(run_store())
+    store = _open_state(lambda: Store.open(run_store()), run_store())
     found_something = False
     try:
         for job in selected:
@@ -834,11 +1062,54 @@ def _run_scheduled(name: str | None) -> int:
     return EXIT_FINDINGS if found_something else EXIT_OK
 
 
+def _cmd_rules(args) -> int:
+    """What every rule has been worth, and which ones stopped earning a model.
+
+    The gate in `select_for_analysis` decides where a deep pass spends. A
+    gate nobody can inspect is a gate nobody can disagree with, so this is
+    the same arithmetic, printed.
+    """
+    from thot.scoring.prior import NOISE_CEILING, Prior
+
+    prior = Prior.from_home()
+    if not prior:
+        print("Aucun run jugé n'est encore enregistré : aucune règle n'a "
+              "d'historique, donc toutes sont essayées d'abord.")
+        return 0
+
+    rows = sorted(
+        ((rule, judged, confirmed, prior.ceiling(rule))
+         for rule, (judged, confirmed) in prior.counts.items()),
+        key=lambda row: (row[3], -row[1]),
+    )
+    if not args.all:
+        rows = [row for row in rows if row[1]]
+
+    print(f"{'règle':34}{'jugés':>7}{'confirmés':>11}{'plafond':>10}   verdict")
+    held = 0
+    for rule, judged, confirmed, ceiling in rows:
+        noise = ceiling < NOISE_CEILING
+        held += judged if noise else 0
+        verdict = ("bruit mesuré — plus de modèle" if noise
+                   else "essayée" if judged else "jamais jugée")
+        print(f"{rule:34}{judged:7}{confirmed:11}{ceiling * 100:9.2f}%   {verdict}")
+
+    total = sum(row[1] for row in rows)
+    if total:
+        print(f"\n{held}/{total} jugements ({100 * held / total:.0f} %) ne "
+              f"seraient plus payés aujourd'hui.")
+    print(f"Plafond = la précision la plus haute encore compatible avec ce "
+          f"qu'on a vu, à 95 %. Sous {NOISE_CEILING * 100:.0f} %, la règle "
+          f"produit toujours ses findings — plus aucun modèle ne les discute.")
+    return 0
+
+
 def _cmd_verdicts(args) -> int:
     from thot.memory import build_memory
+    from thot.paths import memory_db
 
     root = Path(getattr(args, "root", ".") or ".").resolve()
-    memory = build_memory(root)
+    memory = _open_state(lambda: build_memory(root), memory_db())
     try:
         if args.where:
             described = getattr(memory, "describe", lambda: memory.name)()
@@ -1113,6 +1384,12 @@ def _cmd_deps(args) -> int:
     from thot.supply import audit_dependencies, discover
 
     root = Path(args.path).resolve()
+    if not root.is_dir():
+        # The rule pipeline.py already applies: a path that is not there is
+        # not a repository with nothing wrong in it. Without this, a typo in
+        # a CI path printed "aucune vulnérabilité connue" and exited 0.
+        print(f"Ce n'est pas un dossier : {root}", file=sys.stderr)
+        return EXIT_USAGE
 
     if args.list:
         components = discover(root)
@@ -1283,14 +1560,23 @@ def _cmd_gateway(args) -> int:
     return 0
 
 
-def _cmd_mcp_serve() -> int:
-    """Speak MCP on stdio until the agent that started us closes it.
+def _cmd_mcp_serve(args) -> int:
+    """Speak MCP until the agent that started us stops asking.
 
     A subcommand rather than `python -m thot.mcp_server`, because Hermes
     refuses a plugin whose command is an absolute path — a plugin must not be
     able to point at an arbitrary binary. A bare `thot` on PATH satisfies
     that, and survives the virtualenv moving.
+
+    `--http` is for Prime, which has no other way in. Loopback and a bearer
+    token, because the thing being served is a complete map of somebody's
+    source tree.
     """
+    if getattr(args, "http", False):
+        from thot.mcp_http import DEFAULT_PORT, serve as serve_http
+
+        return serve_http(port=args.port or DEFAULT_PORT)
+
     from thot.mcp_server import serve
 
     return serve()
@@ -1307,6 +1593,332 @@ def _cmd_serve(args) -> int:
     except KeyboardInterrupt:
         print()
         return 0
+
+
+def _cmd_bench(args) -> int:
+    """Measure Thot against code somebody else labelled.
+
+    The only command here whose verdict Thot does not compute about itself.
+    `--json` is not a convenience: `evolve.bench_metrics` shells out to it to
+    take the after-measurement in a process that was started *after* the
+    change, so the shape printed below is a contract, not a display choice.
+    """
+    import json as jsonlib
+
+    from thot.bench.corpus import NotACorpus, load_all, verified
+    from thot.bench.report import percent, render
+    from thot.bench.run import measure_all
+    from thot.bench.score import combine
+    from thot.ui import theme
+
+    corpus = Path(args.path).expanduser() if args.path else DEFAULT_CORPUS
+
+    try:
+        suites = load_all(corpus)
+    except (NotACorpus, OSError) as exc:
+        # OSError as well: `load_all` lists the directory before it judges
+        # anything, so a path that simply is not there arrives as
+        # FileNotFoundError. A mistyped corpus is a usage error either way,
+        # and `measure_out_of_process` reads a traceback here as "the change
+        # broke Thot" — the one wrong answer available.
+        print(f"Corpus illisible : {exc}", file=sys.stderr)
+        print("Un corpus est un dossier de suites ; une suite est un dossier "
+              "qui contient un expectedresults*.csv et un testcode/.",
+              file=sys.stderr)
+        print("Le corpus n'est pas fourni avec Thot et n'est jamais téléchargé "
+              "— une vérité de terrain qui change sans commit n'en est pas une.",
+              file=sys.stderr)
+        return EXIT_USAGE
+
+    # Checked before measuring and not after: auditing three suites costs
+    # fifteen seconds, and a typo in `--hold-out` should not cost them.
+    labels = [suite.label for suite in suites]
+    if args.hold_out and args.hold_out not in labels:
+        print(f"La suite tenue à l'écart, {args.hold_out}, n'existe pas. "
+              f"Suites lues : {', '.join(labels)}.", file=sys.stderr)
+        return EXIT_USAGE
+    if args.hold_out and len(labels) == 1:
+        print(f"Tenir {args.hold_out} à l'écart ne laisse rien à mesurer.",
+              file=sys.stderr)
+        return EXIT_USAGE
+
+    # Said before the numbers, and said even under `--json` — on stderr, where
+    # it cannot corrupt the payload. A benchmark whose labels moved under a
+    # measurement is worse than no benchmark: every number since is wrong and
+    # nothing says so.
+    for suite in suites:
+        trusted, note = verified(suite)
+        line = f"{suite.label} : {note}"
+        if args.json:
+            print(line, file=sys.stderr)
+        elif trusted:
+            theme.ok(line)
+        else:
+            theme.warn(line)
+
+    scores, total = measure_all(corpus, match=args.match, floor=args.floor)
+
+    if args.json:
+        print(jsonlib.dumps({
+            "corpus": str(corpus),
+            "floor": args.floor,
+            "match": args.match,
+            "suites": [one.as_dict() for one in scores],
+            "total": total.as_dict(),
+        }))
+        return EXIT_OK
+
+    if not args.hold_out:
+        render(scores, total, limit=args.limit)
+        return EXIT_OK
+
+    kept = [one for one in scores if one.suite != args.hold_out]
+    held = [one for one in scores if one.suite == args.hold_out]
+    render(kept, combine(kept), limit=args.limit)
+    apart = combine(held)
+    theme.rule("tenue à l'écart")
+    theme.console.print()
+    theme.console.print(theme.field(
+        args.hold_out, f"J {percent(apart.youden, sign=True)}"))
+    # The whole point of the split, spelled out: the two numbers agreeing is
+    # the claim, and only a reader who knows that can see it fail.
+    theme.hint(f"{args.hold_out} n'entre pas dans le score ci-dessus : c'est le "
+               f"contrôle de surapprentissage. Une règle qui a appris le corpus "
+               f"fait monter l'un et pas l'autre.")
+    theme.console.print()
+    return EXIT_OK
+
+
+def _design_note(goal: str, design: str) -> None:
+    """The first line of Hermes' specification, before Prime acts on it.
+
+    A fused turn is two long agent calls with nothing between them; printed,
+    the seam is visible, and a specification that is obviously wrong can be
+    interrupted instead of built.
+    """
+    from thot.ui import theme
+
+    first = next((line.strip() for line in design.splitlines() if line.strip()), "")
+    if first:
+        theme.hint(f"spécification : {first[:140]}")
+
+
+def _cmd_evolve(args) -> int:
+    """Let the agents change the code, and keep only what the judge accepts."""
+    import shlex
+
+    from thot.engine.factory import AGENT_ENGINES, available_engines
+    from thot.evolve import (
+        BENCH_GUARDS, DEFAULT_GATE, DEFAULT_GUARDS, LEDGER, Gate, NoFusion,
+        agent_apply, bench_gate, evolve, fused_apply, goal_key,
+        goals_from_bench, recall, remember, thot_metrics,
+    )
+    from thot.paths import ensure_home, home
+    from thot.recon import context_brief, sweep
+    from thot.ui import theme
+
+    ensure_home()
+    ledger = home() / LEDGER
+
+    root = Path(args.path).resolve()
+    if not root.is_dir():
+        print(f"Ce n'est pas un dossier : {root}", file=sys.stderr)
+        return EXIT_USAGE
+
+    if not args.goal and not args.from_bench:
+        print("Dis ce qu'il faut améliorer, ou passe `--from-bench` pour que "
+              "la mesure le dise à ta place.", file=sys.stderr)
+        return EXIT_USAGE
+
+    scope = tuple(part.strip() for part in args.scope.split(",") if part.strip())
+    brief = context_brief(sweep(root))
+
+    if args.fused:
+        # Two agents doing *different* work. `Cascade.turn` picks one member
+        # and reaches for the second only on an error, which is capped at the
+        # better of the two by construction; here Hermes specifies and Prime
+        # builds, and neither one decides — the gate does.
+        from thot.engine.cascade import NoAgents
+        from thot.engine.factory import build_cascade
+
+        try:
+            apply = fused_apply(
+                build_cascade(root, prefer="fusion"),
+                brief=brief, scope=scope, on_design=_design_note,
+                # What earlier runs already built and lost. The measurement
+                # barely moves in one round, so without this the next run
+                # reads the same worst categories and gets back the same
+                # specification that was already tried and reverted.
+                history=lambda goal: recall(ledger, keys=[goal_key(goal)]),
+            )
+        except NoFusion as exc:
+            print(str(exc), file=sys.stderr)
+            return EXIT_USAGE
+        except (NoAgents, ThotError) as exc:
+            print(str(exc), file=sys.stderr)
+            print("`thot fusion status` dit lequel des deux manque.",
+                  file=sys.stderr)
+            return EXIT_USAGE
+        writer = "hermes conçoit, prime écrit"
+    else:
+        installed = available_engines()
+        name = args.engine or (installed[0] if installed else "")
+        if name not in AGENT_ENGINES or not AGENT_ENGINES[name].available():
+            print("Aucun agent installé pour écrire. `uv sync`, ou construis Prime.",
+                  file=sys.stderr)
+            return EXIT_USAGE
+        engine = AGENT_ENGINES[name](root=root, max_parallel=1)
+        # Hermes is bridled to file operations for an audit. A loop judged by
+        # the test suite has to be able to run it.
+        if hasattr(engine, "toolsets"):
+            engine = replace(engine, toolsets="file,terminal")
+        apply = agent_apply(engine, brief=brief, scope=scope)
+        writer = f"{name} écrit"
+
+    # The suite is a floor on breakage, never a floor on quality: no test here
+    # asserts that named provenance stays where it is, so a patch that halved
+    # it would pass green. A measurement closes that — and a labelled corpus
+    # closes it with numbers the program did not compute about itself, which
+    # `provenance` never was.
+    corpus = Path(args.corpus).expanduser() if args.corpus else DEFAULT_CORPUS
+    on_corpus = bool(args.corpus or args.from_bench)
+    command = shlex.split(args.gate) if args.gate else DEFAULT_GATE
+    if args.sans_mesure:
+        gate = Gate(command=command, root=root, metrics=None, guards={})
+        watched: tuple[str, ...] = ()
+    elif on_corpus:
+        gate = bench_gate(corpus, hold_out=args.hold_out, command=command,
+                          root=root)
+        watched = tuple(sorted(BENCH_GUARDS))
+    else:
+        gate = Gate(command=command, root=root, metrics=thot_metrics,
+                    guards=dict(DEFAULT_GUARDS))
+        watched = tuple(sorted(DEFAULT_GUARDS))
+
+    if args.from_bench:
+        from thot.bench.corpus import NotACorpus
+        from thot.bench.run import measure_all
+
+        theme.console.print()
+        theme.hint(f"Mesure de départ sur {corpus} — c'est elle qui choisit "
+                   f"les objectifs.")
+        try:
+            _, measured = measure_all(corpus)
+        except (NotACorpus, OSError) as exc:
+            # OSError too: an absent corpus directory raises FileNotFoundError
+            # out of `load_all`, and a loop that is about to let an agent
+            # rewrite the source should stop on that, not start blind.
+            print(f"Corpus illisible : {exc}", file=sys.stderr)
+            return EXIT_USAGE
+        targets = goals_from_bench(measured, corpus=corpus)
+        if not targets:
+            print("La mesure ne désigne aucune catégorie à corriger.",
+                  file=sys.stderr)
+            return EXIT_USAGE
+        # `goal_key` and not a second string-split of the same sentence: it is
+        # what the ledger already files these goals under, so the names shown
+        # here and the names `recall` matches on cannot drift apart.
+        theme.hint(f"{len(targets)} objectif(s), les pires d'abord : "
+                   f"{', '.join(goal_key(t) for t in targets)}")
+    else:
+        targets = [" ".join(args.goal)]
+
+    goals = [goal for goal in targets for _ in range(max(1, args.rounds))]
+
+    backup = home() / "evolve-backup"
+
+    theme.console.print()
+    theme.hint(f"{writer} · {', '.join(scope)} · juge : "
+               f"{' '.join(gate.command[-4:])}")
+    if not watched:
+        theme.warn("Sans mesure : une régression silencieuse passera en vert.")
+    elif on_corpus:
+        held = f" · {args.hold_out} tenue à l'écart" if args.hold_out else ""
+        theme.hint(f"Gardé sous surveillance : {', '.join(watched)} "
+                   f"— mesuré sur {corpus}{held}")
+    else:
+        theme.hint(f"Gardé sous surveillance : {', '.join(watched)}")
+    theme.hint(f"Copie de sûreté : {backup}")
+    theme.console.print()
+
+    def report(attempt) -> None:
+        if attempt.error:
+            theme.error(f"{attempt.error}")
+            return
+        if not attempt.touched:
+            theme.hint(f"rien changé — {attempt.reason}")
+            return
+        mark = theme.ok if attempt.kept else theme.warn
+        mark(f"{'gardé' if attempt.kept else 'annulé'} · "
+             f"{len(attempt.touched)} fichier(s) · {attempt.reason}")
+        for touched in attempt.touched[:8]:
+            theme.console.print(f"      {touched}")
+        if attempt.summary:
+            theme.console.print(f"      « {attempt.summary} »")
+
+    done = evolve(
+        root, goals=goals, apply=apply,
+        gate=gate, scope=scope, backup=backup, on_attempt=report,
+    )
+
+    # Written whatever happened, and reverted attempts are the valuable half:
+    # they are what the next run must not propose again.
+    remember(done, ledger)
+
+    kept = [attempt for attempt in done if attempt.kept]
+    theme.console.print()
+    theme.console.print(
+        f"{len(kept)} gardé(s) sur {len(done)} tentative(s)."
+    )
+    theme.hint(f"Tenté et retenu dans {ledger} — la prochaine boucle le lira.")
+    if not kept:
+        theme.hint("Rien n'a été modifié. La copie de sûreté est inutile — "
+                   "tu peux la supprimer.")
+    return EXIT_OK
+
+
+def _cmd_mcp_service(args) -> int:
+    """Install, or report, the thing that keeps the endpoint answering.
+
+    Three separate questions, printed as three lines because conflating them
+    is how the fusion came to report `branché` about a dead port: is the unit
+    written, is Prime configured to dial, and does the address answer *now*.
+    """
+    from thot import service
+    from thot.fusion import wiring
+    from thot.mcp_http import DEFAULT_PORT, endpoint_answers
+
+    root = Path(args.root).resolve() if args.root else Path.cwd()
+    port = args.port or DEFAULT_PORT
+
+    if args.remove:
+        print(service.uninstall_hint())
+        return EXIT_OK
+
+    if args.install:
+        written, step = service.install(root, port=port)
+        print(f"Unité écrite : {written}")
+        print(f"Arbre servi  : {root}")
+        print()
+        print(f"Une commande pour l'activer — Thot ne la lance pas pour toi :")
+        print(f"  {step}")
+        return EXIT_OK
+
+    written = service.unit_path()
+    print(f"unité    : {written}" if service.installed()
+          else f"unité    : absente — `thot mcp service --install`")
+    url = wiring.prime_endpoint()
+    if url is None:
+        print("Prime    : pas branché en HTTP — `thot fusion wire`")
+        return EXIT_OK
+    print(f"Prime    : {url}")
+    if endpoint_answers(url):
+        print("réponse  : oui")
+        return EXIT_OK
+    print("réponse  : non — l'adresse est écrite, personne n'écoute")
+    if service.installed():
+        print(f"           {service.activation()}")
+    return EXIT_FINDINGS
 
 
 def _cmd_mcp(args) -> int:
@@ -1331,6 +1943,9 @@ def _cmd_mcp(args) -> int:
         done, message = remove(args.name, scope=args.scope)
         print(message, file=sys.stdout if done else sys.stderr)
         return 0 if done else EXIT_USAGE
+
+    if action == "service":
+        return _cmd_mcp_service(args)
 
     if action == "check":
         return _mcp_check(bool(args.all))
@@ -1569,6 +2184,40 @@ def _cmd_plugins(args) -> int:
     return 0
 
 
+def _skill_label(item) -> str:
+    """How a method is named on screen — and therefore how it may be asked for.
+
+    `list` and `search` print `catégorie/nom`; `show` and `install` used to
+    compare the bare name only, so the identifier the program had just printed,
+    right under the line telling you to copy it, came back "inconnue" in code 2.
+    Matching the whole label rather than its last segment: a suffix match would
+    accept `n_importe_quoi/vulnerability-triage` and would resolve the wrong way
+    the day two categories share a name.
+    """
+    return f"{item.category}/{item.name}" if item.category else item.name
+
+
+def _open_state(opener, path):
+    """Open one of ~/.thot's databases, or say which file to delete.
+
+    A corrupted store — an interrupted write, a full disk, a home synced by
+    iCloud — came out as a raw sqlite3 traceback on almost every command,
+    exit code 1, naming neither the file nor the remedy. Callers that can
+    live without the database degrade instead; this is for the ones whose
+    subject it is.
+    """
+    import sqlite3
+
+    try:
+        return opener()
+    except (sqlite3.Error, OSError) as exc:
+        raise StateError(
+            f"Base d'état illisible : {path} ({exc}) — la supprimer la "
+            "recrée ; seuls l'historique et les verdicts sont perdus, aucun "
+            "audit ne l'est."
+        ) from exc
+
+
 def _cmd_skills(args) -> int:
     """Browse the library, and move an optional skill into the loaded set."""
     from thot.skills.loader import discover, install, optional, uninstall
@@ -1578,8 +2227,13 @@ def _cmd_skills(args) -> int:
 
     if action == "install":
         for name in args.name:
+            # loader.install() only knows bare names; the qualified one is
+            # resolved here, where the catalogue that printed it lives.
+            wanted = next(
+                (s.name for s in optional() if _skill_label(s) == name), name
+            )
             try:
-                target = install(name)
+                target = install(wanted)
             except KeyError:
                 print(f"« {name} » n'est pas dans la bibliothèque optionnelle.",
                       file=sys.stderr)
@@ -1623,7 +2277,7 @@ def _cmd_skills(args) -> int:
 
     if action == "show":
         for item in discover(root):
-            if item.name == args.name:
+            if args.name in (item.name, _skill_label(item)):
                 print(f"# {item.name}\n\n{item.description}\n")
                 print(item.body)
                 return 0
@@ -1635,8 +2289,8 @@ def _cmd_skills(args) -> int:
     shown = [s for s in loaded if not query or s.matches(query)]
 
     for item in shown:
-        label = f"{item.category}/{item.name}" if item.category else item.name
-        print(f"{label:<52} {' '.join(item.description.split())[:64]}")
+        print(f"{_skill_label(item):<52} "
+              f"{' '.join(item.description.split())[:64]}")
     print(f"\n{len(shown)}/{len(loaded)} méthode(s) chargée(s).")
 
     if action == "search" or not shown:
@@ -1647,16 +2301,17 @@ def _cmd_skills(args) -> int:
             print(f"\nBibliothèque optionnelle ({len(spare)}) — "
                   f"`thot skills install <nom>` :")
             for item in spare[:40]:
-                label = f"{item.category}/{item.name}" if item.category else item.name
-                print(f"  {label:<50} {' '.join(item.description.split())[:60]}")
+                print(f"  {_skill_label(item):<50} "
+                      f"{' '.join(item.description.split())[:60]}")
     return 0
 
 
 def _cmd_sessions(args) -> int:
     """List, show, or delete recorded sessions."""
+    from thot.paths import sessions_db
     from thot.state import SessionStore
 
-    store = SessionStore.open()
+    store = _open_state(SessionStore.open, sessions_db())
     try:
         if getattr(args, "forget_empty", False):
             # Their ids are exactly what the listing hides, so `--forget` —
@@ -1727,10 +2382,11 @@ def _cmd_sessions(args) -> int:
 
 def _cmd_search(args) -> int:
     """Search every session, or just this repository's."""
+    from thot.paths import sessions_db
     from thot.state import SessionStore
     from thot.state.search import CLOSE, OPEN
 
-    store = SessionStore.open()
+    store = _open_state(SessionStore.open, sessions_db())
     try:
         root = None if args.all else str(Path.cwd().resolve())
         hits = store.find(" ".join(args.query), root=root, limit=args.limit)
@@ -1748,9 +2404,10 @@ def _cmd_search(args) -> int:
 
 
 def _cmd_export(args) -> int:
+    from thot.paths import sessions_db
     from thot.state import SessionStore, write_export
 
-    store = SessionStore.open()
+    store = _open_state(SessionStore.open, sessions_db())
     try:
         resolved = store.resolve(args.session)
         if resolved is None:
@@ -1773,9 +2430,10 @@ def _cmd_export(args) -> int:
 
 
 def _cmd_import(args) -> int:
+    from thot.paths import sessions_db
     from thot.state import SessionStore, read_import
 
-    store = SessionStore.open()
+    store = _open_state(SessionStore.open, sessions_db())
     try:
         created = read_import(store, Path(args.file))
         print(f"{len(created)} session(s) importée(s) : "
@@ -1818,6 +2476,8 @@ def main(argv: list[str] | None = None) -> int:
             return _cmd_init(args)
         if args.command == "schedule":
             return _cmd_schedule(args)
+        if args.command == "rules":
+            return _cmd_rules(args)
         if args.command == "verdicts":
             return _cmd_verdicts(args)
         if args.command == "deps":
@@ -1830,12 +2490,17 @@ def main(argv: list[str] | None = None) -> int:
             return _cmd_serve(args)
         if args.command == "mcp":
             if getattr(args, "action", None) == "serve":
-                return _cmd_mcp_serve()
+                return _cmd_mcp_serve(args)
             return _cmd_mcp(args)
         if args.command == "skills":
             return _cmd_skills(args)
         if args.command == "plugins":
             return _cmd_plugins(args)
+        if args.command == "evolve":
+            return _cmd_evolve(args)
+        if args.command == "bench":
+            return _cmd_bench(args)
+
         if args.command == "improve":
             return _cmd_improve(args)
         if args.command == "doctor":
@@ -1859,6 +2524,9 @@ def main(argv: list[str] | None = None) -> int:
     except AuthorizationError as exc:
         print(f"Refus : {exc}", file=sys.stderr)
         return EXIT_UNAUTHORIZED
+    except StateError as exc:
+        print(str(exc), file=sys.stderr)
+        return EXIT_ERROR
     except ThotError as exc:
         print(f"Erreur : {exc}", file=sys.stderr)
         return EXIT_USAGE
@@ -1929,6 +2597,27 @@ def _cmd_fusion(args) -> int:
             print(f"Amélioration permanente : {loop.schedule}, "
                   f"{loop.budget} candidats par arbre et par tour "
                   f"(`{loop.name}`)")
+
+        # Prime's half of the wiring names a server that has to be running.
+        # Saying "branché" about an endpoint nobody is listening on is the
+        # same mistake as counting files: it reports what was written rather
+        # than what works.
+        from thot import service as mcp_service
+        from thot.mcp_http import endpoint_answers, token_file
+
+        print()
+        prime_url = wiring.prime_endpoint()
+        if not prime_url:
+            print("Prime : pas branché — `thot fusion wire`")
+        elif endpoint_answers(prime_url, token_file()):
+            print(f"Prime : {prime_url} répond — `code_map` et le reste sont à lui")
+        else:
+            # Naming `thot mcp serve --http` alone answers today and not
+            # tomorrow: the terminal closes, the machine reboots, and the
+            # entry in Prime's settings goes back to pointing at nothing.
+            fix = (mcp_service.activation() if mcp_service.installed()
+                   else "thot mcp service --install")
+            print(f"Prime : {prime_url} ne répond pas — `{fix}`")
 
         from thot.fusion import config as fusion_config
         from thot.fusion import memory as fusion_memory
@@ -2090,7 +2779,33 @@ def _cmd_fusion(args) -> int:
 
 def run() -> None:
     """The console entry point. Bootstrap before anything prints."""
+    import os
+
     from thot import bootstrap
 
     bootstrap.apply()
-    sys.exit(main())
+    try:
+        code = main()
+    except KeyboardInterrupt:
+        import signal
+
+        print(file=sys.stderr)
+        print("Interrompu.", file=sys.stderr)
+        # Die of the signal rather than of exit(130). The shell reads 130
+        # either way, but `make`, `wait` and shell loops test WIFSIGNALED,
+        # and that is what an unhandled Ctrl-C already did here.
+        signal.signal(signal.SIGINT, signal.SIG_DFL)
+        os.kill(os.getpid(), signal.SIGINT)
+        code = 130   # reached only where SIGINT does not exist
+    except BrokenPipeError:
+        # The `print()` paths — `--json`, `fusion`, `sessions` — never go
+        # through rich, so the closed pipe surfaces here instead. A consumer
+        # that stopped reading is not a verdict on the code.
+        code = EXIT_OK
+    try:
+        sys.stdout.flush()
+    except BrokenPipeError:
+        # Left alone, the interpreter fails its own final flush and exits
+        # 120 after printing « Exception ignored » on stderr.
+        os.dup2(os.open(os.devnull, os.O_WRONLY), sys.stdout.fileno())
+    sys.exit(code)

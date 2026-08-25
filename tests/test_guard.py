@@ -1,6 +1,6 @@
 """The ported security patterns, applied as an audit sweep.
 
-Taint analysis proves a path and covers Python only. These 25 patterns prove
+Taint analysis proves a path and covers Python only. These 27 patterns prove
 nothing but recognise shapes that are dangerous wherever they appear, in
 JavaScript and YAML too. The two are complementary, and neither replaces the
 other — what matters here is that the sweep stays precise enough to be worth
@@ -12,6 +12,7 @@ from __future__ import annotations
 import pytest
 
 from thot.contracts import Confidence, Severity
+from thot.guard.patterns import SECURITY_PATTERNS
 from thot.guard.scanner import code_only, scan_text, sweep_patterns
 
 
@@ -1071,3 +1072,399 @@ def test_a_literal_inside_an_interpolation_is_kept_too():
               "`;\n")
     assert [f.rule for f in scan_text("snapshot.ts", source)] \
         == ["pattern.pickle_variants_load"]
+
+
+# -- one tokenizer pass per Python file, not two -----------------------------
+# Outside JS/TS, `_structural` returned exactly the string `code_only` had
+# computed three lines above, so the pure-Python tokenizer ran twice over
+# every `.py` in scope. Measured on hermes/ (7080 files): the sweep went from
+# 46.29 s to 34.17 s on the same 47 findings.
+
+
+def test_a_python_file_is_read_through_the_tokeniser_once(monkeypatch):
+    from thot.guard import scanner
+
+    seen = []
+    original = scanner.code_only
+
+    def counted(relative, text):
+        seen.append(relative)
+        return original(relative, text)
+
+    monkeypatch.setattr(scanner, "code_only", counted)
+    scanner.scan_text("app.py", "import pickle\ndata = pickle.loads(blob)\n")
+
+    assert seen == ["app.py"]
+
+
+# -- absence is proven with a substring, not with a regex --------------------
+# `re.search` over the whole text, for every rule with a regex, on every file
+# in scope: measured on hermes/ (7080 files) that is 117 750 searches to
+# produce 47 findings. Python's engine cannot factor an alternation, so it
+# walks each of those texts character by character to prove nothing is there.
+# With the gates in place, 7806 searches and the same 47 findings.
+
+
+def test_a_file_that_names_no_dangerous_call_escapes_the_catalogue(monkeypatch):
+    from thot.guard import scanner
+
+    run = []
+    original = scanner.re.search
+
+    def counted(pattern, string, *args, **kwargs):
+        run.append(pattern)
+        return original(pattern, string, *args, **kwargs)
+
+    monkeypatch.setattr(scanner.re, "search", counted)
+    scanner.scan_text("app.py", "def add(a, b):\n    return a + b\n")
+
+    ungated = [
+        pattern for pattern in SECURITY_PATTERNS
+        if pattern.get("regex") and scanner._literal_gate(pattern["regex"]) is None
+    ]
+    assert len(run) == len(ungated)
+
+
+# -- a gate that forgets a branch turns a rule off in silence ----------------
+# The risk the pre-filter introduces, and the only one. Deriving the literals
+# by hand looks like five minutes' work and reads as correct: `verify=False`,
+# `rejectUnauthorized`, `InsecureSkipVerify`, `NODE_TLS_REJECT_UNAUTHORIZED`
+# — four of the six branches of tls_verification_disabled, and the rule is
+# then blind to `ssl._create_unverified_context()` with nothing in the output
+# to say a rule stopped running. One sample per alternation branch, so a
+# branch that loses its gate loses this test instead.
+
+_GATE_SAMPLES = {
+    "child_process_exec": ["exec(`ls ${dir}`)"],
+    "eval_injection": ["eval(payload)"],
+    "pickle_deserialization": ["pickle.loads(blob)", "pickle.Unpickler(fh)",
+                               "pkl_load(fh)"],
+    "os_system_injection": ["os.system(cmd)"],
+    "python_subprocess_shell": ["subprocess.run(cmd, shell=True)"],
+    "go_exec_shell_injection": ['exec.Command("bash", "-c", arg)'],
+    "unsafe_yaml_load": ["yaml.load(raw)"],
+    "node_createcipher_no_iv": ["crypto.createCipher(algo, key)",
+                                "crypto.createDecipher(algo, key)"],
+    "aes_ecb_mode": ["AES.MODE_ECB", "modes.ECB()", "'aes-256-ecb'"],
+    "tls_verification_disabled": ["requests.get(url, verify=False)",
+                                  "rejectUnauthorized: false",
+                                  "InsecureSkipVerify: true",
+                                  "NODE_TLS_REJECT_UNAUTHORIZED=0",
+                                  "ssl._create_unverified_context()",
+                                  "check_hostname=False"],
+    "marshal_loads": ["marshal.loads(blob)"],
+    "shelve_open": ["shelve.open(path)"],
+    "pickle_variants_load": ["cPickle.load(fh)", "cloudpickle.loads(blob)",
+                             "dill.load(fh)"],
+    "script_src_without_sri": ['<script src="//cdn.example.com/a.js">'],
+    "torch_unsafe_load": ["torch.load(path)", "checkpoint.torch_load(path)"],
+    "yaml_unsafe_load_variants": ["yaml.unsafe_load(raw)",
+                                  "loader.yaml_unsafe_load(raw)"],
+    "pickle_wrapper_load": ["joblib.load(path)", "pd.read_pickle(path)",
+                            "pandas.read_pickle(path)",
+                            "fh.cloudpickle_load(path)",
+                            "np.load(path, allow_pickle=True)",
+                            "numpy.load(path, allow_pickle=True)"],
+    "hardcoded_credential": [
+        "AKIA3XQK2ZLMWPQR7TVB", "ASIA3XQK2ZLMWPQR7TVB", "AROA3XQK2ZLMWPQR7TVB",
+        "AIDA3XQK2ZLMWPQR7TVB", "ANPA3XQK2ZLMWPQR7TVB", "AIPA3XQK2ZLMWPQR7TVB",
+        "ghp_9fK2mQx7BvNr4TzL8pWc1JdY6HaU3SgE0Rio",
+        "gho_9fK2mQx7BvNr4TzL8pWc1JdY6HaU3SgE0Rio",
+        "ghu_9fK2mQx7BvNr4TzL8pWc1JdY6HaU3SgE0Rio",
+        "ghs_9fK2mQx7BvNr4TzL8pWc1JdY6HaU3SgE0Rio",
+        "ghr_9fK2mQx7BvNr4TzL8pWc1JdY6HaU3SgE0Rio",
+        "github_pat_" + "9fK2mQx7BvNr4TzL8pWc1JdY6HaU3SgE0RioPqZmVtBn7kLxCwEfHs3Jt6Yn",
+        "xoxb-2Vk9Qm4Zr7Tp-8Nd3Lw6Hc1Jf", "xoxa-2Vk9Qm4Zr7Tp-8Nd3Lw6Hc1Jf",
+        "xoxp-2Vk9Qm4Zr7Tp-8Nd3Lw6Hc1Jf", "xoxr-2Vk9Qm4Zr7Tp-8Nd3Lw6Hc1Jf",
+        "xoxs-2Vk9Qm4Zr7Tp-8Nd3Lw6Hc1Jf",
+        "sk_live_9fK2mQx7BvNr4TzL8pWc1JdY",
+        "rk_live_9fK2mQx7BvNr4TzL8pWc1JdY",
+        "AIza9fK2mQx7BvNr4TzL8pWc1JdY6HaU3SgE0Ri",
+        "-----BEGIN PRIVATE KEY-----\nMIIEowIBAAKCAQEAyPq3", "-----BEGIN RSA PRIVATE KEY-----\nMIIEowIBAAKCAQEAyPq3",
+        "-----BEGIN DSA PRIVATE KEY-----\nMIIEowIBAAKCAQEAyPq3", "-----BEGIN EC PRIVATE KEY-----\nMIIEowIBAAKCAQEAyPq3",
+        "-----BEGIN OPENSSH PRIVATE KEY-----\nMIIEowIBAAKCAQEAyPq3",
+        "-----BEGIN PGP PRIVATE KEY-----\nMIIEowIBAAKCAQEAyPq3",
+        "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NX0.dBjftJeZ4CVPmB92K27uhbUJU",
+        "postgres://svc:hunter2Sw0rdf1sh@db:5432/app",
+        "postgresql://svc:hunter2Sw0rdf1sh@db:5432/app",
+        "mysql://svc:hunter2Sw0rdf1sh@db:3306/app",
+        "mariadb://svc:hunter2Sw0rdf1sh@db:3306/app",
+        "mongodb://svc:hunter2Sw0rdf1sh@db:27017/app",
+        "mongodb+srv://svc:hunter2Sw0rdf1sh@db/app",
+        "redis://svc:hunter2Sw0rdf1sh@cache:6379/0",
+        "rediss://svc:hunter2Sw0rdf1sh@cache:6379/0",
+        "amqp://svc:hunter2Sw0rdf1sh@broker:5672/",
+        "amqps://svc:hunter2Sw0rdf1sh@broker:5672/",
+    ],
+    # Every name the rule claims, in every casing it claims it: the list is
+    # the rule, so the witness table is the list.
+    "hardcoded_secret_assignment": [
+        f'{name} = "7Kq2Zx9RmT4pLv8WnB3s"' for name in (
+            "secret", "Secret", "SECRET",
+            "token", "Token", "TOKEN",
+            "password", "Password", "PASSWORD",
+            "passwd", "Passwd", "PASSWD",
+            "passphrase", "Passphrase", "PASSPHRASE",
+            "credential", "Credential", "CREDENTIAL",
+            "api_key", "API_KEY", "apiKey", "apikey", "APIKEY",
+            "access_key", "ACCESS_KEY", "accessKey",
+            "private_key", "PRIVATE_KEY", "privateKey",
+            "signing_key", "SIGNING_KEY", "signingKey",
+            "encryption_key", "ENCRYPTION_KEY", "encryptionKey",
+        )
+    ],
+}
+
+
+def test_every_gated_rule_has_a_sample_for_each_of_its_branches():
+    """No rule may join the catalogue with a gate and no witness."""
+    from thot.guard import scanner
+
+    gated = {
+        pattern["ruleName"] for pattern in SECURITY_PATTERNS
+        if pattern.get("regex") and scanner._literal_gate(pattern["regex"])
+    }
+    assert gated == set(_GATE_SAMPLES)
+
+
+@pytest.mark.parametrize("rule_name, sample", [
+    (name, sample) for name, samples in _GATE_SAMPLES.items() for sample in samples
+])
+def test_a_literal_gate_admits_everything_its_regex_matches(rule_name, sample):
+    from thot.guard import scanner
+
+    regex = next(p["regex"] for p in SECURITY_PATTERNS if p["ruleName"] == rule_name)
+    assert scanner.re.search(regex, sample), "stale sample: the rule no longer matches it"
+    gate = scanner._literal_gate(regex)
+    assert any(literal in sample for literal in gate)
+
+
+# -- a secret is a literal, and the literals are what the sweep blanks -------
+# The catalogue had no rule for a credential in the source, and the sweep is
+# built to be blind to one: `code_only` blanks Python string literals, which
+# is where a hardcoded secret lives by definition. So the rule reads the raw
+# text, and pays for it with a placeholder filter — the AWS documentation
+# example alone appears in more repositories than any real key.
+
+
+def _rules(relative, text):
+    return {finding.rule for finding in scan_text(relative, text)}
+
+
+def test_an_aws_key_inside_a_python_literal_is_found():
+    assert "pattern.hardcoded_credential" in _rules(
+        "settings.py", 'AWS_ACCESS_KEY_ID = "AKIA3XQK2ZLMWPQR7TVB"\n')
+
+
+def test_a_private_key_pasted_into_the_source_is_found():
+    assert "pattern.hardcoded_credential" in _rules(
+        "deploy.py",
+        'PEM = """-----BEGIN RSA PRIVATE KEY-----\nMIIEowIBAAKCAQEAyPq3\n"""\n')
+
+
+def test_a_connection_string_carrying_its_password_is_found():
+    assert "pattern.hardcoded_credential" in _rules(
+        "db.py", 'DSN = "postgresql://svc:hunter2Sw0rdf1sh@db.internal:5432/app"\n')
+
+
+def test_a_github_token_is_found():
+    assert "pattern.hardcoded_credential" in _rules(
+        "ci.sh", 'export GH="ghp_9fK2mQx7BvNr4TzL8pWc1JdY6HaU3SgE0Rio"\n')
+
+
+def test_a_signed_token_pasted_into_a_fixture_is_found():
+    assert "pattern.hardcoded_credential" in _rules(
+        "client.ts", 'const t = "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NX0.'
+                     'dBjftJeZ4CVPmB92K27uhbUJU1p1r_wW1gFWFOEjXk";\n')
+
+
+def test_the_aws_documentation_example_is_not_a_secret():
+    assert "pattern.hardcoded_credential" not in _rules(
+        "README.md", 'aws configure set aws_access_key_id AKIAIOSFODNN7EXAMPLE\n')
+
+
+def test_a_token_shaped_placeholder_is_not_a_secret():
+    assert "pattern.hardcoded_credential" not in _rules(
+        "README.md", 'export GH_TOKEN=ghp_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx\n')
+
+
+def test_a_public_key_is_not_a_private_key():
+    assert "pattern.hardcoded_credential" not in _rules(
+        "keys.py", 'PUB = "-----BEGIN PUBLIC KEY-----"\n')
+
+
+def test_a_connection_string_without_a_password_is_not_a_secret():
+    assert "pattern.hardcoded_credential" not in _rules(
+        "db.py", 'DSN = "postgresql://db.internal:5432/app"\n')
+
+
+def test_a_generic_api_key_assignment_is_found():
+    assert "pattern.hardcoded_secret_assignment" in _rules(
+        "client.py", 'API_KEY = "7Kq2Zx9RmT4pLv8WnB3sYc6Ha1Ej5Ud0"\n')
+
+
+def test_a_secret_read_from_the_environment_is_not_a_secret():
+    assert "pattern.hardcoded_secret_assignment" not in _rules(
+        "client.py", 'API_KEY = os.environ["ACME_API_KEY"]\n')
+
+
+def test_a_secret_interpolated_from_a_template_is_not_a_secret():
+    assert "pattern.hardcoded_secret_assignment" not in _rules(
+        "deploy.yaml", 'client_secret: "${ACME_CLIENT_SECRET}"\n')
+
+
+def test_a_named_placeholder_is_not_a_secret():
+    assert "pattern.hardcoded_secret_assignment" not in _rules(
+        "config.py", 'password = "your-password-goes-here"\n')
+
+
+def test_a_value_with_no_entropy_is_not_a_secret():
+    assert "pattern.hardcoded_secret_assignment" not in _rules(
+        "config.py", 'PASSWORD = "aaaaaaaaaaaaaaaaaaaaaaaa"\n')
+
+
+def test_a_case_folded_group_yields_no_gate():
+    """`(?i:secret)` matches `SECRET`: its letters are not a substring test."""
+    from thot.guard import scanner
+
+    assert scanner._literal_gate(r"(?i)secretword") is None
+    assert scanner._literal_gate(r"(?i:secretword)") is None
+    assert scanner._literal_gate(r"prefixed(?i:secretword)") == ("prefixed",)
+
+
+def test_the_name_of_an_environment_variable_is_not_its_value():
+    """Found on Thot's own source: `"token": "TELEGRAM_BOT_TOKEN"`.
+
+    A table mapping a setting to the variable it is read from is the shape
+    this rule is built to recommend, and it was reporting it.
+    """
+    assert "pattern.hardcoded_secret_assignment" not in _rules(
+        "gateway.py", 'ENV = {"telegram": {"token": "TELEGRAM_BOT_TOKEN"}}\n')
+
+
+# -- « ce fichier est un workflow » n'est pas un finding --------------------
+#
+# `github_actions_workflow` n'a ni regex ni substrings : seulement un
+# `path_check`. Elle se déclenche parce que le fichier existe. C'est un rappel
+# de pré-écriture — « tu es en train d'éditer un workflow, attention à… » — et
+# le plugin `write-guard` l'utilise pour ça, correctement.
+#
+# Dans un audit elle produit une ligne par workflow présent : 28 sur Hermes,
+# 3 sur Prime, sans qu'aucune ne dise quoi que ce soit du contenu. Un rapport
+# où 28 findings sur 30 signifient « ce dépôt a des workflows » apprend à ne
+# plus lire les rapports.
+
+
+def test_the_audit_does_not_report_a_file_for_existing(tmp_path):
+    from thot.guard.scanner import sweep_patterns
+
+    workflow = tmp_path / ".github" / "workflows"
+    workflow.mkdir(parents=True)
+    (workflow / "ci.yml").write_text("on: [push]\njobs: {}\n", encoding="utf-8")
+
+    findings = sweep_patterns(tmp_path, [".github/workflows/ci.yml"])
+
+    assert [f.rule for f in findings] == [], [f.rule for f in findings]
+
+
+def test_the_write_time_reminder_still_fires_for_the_plugin(tmp_path):
+    """Le plugin `write-guard` s'appuie sur la même fonction : il la garde."""
+    from thot.guard.scanner import scan_text
+
+    findings = scan_text(".github/workflows/ci.yml", "on: [push]\njobs: {}\n")
+
+    assert any(f.rule.endswith("github_actions_workflow") for f in findings), (
+        [f.rule for f in findings]
+    )
+
+
+# -- une règle de syntaxe ne s'applique pas à de la prose -------------------
+#
+# `plugins/write-guard/plugin.yaml` décrit son propre rôle : « averti le
+# modèle quand le fichier contient un motif dangereux connu (pickle.load,
+# yaml.load, eval, innerHTML, verify=False…) ». Le plugin qui met en garde
+# contre `verify=False` était signalé pour avoir écrit `verify=False`.
+#
+# `eval_injection` connaissait déjà le remède — `path_filter` sur `_DOC_EXTS`
+# — et deux règles de la même famille ne l'avaient pas. Mesuré : 3 faux
+# positifs sur les trois arbres du dépôt, tous de cette forme.
+
+
+@pytest.mark.parametrize("nom, texte", [
+    ("desc.yaml", "description: interdit verify=False dans le code\n"),
+    ("notes.md", "N'écris jamais `verify=False`.\n"),
+    ("readme.rst", "Motifs surveillés : dangerouslySetInnerHTML\n"),
+])
+def test_prose_naming_a_dangerous_pattern_is_not_that_pattern(nom, texte):
+    from thot.guard.scanner import scan_text
+
+    from thot.guard.patterns import AUDIT_PATTERNS
+
+    fired = {f.rule for f in scan_text(nom, texte, AUDIT_PATTERNS)}
+
+    assert not {r for r in fired
+                if r.endswith(("tls_verification_disabled",
+                               "react_dangerously_set_html"))}, fired
+
+
+def test_the_same_pattern_in_real_code_still_fires():
+    from thot.guard.patterns import AUDIT_PATTERNS
+    from thot.guard.scanner import scan_text
+
+    fired = {f.rule for f in scan_text(
+        "client.py", "import requests\nrequests.get(url, verify=False)\n",
+        AUDIT_PATTERNS)}
+
+    assert any(r.endswith("tls_verification_disabled") for r in fired), fired
+
+
+# -- the XXE rule, and what a labelled corpus said about it -------------------
+#
+# Scored against 100 labelled XXE cases, `xml_unsafe_parse` came back at
+# -100 %: it missed every vulnerable case and fired on every safe one. Two
+# causes, and neither is visible without a corpus that says which is which.
+
+
+def _xml_regex():
+    return next(p["regex"] for p in SECURITY_PATTERNS
+                if p["ruleName"] == "xml_unsafe_parse")
+
+
+def test_the_remedy_is_not_flagged_as_the_disease():
+    """`\\bElementTree\\.` matched inside `defusedxml.ElementTree.fromstring`,
+    so the rule flagged the one library that exists to prevent XXE — the very
+    fix its own reminder tells the reader to apply."""
+    from thot.guard import scanner
+
+    safe = "defusedxml.ElementTree.fromstring(str(data))"
+    assert not scanner.re.search(_xml_regex(), safe)
+
+
+def test_the_stdlib_parsers_are_still_caught():
+    """The lookbehind must not cost the true positives it sits in front of."""
+    from thot.guard import scanner
+
+    for sample in ("ElementTree.fromstring(data)", "ET.parse(handle)",
+                   "xml.etree.ElementTree.XML(blob)", "minidom.parseString(x)"):
+        assert scanner.re.search(_xml_regex(), sample), sample
+
+
+def test_lxml_with_its_defences_switched_off_is_caught():
+    """`lxml` was absent from the alternation, though it is the XML library
+    most Python code actually uses. This is the exact shape the corpus
+    labels vulnerable and the rule used to walk past."""
+    from thot.guard import scanner
+
+    unsafe = "_parser = etree.XMLParser(resolve_entities=True, no_network=False)"
+    assert scanner.re.search(_xml_regex(), unsafe)
+
+
+def test_lxml_hardened_is_left_alone():
+    """Only the shapes that disable a defence outright match. A bare
+    `etree.parse` depends on a default this rule cannot read from one line,
+    so it stays out rather than guess."""
+    from thot.guard import scanner
+
+    for sample in ("etree.XMLParser(resolve_entities=False)",
+                   "parser = etree.XMLParser()"):
+        assert not scanner.re.search(_xml_regex(), sample), sample

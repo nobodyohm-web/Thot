@@ -15,7 +15,7 @@ from pathlib import Path
 from thot.codemap.graph import CodeGraph
 from thot.codemap.index import index_files
 from thot.contracts import Finding, Symbol
-from thot.scope.detect import detect_scope
+from thot.scope.detect import detect_scope, source_versions
 from thot.scope.manifest import ScopeManifest
 
 
@@ -31,6 +31,9 @@ class Recon:
     branch: str | None = None
     dirty: bool = False
     elapsed: float = 0.0
+    # Which version of the tree this map describes. Kept so a long-lived
+    # process can ask whether it still holds, without re-reading the code.
+    versions: tuple[tuple[str, int, int], ...] = ()
 
     @property
     def is_empty(self) -> bool:
@@ -64,8 +67,11 @@ def sweep(root: Path, *, deep: bool = True) -> Recon:
     root = Path(root).resolve()
     started = time.monotonic()
 
+    # Read before the map is built, never after: a file written while the
+    # sweep is running must leave the result looking stale rather than fresh.
+    versions = source_versions(root)
     manifest = detect_scope(root)
-    recon = Recon(root=root, manifest=manifest)
+    recon = Recon(root=root, manifest=manifest, versions=versions)
     recon.branch, recon.dirty = _git_state(root)
 
     if not manifest.files:
@@ -76,28 +82,72 @@ def sweep(root: Path, *, deep: bool = True) -> Recon:
     recon.symbols = symbols
     recon.graph = CodeGraph.build(symbols, manifest.entrypoints)
 
-    if deep and symbols:
-        from thot.pipeline import findings_from_graph
-
-        recon.findings = findings_from_graph(root, recon.graph)
-
     if deep:
-        # Same analysis the CLI runs, so /audit and `thot audit` never
-        # disagree. A rule added on one side and not the other makes this
-        # comment a lie without breaking a test — which is what happened to
-        # the suppression sweep, an hour after it was written.
-        from thot.guard.scanner import sweep_patterns
-        from thot.guard.suppressions import sweep_suppressions
-
-        recon.findings += sweep_patterns(root, list(manifest.files))
-        recon.findings += sweep_suppressions(
-            root, list(manifest.files),
-            {(f.location.path, f.location.line) for f in recon.findings},
-        )
-        recon.findings = _remember(recon.findings, root)
+        deepen(recon)
 
     recon.elapsed = time.monotonic() - started
     return recon
+
+
+def deepen(recon: Recon) -> Recon:
+    """The expensive half of a sweep: taint paths, pattern rules, verdicts.
+
+    Split out from `sweep` because the two halves cost wildly different
+    amounts and are wanted at different moments. Measured on `hermes/`: the
+    map — files, symbols, call graph — takes about a second; this takes two
+    minutes. A server that rebuilt both every time the tree moved would
+    answer `code_map` at the price of a full audit, which is how a fix for a
+    stale map ends up worse than the stale map.
+
+    Idempotent: it replaces the findings rather than adding to them, so
+    asking twice costs time and never doubles a report.
+    """
+    from functools import partial
+
+    from thot.parallel import over_files
+    from thot.pipeline import _patterns_chunk, _suppressions_chunk
+
+    root = recon.root
+    files = list(recon.manifest.files)
+    findings: list[Finding] = []
+
+    if recon.symbols and recon.graph is not None:
+        from thot.pipeline import findings_from_graph
+
+        findings += findings_from_graph(root, recon.graph)
+
+    # Same analysis the CLI runs, so /audit and `thot audit` never disagree.
+    # A rule added on one side and not the other makes this comment a lie
+    # without breaking a test — which is what happened to the suppression
+    # sweep, an hour after it was written.
+    # Spread across cores exactly as `run_audit` does. This is the path the
+    # MCP `audit` tool takes, so an agent asking about a large repository was
+    # paying the whole single-core sweep — two minutes on `hermes/` — inside
+    # one tool call.
+    findings += over_files(_patterns_chunk, root, list(recon.manifest.swept))
+
+    # Same arbitration as `run_audit`: a pattern that duplicates a taint sink
+    # steps aside in a file the indexer read. Applied here too, or `/audit`
+    # and `thot audit` would disagree — which is the failure the comment
+    # above was written about.
+    from thot.pipeline import defer_to_taint
+
+    findings = defer_to_taint(findings, {symbol.path for symbol in recon.symbols})
+
+    already = {(f.location.path, f.location.line) for f in findings}
+    findings += over_files(partial(_suppressions_chunk, already), root, files)
+    recon.findings = _remember(findings, root)
+    return recon
+
+
+def is_stale(recon: Recon) -> bool:
+    """Whether the tree has been written to since this map was built.
+
+    One pruned walk and not a single file read — cheap enough to ask before
+    answering every tool call, which is the only way a map handed to an
+    agent that edits code stays true past that agent's first edit.
+    """
+    return source_versions(recon.root) != recon.versions
 
 
 def _remember(findings: list, root=None) -> list:

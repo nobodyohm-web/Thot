@@ -94,6 +94,76 @@ def test_a_reachable_symbol_is_unaffected_by_the_escape_signal():
             accessibility_weight(distance, escapes=True)
 
 
+# -- what the flag is fed with -----------------------------------------------
+#
+# The primitive above is right and unchanged; what lied was its input.
+# `entrypoints_known` is repository-wide and `escapes` is per symbol, so the
+# two tests below score a real graph instead of a literal: they are the only
+# place where the whole chain — one `main()` somewhere, a proven path
+# elsewhere — is followed from the tree to the rank a reader sees.
+
+
+def _scored(root, symbol: str, impact: Severity) -> Severity:
+    """Score one symbol exactly as `pipeline.findings_from_graph` does."""
+    from thot.codemap.graph import CodeGraph
+    from thot.codemap.index import index_files
+    from thot.scope.detect import detect_scope
+
+    manifest = detect_scope(root)
+    graph = CodeGraph.build(index_files(root, manifest.files), manifest.entrypoints)
+    return compute_severity(
+        impact,
+        graph.distance_from_entrypoints(symbol),
+        Confidence.PLAUSIBLE,
+        entrypoints_known=bool(graph.entrypoints),
+        escapes=graph.reach_unknown(symbol),
+    )
+
+
+def test_an_unrelated_python_entrypoint_does_not_bury_a_typescript_sink(tmp_path):
+    """1.0 x 0.8 x 0.6 = 0.48 against 1.0 x 0.2 x 0.6 = 0.12 — two thresholds.
+
+    No TypeScript symbol is reachable from a Python `main()` by construction,
+    so answering "unreachable" for one is a verdict from a graph that never
+    covered it. At the default threshold the finding does not drop a rung, it
+    leaves the report.
+    """
+    (tmp_path / "cli.py").write_text("def main():\n    return 0\n", encoding="utf-8")
+    (tmp_path / "named.ts").write_text(
+        'import { exec } from "child_process";\n'
+        "export function handle(req: any) {\n"
+        '  exec("ping " + req.query.host);\n'
+        "}\n",
+        encoding="utf-8",
+    )
+
+    assert _scored(tmp_path, "named.handle", Severity.CRITICAL) is Severity.HIGH
+
+
+def test_an_unrelated_main_does_not_bury_a_helper_on_a_proven_path(tmp_path):
+    """The decorated view is marked escaped; the helper it calls is not.
+
+    Being called is exactly why the helper appears in nobody's `references`,
+    and the proven `request.args` -> `conn.execute` path was ranked below the
+    unproven pattern rule for it.
+    """
+    (tmp_path / "cli.py").write_text("def main():\n    return 0\n", encoding="utf-8")
+    (tmp_path / "web.py").write_text(
+        "import sqlite3\n\n"
+        "from flask import Flask, request\n\n"
+        "app = Flask(__name__)\n\n\n"
+        "def lookup(uid):\n"
+        '    conn = sqlite3.connect("app.db")\n'
+        '    return conn.execute("SELECT * FROM users WHERE id = " + uid)\n\n\n'
+        '@app.route("/u")\n'
+        "def user_view():\n"
+        '    return lookup(request.args.get("id"))\n',
+        encoding="utf-8",
+    )
+
+    assert _scored(tmp_path, "web.lookup", Severity.HIGH) is Severity.MEDIUM
+
+
 # -- what a file is for --------------------------------------------------
 
 

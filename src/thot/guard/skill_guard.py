@@ -48,6 +48,18 @@ INSTALL_POLICY = {
     #                  safe      caution    dangerous
     "builtin":       ("allow",  "allow",   "allow"),
     "trusted":       ("allow",  "allow",   "block"),
+    # A library the user installed into a neighbouring agent's home. Not the
+    # threat this guard was written for — that one is the repository under
+    # audit, which stays "community" below. Here the install already
+    # happened, deliberately, and Thot is only deciding whether to read what
+    # is already on the machine. Measured on this user's `~/.hermes/skills`:
+    # 8 of 83 were refused, every one of them for documenting its own folder
+    # ("the token is stored at ~/.hermes/google_token.json") — the mention
+    # rule, written against a hostile repository reaching into that folder
+    # from outside, reading a skill's own address as exfiltration.
+    # Still scanned, still reported; blocked on a CRITICAL finding, where the
+    # question stops being about provenance.
+    "installed":     ("allow",  "allow",   "block"),
     "community":     ("allow",  "block",   "block"),
     # Agent-created: "ask" on dangerous surfaces as an error to the agent,
     # which can retry without the flagged content. This gate only runs when
@@ -202,7 +214,15 @@ THREAT_PATTERNS = [
     (r'process\.env\[',
      "node_process_env", "high", "exfiltration",
      "accesses process.env (Node.js environment)"),
-    (r'ENV\[.*(?:KEY|TOKEN|SECRET|PASSWORD)',
+    # `ENV` is a Ruby constant: uppercase by construction. Compiled with
+    # re.IGNORECASE like the rest of the catalogue, this rule was reading
+    # Python as Ruby — `env["SERVICE_CLI_TOKEN"] = access_token` in a `.py`,
+    # two lines above `subprocess.run(..., env=env)`, is a secret being
+    # *handed to a child process*, which is how you are supposed to pass one.
+    # It was rated CRITICAL "reads secret", and one CRITICAL makes the verdict
+    # `dangerous`, which `--force` cannot lift. Scoping the flag off for the
+    # constant costs nothing in Ruby, where it is never lowercase.
+    (r'(?-i:ENV)\[.*(?:KEY|TOKEN|SECRET|PASSWORD)',
      "ruby_env_secret", "critical", "exfiltration",
      "reads secret via Ruby ENV[]"),
 
@@ -614,11 +634,20 @@ MAX_FILE_COUNT = 50       # skills shouldn't have 50+ files
 MAX_TOTAL_SIZE_KB = 1024  # 1MB total is suspicious for a skill
 MAX_SINGLE_FILE_KB = 256  # individual file > 256KB is suspicious
 
-# File extensions to scan (text files only — skip binary)
-SCANNABLE_EXTENSIONS = {
-    '.md', '.txt', '.py', '.sh', '.bash', '.js', '.ts', '.rb',
-    '.yaml', '.yml', '.json', '.toml', '.cfg', '.ini', '.conf',
-    '.html', '.css', '.xml', '.tex', '.r', '.jl', '.pl', '.php',
+# What is NOT scanned. An allow-list of extensions was the whole defence for
+# an unvouched repository, and defeating it cost a `mv`: measured on 24 names
+# carrying the same hostile bytes, only `.sh` and `.txt` came back
+# `dangerous` — `.zsh`, `.command`, `.mjs`, `.ps1`, `.lua`, `Makefile`,
+# `.envrc` and seventeen others came back `safe` on zero findings. Naming
+# what cannot be read is a closed question; naming what can is not.
+#
+# Media and fonts are skipped silently: a screenshot in a skill is ordinary.
+# Anything else that fails to decode as UTF-8 falls out through the existing
+# `UnicodeDecodeError`, which is the same question asked of the bytes.
+UNSCANNABLE_EXTENSIONS = {
+    '.png', '.jpg', '.jpeg', '.gif', '.bmp', '.ico', '.webp', '.tiff',
+    '.mp3', '.mp4', '.mov', '.avi', '.wav', '.ogg', '.webm', '.flac',
+    '.woff', '.woff2', '.ttf', '.otf', '.eot', '.pdf', '.psd', '.sketch',
 }
 
 # Known binary extensions that should NOT be in a skill
@@ -626,6 +655,31 @@ SUSPICIOUS_BINARY_EXTENSIONS = {
     '.exe', '.dll', '.so', '.dylib', '.bin', '.dat', '.com',
     '.msi', '.dmg', '.app', '.deb', '.rpm',
 }
+
+# Containers: readable by a program, opaque to this scanner. Reported rather
+# than skipped, and at HIGH rather than MEDIUM because `_determine_verdict`
+# only leaves `safe` from HIGH up — a MEDIUM here would change no verdict and
+# block nothing, which is the whole point of shipping the payload zipped.
+UNSCANNABLE_ARCHIVE_EXTENSIONS = {
+    '.zip', '.tar', '.gz', '.tgz', '.bz2', '.xz', '.7z', '.rar',
+    '.jar', '.war', '.whl', '.egg', '.pyc', '.pyo', '.pyd', '.wasm',
+    '.class', '.o', '.a', '.node', '.iso',
+}
+
+# Extensions whose executable bit is expected. Widened alongside the scan:
+# a `.zsh` or `.mjs` helper is now read like any other script, so treating
+# its `chmod +x` as an anomaly would rain a MEDIUM on every honest skill.
+SCRIPT_EXTENSIONS = {
+    '.sh', '.bash', '.zsh', '.fish', '.ksh', '.csh', '.command',
+    '.py', '.rb', '.pl', '.php', '.lua', '.r', '.jl', '.tcl',
+    '.js', '.mjs', '.cjs', '.ts', '.bat', '.cmd', '.ps1', '.psm1',
+}
+
+# The scan reads a prefix, never the whole of an arbitrarily large file.
+# 4MB is not a size the payload can hide behind: `oversized_skill` is HIGH at
+# 1MB of total skill content, so padding a file past this bound has already
+# cost the attacker the verdict he was trying to keep.
+MAX_SCAN_BYTES = 4 * 1024 * 1024
 
 # Zero-width and invisible unicode characters used for injection
 INVISIBLE_CHARS = {
@@ -672,6 +726,74 @@ INHERITED_ENVIRONMENT = re.compile(
 )
 
 
+# Git's own bookkeeping is not the skill. A skill obtained by `git clone`
+# carries a `.git/` the author never wrote: measured on a clean clone, the
+# fourteen `.git/hooks/*.sample` scored fourteen `unexpected_executable`
+# MEDIUMs, and a repository with any history adds `oversized_file` plus
+# `oversized_skill` (HIGH) for its pack — sixteen findings, verdict
+# `caution`, install BLOCKED, not one of them on a line the author wrote.
+#
+# Skipping it lowers no defence. Those `*.sample` files are written by the
+# *local* git at clone time, not transported: verified by cloning a
+# repository whose `.git/hooks` held no non-sample hook, and getting fourteen
+# samples anyway. Git never transports hooks at all, which is exactly why a
+# hostile repository cannot ship one — `.git/` is the one directory whose
+# contents the cloner produces rather than the author.
+#
+# Nor does skipping it create a hiding place. The exclusion is relative to
+# the skill root being scanned: a `SKILL.md` planted under a `.git/` is
+# still found by the loader (`rglob(SKILL_FILE)`), and its own folder then
+# becomes the scan root, where no path segment is `.git` and every file is
+# read as usual.
+#
+# The test is on a path *segment*, not a prefix: `.gitignore`, `.github/`
+# and `.git-hooks/` are ordinary files the author does write, and they stay
+# scanned. Anything else would make this rule the exit door it exists to
+# close.
+_VCS_DIRS = frozenset({".git"})
+
+
+def _is_vcs_internal(rel_parts) -> bool:
+    """True when a relative path passes through a VCS bookkeeping directory."""
+    return any(part in _VCS_DIRS for part in rel_parts)
+
+
+def _skill_files(skill_path: Path):
+    """Every file of a skill, with VCS bookkeeping excluded.
+
+    Yields ``(relative_path, path)``. Directories named in `_VCS_DIRS` are
+    pruned whole — nothing under them is stat'd, opened, sized or counted —
+    so `.git/` never contributes a finding, a byte to the structural
+    totals, or a byte to the digest.
+    """
+    for path in skill_path.rglob("*"):
+        rel = path.relative_to(skill_path)
+        if _is_vcs_internal(rel.parts):
+            continue
+        yield rel, path
+
+
+def _read_prefix(file_path: Path) -> str | None:
+    """The first `MAX_SCAN_BYTES` decoded as UTF-8, or None when that is not text.
+
+    Truncating at a byte bound can cut a multi-byte character in half; the
+    retry drops the incomplete tail rather than declaring the file binary,
+    because a large but perfectly ordinary UTF-8 file must not fall out of
+    the scan on a coincidence of where the bound landed.
+    """
+    try:
+        with file_path.open('rb') as handle:
+            raw = handle.read(MAX_SCAN_BYTES)
+    except OSError:
+        return None
+    for trim in range(4):
+        try:
+            return raw[:len(raw) - trim].decode('utf-8') if trim else raw.decode('utf-8')
+        except UnicodeDecodeError:
+            continue
+    return None
+
+
 def scan_file(file_path: Path, rel_path: str = "") -> List[Finding]:
     """
     Scan a single file for threat patterns and invisible unicode characters.
@@ -686,12 +808,12 @@ def scan_file(file_path: Path, rel_path: str = "") -> List[Finding]:
     if not rel_path:
         rel_path = file_path.name
 
-    if file_path.suffix.lower() not in SCANNABLE_EXTENSIONS and file_path.name != "SKILL.md":
+    suffix = file_path.suffix.lower()
+    if suffix in UNSCANNABLE_EXTENSIONS or suffix in UNSCANNABLE_ARCHIVE_EXTENSIONS:
         return []
 
-    try:
-        content = file_path.read_text(encoding='utf-8')
-    except (UnicodeDecodeError, OSError):
+    content = _read_prefix(file_path)
+    if content is None:
         return []
 
     findings = []
@@ -756,6 +878,12 @@ def scan_skill(skill_path: Path, source: str = "community") -> ScanResult:
     file itself is always excluded. Patterns cannot un-ignore the
     skill's own `SKILL.md`, which is always scanned.
 
+    That file is only honored where somebody vouched for the source. For a
+    repository under audit, or a skill the agent wrote itself, it is read as
+    content and nothing else: `*` and a newline would otherwise disarm the
+    whole scan but `SKILL.md`, and a configuration file written by the thing
+    being inspected does not get to say what is inspected.
+
     Args:
         skill_path: Path to the skill directory (must contain SKILL.md)
         source: Source identifier for trust level resolution (e.g. "openai/skills")
@@ -769,15 +897,17 @@ def scan_skill(skill_path: Path, source: str = "community") -> ScanResult:
     all_findings: List[Finding] = []
 
     if skill_path.is_dir():
-        ignore = _load_skill_ignore(skill_path)
+        ignore = (_load_skill_ignore(skill_path)
+                  if trust_level in _TRUST_HONORING_IGNORE
+                  else _ignore_nothing)
 
         # Structural checks first (honoring the ignore list)
         all_findings.extend(_check_structure(skill_path, ignore=ignore))
 
         # Pattern scanning on each file
-        for f in skill_path.rglob("*"):
+        for rel_path, f in _skill_files(skill_path):
             if f.is_file():
-                rel = str(f.relative_to(skill_path))
+                rel = str(rel_path)
                 if ignore(rel):
                     continue
                 all_findings.extend(scan_file(f, rel))
@@ -809,12 +939,17 @@ def _content_digest(skill_path: Path) -> str:
     reported ``update_available`` forever (#62310). Sorting the rel-posix
     strings makes the digest OS-independent and byte-symmetric with
     ``tools.skills_hub.bundle_content_hash``.
+
+    VCS bookkeeping is excluded, symmetrically with the scan: a bundle never
+    carries a `.git/`, so hashing one here would make an installed skill's
+    digest differ from the bundle it came from on every commit — the same
+    perpetual ``update_available`` this docstring already describes.
     """
     h = hashlib.sha256()
     if skill_path.is_dir():
         entries = sorted(
-            (file_path.relative_to(skill_path).as_posix(), file_path)
-            for file_path in skill_path.rglob("*")
+            (rel.as_posix(), file_path)
+            for rel, file_path in _skill_files(skill_path)
             if file_path.is_file()
         )
         for rel, file_path in entries:
@@ -904,7 +1039,12 @@ def should_allow_install(result: ScanResult, force: bool = False) -> Tuple[bool,
     if decision == "allow":
         return True, f"Allowed ({result.trust_level} source, {result.verdict} verdict)"
 
-    if force and not (result.verdict == "dangerous" and result.trust_level in ("community", "trusted")):
+    # Asked of the decision, not of the trust level. The list this used to
+    # enumerate — ("community", "trusted") — was the set of levels whose
+    # policy blocks a dangerous verdict, written out by name; `installed` was
+    # added to INSTALL_POLICY with the same `block` and never added here, so
+    # the one refusal `--force` must not lift was liftable there.
+    if force and not (result.verdict == "dangerous" and decision == "block"):
         return True, (
             f"Force-installed despite {result.verdict} verdict "
             f"({len(result.findings)} findings)"
@@ -917,9 +1057,8 @@ def should_allow_install(result: ScanResult, force: bool = False) -> Tuple[bool,
             f"{len(result.findings)} findings)"
         )
 
-    # Dangerous verdicts cannot be overridden by --force (community/trusted);
-    # other blocks can.
-    if result.verdict == "dangerous" and result.trust_level in ("community", "trusted"):
+    # Dangerous verdicts cannot be overridden by --force; other blocks can.
+    if result.verdict == "dangerous":
         return False, (
             f"Blocked ({result.trust_level} source + dangerous verdict, "
             f"{len(result.findings)} findings). --force does not override a dangerous verdict."
@@ -1007,11 +1146,11 @@ def _check_structure(skill_dir: Path, ignore=None) -> List[Finding]:
     file_count = 0
     total_size = 0
 
-    for f in skill_dir.rglob("*"):
+    for rel_path, f in _skill_files(skill_dir):
         if not f.is_file() and not f.is_symlink():
             continue
 
-        rel = str(f.relative_to(skill_dir))
+        rel = str(rel_path)
         if ignore(rel):
             continue
         file_count += 1
@@ -1074,8 +1213,21 @@ def _check_structure(skill_dir: Path, ignore=None) -> List[Finding]:
                 description=f"binary/executable file ({ext}) should not be in a skill",
             ))
 
+        # Containers the scanner cannot look inside — the shape of a payload
+        # shipped past a text scanner rather than through it.
+        if ext in UNSCANNABLE_ARCHIVE_EXTENSIONS:
+            findings.append(Finding(
+                pattern_id="unscannable_file",
+                severity="high",
+                category="structural",
+                file=rel,
+                line=0,
+                match=f"archive: {ext}",
+                description=f"archive/compiled file ({ext}) hides its content from the scan",
+            ))
+
         # Executable permission on non-script files
-        if ext not in {'.sh', '.bash', '.py', '.rb', '.pl'} and f.stat().st_mode & 0o111:
+        if ext not in SCRIPT_EXTENSIONS and f.stat().st_mode & 0o111:
             findings.append(Finding(
                 pattern_id="unexpected_executable",
                 severity="medium",
@@ -1151,6 +1303,14 @@ _SKILL_IGNORE_FILENAMES = (".skillignore", ".clawhubignore")
 # which can never be un-scanned via the ignore file.
 _ALWAYS_IGNORED_NAMES = set(_SKILL_IGNORE_FILENAMES)
 _NEVER_IGNORABLE = {"SKILL.md"}
+
+# Trust levels whose ignore file is obeyed: the ones where the skill arrived
+# because somebody put it there on purpose. See `scan_skill`.
+_TRUST_HONORING_IGNORE = frozenset({"builtin", "trusted", "installed"})
+
+
+def _ignore_nothing(_rel: str) -> bool:
+    return False
 
 
 def _load_skill_ignore(skill_dir: Path):
@@ -1245,6 +1405,10 @@ def _resolve_trust_level(source: str) -> str:
     # Agent-created skills get their own permissive trust level
     if normalized_source == "agent-created":
         return "agent-created"
+    # Installed by this user into a neighbouring agent's home — see
+    # INSTALL_POLICY for why that is not an unvouched repository.
+    if normalized_source == "installed":
+        return "installed"
     # Check if source matches any trusted repo exactly, or a skill path inside
     # that repo. Do not trust sibling repositories that merely share a prefix.
     for trusted in TRUSTED_REPOS:

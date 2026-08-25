@@ -357,7 +357,7 @@ def test_a_shared_verdict_travels_to_a_colleague_who_has_no_history(tmp_path,
     finding = run_audit(tmp_path).findings[0]
     assert finding.severity.value == "high"
 
-    # Alex decides, on their machine.
+    # Dev decides, on their machine.
     author = build_memory(tmp_path)
     try:
         author.remember(

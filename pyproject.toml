@@ -17,7 +17,15 @@ dependencies = [
     "prompt-toolkit>=3.0.52",
     # The other half of the program. A workspace member, so a checkout of
     # Thot is a checkout of Hermes — not a copy of it that drifts.
-    "hermes-agent",
+    #
+    # `[mcp]` is not optional here, whatever it is called upstream. It is the
+    # extra that installs the MCP SDK, and without it `tools/mcp_tool` fails
+    # `_ensure_mcp_sdk()` and returns no tools at all — silently, at debug
+    # level. `thot fusion wire` would go on writing plugin.json and mcp.json,
+    # `thot fusion status` would go on printing "branché : 4/4", and the
+    # agent would have no `code_map`, no `find_symbol`, no `callers`: not
+    # Thot's ones, not any. Half of what the fusion means is this extra.
+    "hermes-agent[mcp]",
 ]
 
 [project.scripts]
@@ -53,6 +61,11 @@ build-backend = "hatchling.build"
 "plugins" = "thot/plugins/library"
 "commands" = "thot/commands/library"
 "mcp-catalog" = "thot/mcp/mcp-catalog"
+# The Prime integration: a skill package Prime loads into its own kernel.
+# Prime reaches an MCP server through an `rlm.McpIntegration` subclass and
+# there is no generic path that connects a declared server without one, so a
+# Thot that shipped only the settings entry would wire Prime to nothing.
+"prime-skill" = "thot/prime-skill"
 
 [tool.hatch.build]
 dev-mode-dirs = ["src"]

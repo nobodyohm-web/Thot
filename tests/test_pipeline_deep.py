@@ -191,7 +191,17 @@ def test_a_regression_is_reported_not_re_litigated(toy_repo, tmp_path):
 
 
 def test_the_probe_does_not_erase_where_the_finding_came_from(toy_repo):
-    """A pattern rule's provenance is not the probe's to discard."""
+    """A pattern rule's provenance is not the probe's to discard.
+
+    The pattern lives in a JavaScript file on purpose. `defer_to_taint`
+    stands down every Python pattern that duplicates a taint sink, and the
+    toy repo's `os.system` is exactly one — so a Python-only fixture would
+    make this test pass or fail on the arbitration rather than on provenance,
+    which is not what it is asking about.
+    """
+    (toy_repo / "web.js").write_text(
+        "function show(v) { document.getElementById('x').innerHTML = v; }\n"
+    )
     result = run_audit(toy_repo, require_authorization=False, engine=VerdictEngine())
     pattern = [f for f in result.findings if f.rule.startswith("pattern.")]
     assert pattern, "le dépôt jouet doit déclencher au moins un motif"

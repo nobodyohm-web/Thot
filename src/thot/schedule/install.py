@@ -9,9 +9,11 @@ one-line copy-paste costs the user nothing.
 from __future__ import annotations
 
 import platform
+import shlex
 import shutil
 import sys
 from pathlib import Path
+from xml.sax.saxutils import escape
 
 from thot.schedule.jobs import Job, cron_expression
 
@@ -20,8 +22,22 @@ from thot.paths import log_file
 LAUNCH_AGENTS = Path.home() / "Library" / "LaunchAgents"
 
 
-def _thot_binary() -> str:
-    return shutil.which("thot") or f"{sys.executable} -m thot.cli"
+def thot_command() -> list[str]:
+    """The argv that actually runs Thot — a list, never a string to be split.
+
+    `-m thot`, not `-m thot.cli`. `cli.py` has no `if __name__ == "__main__"`
+    block, so `python -m thot.cli` imports the module, defines `main`, and
+    exits 0 having done nothing at all. That is the worst shape for an
+    unattended job: launchd sees a clean exit every night and nothing is
+    ever audited. `thot/__main__.py` is what makes `-m thot` the entry point
+    it looks like, and this is the fallback that has to use it.
+
+    A list because a path may contain a space. `str.split()` turns
+    `/Users/dev/My Tools/bin/thot` into two arguments, and the unit then
+    names a binary that does not exist.
+    """
+    found = shutil.which("thot")
+    return [found] if found else [sys.executable, "-m", "thot"]
 
 
 def agent_path() -> str:
@@ -68,17 +84,16 @@ def _launchd_calendar(schedule: str) -> str:
 
 
 def launchd_plist(job: Job) -> str:
-    binary = _thot_binary()
     arguments = "".join(
-        f"\n    <string>{part}</string>"
-        for part in [*binary.split(), "schedule", "run", job.name]
+        f"\n    <string>{escape(part)}</string>"
+        for part in [*thot_command(), "schedule", "run", job.name]
     )
     return f"""<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
   "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
-  <key>Label</key><string>{label(job)}</string>
+  <key>Label</key><string>{escape(label(job))}</string>
   <key>ProgramArguments</key>
   <array>{arguments}
   </array>
@@ -88,13 +103,13 @@ def launchd_plist(job: Job) -> str:
   </dict>
   <key>EnvironmentVariables</key>
   <dict>
-    <key>PATH</key><string>{agent_path()}</string>
-    <key>HOME</key><string>{Path.home()}</string>
+    <key>PATH</key><string>{escape(agent_path())}</string>
+    <key>HOME</key><string>{escape(str(Path.home()))}</string>
     <key>PYTHONUNBUFFERED</key><string>1</string>
     <key>PYTHONFAULTHANDLER</key><string>1</string>
   </dict>
-  <key>StandardOutPath</key><string>{log_file(job.name)}</string>
-  <key>StandardErrorPath</key><string>{log_file(job.name)}</string>
+  <key>StandardOutPath</key><string>{escape(str(log_file(job.name)))}</string>
+  <key>StandardErrorPath</key><string>{escape(str(log_file(job.name)))}</string>
   <key>RunAtLoad</key><false/>
 </dict>
 </plist>
@@ -105,9 +120,12 @@ def crontab_line(job: Job) -> str:
     # The PATH rides in the line: cron's default is shorter than launchd's,
     # and a deep job with no agent on the path judges nothing and says so
     # only in a log nobody opens.
+    # `shlex.join`, because cron hands the line to a shell: a binary living
+    # under a path with a space would otherwise become two words.
+    command = shlex.join([*thot_command(), "schedule", "run", job.name])
     return (
         f"{cron_expression(job.schedule)} PATH={agent_path()} "
-        f"{_thot_binary()} schedule run {job.name} "
+        f"{command} "
         f">> {log_file(job.name)} 2>&1"
     )
 
