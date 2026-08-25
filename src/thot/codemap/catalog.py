@@ -170,7 +170,15 @@ DEFAULT_SINKS: tuple[SinkRule, ...] = (
     ),
     SinkRule(
         id="sink.fs.read",
-        patterns=("open",),
+        # `open` and the four ways to ask what is in a directory. Same
+        # weakness — the caller chooses the path and gets back what is
+        # there — and `os.listdir` was missing: 150 cases in the corpus
+        # write it, all on the vulnerable half, and no safe case anywhere
+        # writes it at all. Worth +0,0000 there, because BenchProctor
+        # labels those cases CWE-209, which is an error message and not a
+        # directory. The sink is real regardless of what the corpus calls it.
+        patterns=("open", "os.listdir", "os.scandir", "os.walk",
+                  "glob.glob", "glob.iglob"),
         # MEDIUM as written, and discounted by `impact_for` when the path
         # never left the machine — see TRAVEL_SENSITIVE below. This rule
         # spent a while pinned at LOW instead, because a candidate did not

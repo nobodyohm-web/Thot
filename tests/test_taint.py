@@ -3006,3 +3006,34 @@ def test_an_escaped_page_stored_first_is_still_clear(tmp_path):
         "    return page\n"
     ))
     assert found == []
+
+
+def test_listing_a_directory_somebody_named_is_a_path_too(tmp_path):
+    """`os.listdir` was not in the catalogue, and it is the same weakness as
+    `open`: the caller chooses which directory, and gets back what is in it.
+
+    Worth exactly nothing on the corpus — BenchProctor labels these cases
+    CWE-209, which is an error message and not a directory — and it is here
+    because the sink is real. The 150 cases that write it are all on the
+    vulnerable half, and no safe case anywhere writes it at all."""
+    found = _findings(tmp_path, (
+        "import os\n"
+        "from flask import request\n\n"
+        "@app.route('/ls')\n"
+        "def handler():\n"
+        "    where = request.args.get('dir', '')\n"
+        "    return str(os.listdir(str(where)))\n"
+    ))
+    assert [(f.rule, f.severity.value) for f in found] \
+        == [("sink.fs.read", "medium")]
+
+
+def test_listing_a_constant_directory_is_not(tmp_path):
+    found = _findings(tmp_path, (
+        "import os\n"
+        "from flask import request\n\n"
+        "@app.route('/ls')\n"
+        "def handler():\n"
+        "    return str(os.listdir('/var/app/data'))\n"
+    ))
+    assert found == []
