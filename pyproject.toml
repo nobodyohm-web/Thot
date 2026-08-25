@@ -47,7 +47,11 @@ override-dependencies = [
   "cryptography>=50,<51",
 ]
 exclude-newer = "14 days"
-exclude-newer-package = { vercel = false, nemo-relay = false, huggingface_hub = false, h2 = false, aiohttp = false, cryptography = false, defusedxml = false, python-olm = false, unpaddedbase64 = false, setuptools = false, pillow = false, mcp = false }
+# Une date, pas un booléen : uv 0.9 refuse `false`, échoue à parser tout
+# `[tool.uv]`, et n'émet qu'un warning — `exclude-newer` n'était donc PAS
+# appliqué, silencieusement, alors que le commentaire ci-dessus promet
+# l'inverse. Une date lointaine exempte, ce que `false` voulait dire.
+exclude-newer-package = { vercel = "2100-01-01T00:00:00Z", nemo-relay = "2100-01-01T00:00:00Z", huggingface_hub = "2100-01-01T00:00:00Z", h2 = "2100-01-01T00:00:00Z", aiohttp = "2100-01-01T00:00:00Z", cryptography = "2100-01-01T00:00:00Z", defusedxml = "2100-01-01T00:00:00Z", python-olm = "2100-01-01T00:00:00Z", unpaddedbase64 = "2100-01-01T00:00:00Z", setuptools = "2100-01-01T00:00:00Z", pillow = "2100-01-01T00:00:00Z", mcp = "2100-01-01T00:00:00Z" }
 
 [build-system]
 requires = ["hatchling"]
