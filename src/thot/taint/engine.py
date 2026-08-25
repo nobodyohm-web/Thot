@@ -1440,25 +1440,28 @@ def _analyse_body(symbol: Symbol, node: ast.AST,
             constant_names.discard(name)
             resolved_names.discard(name)
             confined_bases.discard(name)
+            markup_names.discard(name)
 
     def note_derivation(targets: list[ast.AST], value: ast.AST | None) -> None:
         names = [name for target in targets for name in _target_names(target)]
         forget(names)
         if value is None:
             return
+        if _opens_with_markup(value):
+            markup_names.update(names)
         if len(names) != 1:
             # Tuple unpacking gives no honest answer about which element fed
             # which name, and a wrong chain here launders the wrong value.
             return
         name = names[0]
         derives[name] = frozenset(_referenced_names(value))
-        if isinstance(value, ast.Call) and (
-                is_html_sanitizer(_called_name(value) or "")
-                or _autoescaped_render(value)):
-            # Proved for HTML and for nothing else, so it goes with the other
-            # destination proofs rather than into `tainted`.
-            facts.destination_safe.setdefault("html", set()).add(name)
         read = _referenced_names(value)
+        if read and read <= _html_only_names(value):
+            # Proved for HTML and for nothing else, so it goes with the other
+            # destination proofs rather than into `tainted`. The whole value
+            # and not part of it: `'<div>' + escape(a) + b` escapes one of
+            # the two things it interpolates, which is the bug.
+            facts.destination_safe.setdefault("html", set()).add(name)
         if read and read <= _quoted_identifier_names(value):
             # The whole query, and not merely part of it, is quoted: a second
             # operand left outside the delimiters is the injection this is
@@ -1478,7 +1481,7 @@ def _analyse_body(symbol: Symbol, node: ast.AST,
             # `alias = allowed` is a second handle on the same object; the
             # alias is only as trustworthy as what it points at right now.
             for pool in (literal_names, constant_names, resolved_names,
-                         confined_bases):
+                         confined_bases, markup_names):
                 if value.id in pool:
                     pool.add(name)
 
@@ -1490,6 +1493,10 @@ def _analyse_body(symbol: Symbol, node: ast.AST,
     # applied where the site is recorded.
     guarded_until: list[tuple[int, str]] = []
     guarded_now: set[str] = set()
+    # Names holding something that opened an HTML tag. A route returning one
+    # is returning a page, and `return page` is the ordinary way to write it
+    # — reading only the returned expression saw a name and nothing else.
+    markup_names: set[str] = set()
     # Handles opened on a spreadsheet. `with open('report.csv') as fh` is what
     # makes `fh.write` a cell rather than a line of text.
     sheet_handles: set[str] = set()
@@ -1665,7 +1672,8 @@ def _analyse_body(symbol: Symbol, node: ast.AST,
                      ref_at(child), extra=frozenset(raised))
 
         elif isinstance(child, ast.Return) and child.value is not None:
-            if published and _opens_with_markup(child.value):
+            carries_markup = bool(_referenced_names(child.value) & markup_names)
+            if published and (_opens_with_markup(child.value) or carries_markup):
                 facts.sink_calls.append((
                     "sink.xss", ref_at(child),
                     tuple(sorted(_referenced_names(child.value)

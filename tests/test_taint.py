@@ -2953,3 +2953,56 @@ def test_a_validated_value_is_not_forging_anything(tmp_path):
         "    return 'ok'\n"
     ))
     assert found == []
+
+
+def test_a_route_returning_a_page_it_built_a_line_earlier(tmp_path):
+    """The ordinary way anyone writes it, and it was missed: the markup test
+    read the returned expression, and `return page` is a name. What opened a
+    tag is the assignment."""
+    found = _findings(tmp_path, (
+        "from flask import request\n\n"
+        "@app.route('/x')\n"
+        "def handler():\n"
+        "    page = '<div>' + str(request.args.get('q', '')) + '</div>'\n"
+        "    return page\n"
+    ))
+    assert [f.rule for f in found] == ["sink.xss"]
+
+
+def test_a_page_built_through_a_dict_is_the_same_page(tmp_path):
+    found = _findings(tmp_path, (
+        "from flask import request\n\n"
+        "@app.route('/x')\n"
+        "def handler():\n"
+        "    out = {}\n"
+        "    out['body'] = '<div>' + str(request.args.get('q', '')) + '</div>'\n"
+        "    return out['body']\n"
+    ))
+    assert [f.rule for f in found] == ["sink.xss"]
+
+
+def test_a_helper_that_stores_markup_is_still_not_a_response(tmp_path):
+    """The decorator is the gate, one assignment further back."""
+    found = _findings(tmp_path, (
+        "from flask import request\n\n"
+        "def fragment(value):\n"
+        "    piece = '<div>' + str(value) + '</div>'\n"
+        "    return piece\n\n"
+        "@app.route('/x')\n"
+        "def handler():\n"
+        "    return 'ok'\n"
+    ))
+    assert found == []
+
+
+def test_an_escaped_page_stored_first_is_still_clear(tmp_path):
+    found = _findings(tmp_path, (
+        "import html\n"
+        "from flask import request\n\n"
+        "@app.route('/x')\n"
+        "def handler():\n"
+        "    page = '<div>' + html.escape(str(request.args.get('q', '')))"
+        " + '</div>'\n"
+        "    return page\n"
+    ))
+    assert found == []
