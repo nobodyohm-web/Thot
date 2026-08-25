@@ -1046,11 +1046,89 @@ def _mutated_container(node: ast.Call) -> str | None:
     return target.value.id if isinstance(target.value, ast.Name) else None
 
 
+# How deep a constant program is followed when it compiles another one. Two
+# is one more than anything honest writes and enough that the second level
+# is not a place to hide.
+_EVAL_DEPTH = 2
+
+
+def _evaluated_source(node: ast.AST) -> str | None:
+    """The constant Python source an `eval` or `exec` call runs, if any.
+
+    `eval(compile(src, ...))` and the bare `exec(src)` are the same act with
+    one more wrapper; the wrapper is unwrapped and the mode argument is not
+    read, because `ast.parse` accepts what both modes accept.
+
+    A constant, and never a computed string. `exec('total = ' + value)` is
+    the injection `sink.eval` already reports, and parsing whatever the
+    expression happens to spell at analysis time would be reading one
+    possible attacker input as if it were the program.
+    """
+    if not (isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+            and node.func.id in ("eval", "exec") and node.args):
+        return None
+    argument = node.args[0]
+    if isinstance(argument, ast.Call) and isinstance(argument.func, ast.Name) \
+            and argument.func.id == "compile" and argument.args:
+        argument = argument.args[0]
+    if isinstance(argument, ast.Constant) and isinstance(argument.value, str):
+        return argument.value
+    return None
+
+
+def _inlined_evaluations(node: ast.AST, depth: int = _EVAL_DEPTH) -> list[ast.AST]:
+    """Every constant program this body compiles and runs, as nodes.
+
+    `eval` and `exec` run their argument in the calling scope, with the
+    calling scope's names — so a string that reads `data` reads *this*
+    `data`, and splicing its statements in at the call site is not an
+    approximation of what happens, it is what happens.
+
+    The corpus is unanimous and therefore useless as evidence: 48 cases use
+    this shape and all 48 are on the vulnerable half. A rule keyed on the
+    shape would have collected every one of them and known nothing. What
+    decides here is the spliced code — `exec(compile('total = len(x)'))`
+    produces nothing, as it should.
+
+    Positions are rewritten before the nodes are returned. The snippet's own
+    line numbers name lines of a file that does not exist; a reader can only
+    open the `exec`, so every node reports it. Order inside the snippet is
+    kept in `col_offset`, because `_ordered_nodes` sorts on it and a sink
+    seen before the assignment that taints it would never be paired with it.
+    """
+    found: list[ast.AST] = []
+    if depth <= 0:
+        return found
+    for child in ast.walk(node):
+        source = _evaluated_source(child)
+        if source is None:
+            continue
+        try:
+            parsed = ast.parse(source)
+        except (SyntaxError, ValueError):
+            # Not Python, or Python this interpreter will not parse. The
+            # call stays what it was: a compile of a constant.
+            continue
+        line = getattr(child, "lineno", 1)
+        column = getattr(child, "col_offset", 0)
+        inner = sorted(ast.walk(parsed),
+                       key=lambda one: (getattr(one, "lineno", 0),
+                                        getattr(one, "col_offset", 0)))
+        for offset, one in enumerate(inner):
+            one.lineno = one.end_lineno = line
+            one.col_offset = column + 1 + offset
+            one.end_col_offset = one.col_offset
+        found.extend(inner)
+        found.extend(_inlined_evaluations(parsed, depth - 1))
+    return found
+
+
 def _ordered_nodes(node: ast.AST) -> list[ast.AST]:
     """Walk the body in source order — `ast.walk` is breadth-first, which would
     let a sink be seen before the assignment that taints its argument."""
-    return sorted(ast.walk(node), key=lambda n: (getattr(n, "lineno", 0),
-                                                 getattr(n, "col_offset", 0)))
+    nodes = list(ast.walk(node)) + _inlined_evaluations(node)
+    return sorted(nodes, key=lambda n: (getattr(n, "lineno", 0),
+                                        getattr(n, "col_offset", 0)))
 
 
 _IMPORT_LINE = re.compile(r"^\s*(?:import|from)\s+([A-Za-z_][\w.]*)", re.M)

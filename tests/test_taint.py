@@ -2531,3 +2531,92 @@ def test_a_variable_query_with_one_operand_left_outside_is_not(tmp_path):
         "    return 'ok'\n"
     ))
     assert [f.rule for f in found] == ["sink.sql"]
+
+
+def test_a_program_written_in_a_string_is_still_a_program(tmp_path):
+    """`exec(compile(<literal>, ...))` runs the literal in this scope, with
+    this scope's names. Reading the constant as code is not a heuristic — it
+    is what the interpreter does with it one line later."""
+    found = _findings(tmp_path, (
+        "import os\n"
+        "from flask import request\n\n"
+        "@app.route('/x')\n"
+        "def handler():\n"
+        "    data = request.args.get('q', '')\n"
+        "    exec(compile('os.system(\"echo \" + str(data))', '<s>', 'exec'))\n"
+        "    return 'ok'\n"
+    ))
+    assert [f.rule for f in found] == ["sink.os.system"]
+
+
+def test_the_finding_lands_on_the_line_that_runs_it(tmp_path):
+    """The constant has line numbers of its own and they belong to no file.
+    What a reader can open is the `exec`."""
+    found = _findings(tmp_path, (
+        "import os\n"
+        "from flask import request\n\n"
+        "@app.route('/x')\n"
+        "def handler():\n"
+        "    data = request.args.get('q', '')\n"
+        "    exec(compile('os.system(\"echo \" + str(data))', '<s>', 'exec'))\n"
+        "    return 'ok'\n"
+    ))
+    assert [f.location.line for f in found] == [7]
+
+
+def test_a_constant_program_that_does_nothing_dangerous_stays_silent(tmp_path):
+    """The point of reading it is that the code decides, not the wrapper.
+    Every `eval(compile(...))` in the corpus is on the vulnerable half, and a
+    rule keyed on the shape would have scored the same and meant nothing."""
+    found = _findings(tmp_path, (
+        "from flask import request\n\n"
+        "@app.route('/x')\n"
+        "def handler():\n"
+        "    data = request.args.get('q', '')\n"
+        "    exec(compile('total = len(data) + 1', '<s>', 'exec'))\n"
+        "    return 'ok'\n"
+    ))
+    assert found == []
+
+
+def test_a_program_built_at_runtime_is_not_read_as_code(tmp_path):
+    """Only a constant. A source string the request helped build is the
+    injection `sink.eval` already reports, and parsing whatever it happens to
+    say at analysis time would be reading one attacker's guess as the truth."""
+    found = _findings(tmp_path, (
+        "from flask import request\n\n"
+        "@app.route('/x')\n"
+        "def handler():\n"
+        "    data = request.args.get('q', '')\n"
+        "    exec(compile('total = ' + str(data), '<s>', 'exec'))\n"
+        "    return 'ok'\n"
+    ))
+    assert [f.rule for f in found] == ["sink.eval"]
+
+
+def test_a_constant_that_does_not_parse_is_left_alone(tmp_path):
+    found = _findings(tmp_path, (
+        "from flask import request\n\n"
+        "@app.route('/x')\n"
+        "def handler():\n"
+        "    data = request.args.get('q', '')\n"
+        "    exec(compile('def (', '<s>', 'exec'))\n"
+        "    return 'ok'\n"
+    ))
+    assert found == []
+
+
+def test_the_constant_program_keeps_its_own_order(tmp_path):
+    """The snippet's statements run in sequence, and a sink written before
+    the assignment that taints it must not be paired with it."""
+    found = _findings(tmp_path, (
+        "import os\n"
+        "from flask import request\n\n"
+        "@app.route('/x')\n"
+        "def handler():\n"
+        "    raw = request.args.get('q', '')\n"
+        "    exec(compile('os.system(\"ls\")\\ndata = str(raw)\\n"
+        "os.system(\"echo \" + data)', '<s>', 'exec'))\n"
+        "    return 'ok'\n"
+    ))
+    assert [f.rule for f in found] == ["sink.os.system"]
