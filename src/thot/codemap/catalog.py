@@ -291,6 +291,25 @@ DEFAULT_SINKS: tuple[SinkRule, ...] = (
         # written by nothing but a Mongo query.
         needs=("mongo:text", "pymongo", "motor", "mongoengine", "bson"),
     ),
+    # The next two carry no patterns and never will: they are recognised by
+    # *position*, not by the name of a call. A response header is written as
+    # `Response(..., headers={...})` in Django and FastAPI and as the third
+    # element of a returned tuple in Flask, and in both the key names the
+    # header while the value is the thing that must not be attacker-chosen.
+    # `taint/engine.py::_header_targets` finds them; these entries exist so
+    # the finding has an impact and a sentence like every other.
+    SinkRule(
+        id="sink.header",
+        patterns=(),
+        impact=Severity.MEDIUM,
+        description="En-tête de réponse composé avec une valeur non fiable",
+    ),
+    SinkRule(
+        id="sink.cors",
+        patterns=(),
+        impact=Severity.MEDIUM,
+        description="Origine CORS reflétée depuis la requête",
+    ),
 )
 
 DEFAULT_SOURCES: tuple[SourceRule, ...] = (
@@ -313,6 +332,12 @@ DEFAULT_SOURCES: tuple[SourceRule, ...] = (
     SourceRule(
         id="source.http",
         patterns=("request.args", "request.form", "request.json", "request.data",
+                  # `get_data` and `stream` are how Werkzeug hands over a raw
+                  # body, and `request.data` does not cover them: the prefix
+                  # mode matches `request.data.something`, never a different
+                  # method on the same object. 581 reads of it in the flask
+                  # corpus went unseen for want of this line.
+                  "request.get_data", "request.stream",
                   "request.values", "request.get_json", "request.cookies",
                   "request.headers", "request.files", "request.query_params",
                   "request.body", "request.POST", "request.GET"),

@@ -47,6 +47,8 @@ CWE_BY_RULE: dict[str, tuple[str, ...]] = {
     "sink.xpath": ("CWE-643",),
     "sink.ldap": ("CWE-90",),
     "sink.nosql": ("CWE-943",),
+    "sink.header": ("CWE-93",),
+    "sink.cors": ("CWE-942",),
     # -- JavaScript / TypeScript sinks ----------------------------------
     "sink.js.exec": ("CWE-78",),
     "sink.js.spawn": ("CWE-78",),

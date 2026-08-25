@@ -393,6 +393,10 @@ def _refuses(body: list[ast.stmt]) -> bool:
 # a user somewhere. Every public address passes it, and a public address is
 # exactly where an open redirect sends its victim.
 _DESTINATION_PROOFS: dict[str, frozenset[str]] = {
+    # Stripping CR and LF proves a header and nothing else — see
+    # `_strips_crlf`. It does not reach `sink.cors`: removing newlines from a
+    # reflected Origin leaves it reflected.
+    "header": frozenset({"sink.header"}),
     "host": frozenset({"sink.network", "sink.redirect"}),
     "network": frozenset({"sink.network"}),
     "path": frozenset({"sink.fs.read", "sink.fs.write"}),
@@ -589,6 +593,95 @@ def _validated_names(statement: ast.If,
             return {name} if name else set()
 
     return set()
+
+
+_CORS_ORIGIN = "access-control-allow-origin"
+
+
+def _header_targets(node: ast.AST) -> list[tuple[str, ast.expr]]:
+    """Response headers written at this node, as (rule id, value).
+
+    Two shapes, because the frameworks disagree and both are ordinary:
+    Django and FastAPI take `headers={...}` as a keyword, Flask returns
+    `body, status, {...}` as the third element of a tuple. The key names the
+    header and the value is what must not be attacker-chosen.
+
+    Position is the whole gate. A dict whose keys merely *look* like header
+    names — `{'first-name': value}` — is data, and matching on the shape of
+    the key alone would have turned every such dict into a response header.
+    """
+    dicts: list[ast.Dict] = []
+    if isinstance(node, ast.Call):
+        for keyword in node.keywords:
+            if keyword.arg == "headers" and isinstance(keyword.value, ast.Dict):
+                dicts.append(keyword.value)
+    elif isinstance(node, ast.Return) and isinstance(node.value, ast.Tuple) \
+            and len(node.value.elts) == 3 \
+            and isinstance(node.value.elts[2], ast.Dict):
+        dicts.append(node.value.elts[2])
+
+    found: list[tuple[str, ast.expr]] = []
+    for mapping in dicts:
+        for key, value in zip(mapping.keys, mapping.values):
+            if not isinstance(key, ast.Constant) or not isinstance(key.value, str):
+                continue
+            rule = ("sink.cors" if key.value.strip().lower() == _CORS_ORIGIN
+                    else "sink.header")
+            found.append((rule, value))
+    return found
+
+
+def _crlf_stripped_base(value: ast.AST) -> ast.AST | None:
+    """The expression a `.replace('\\r','').replace('\\n','')` chain cleans.
+
+    `None` when there is no such chain. Returned rather than a boolean
+    because the chain is very often written *inside* something else —
+    `re.sub(pattern, '****', str(x).replace('\\r','').replace('\\n',''))` is
+    the ordinary shape — and the caller has to check that the value it
+    cleaned is the only untrusted thing in the expression before believing it.
+    """
+    for node in ast.walk(value):
+        removed = set()
+        current = node
+        while isinstance(current, ast.Call) \
+                and isinstance(current.func, ast.Attribute):
+            if current.func.attr == "replace" and len(current.args) == 2 \
+                    and isinstance(current.args[0], ast.Constant) \
+                    and isinstance(current.args[1], ast.Constant) \
+                    and current.args[1].value == "":
+                removed.add(current.args[0].value)
+            current = current.func.value
+        if "\r" in removed and "\n" in removed:
+            return current
+    return None
+
+
+def _body_validated(statement: ast.If,
+                    literals: frozenset[str] = frozenset()) -> tuple[set[str], int]:
+    """Names an ``if x in (...)`` guard constrains, and where that stops.
+
+    The mirror of `_validated_names`, and separate from it for the one reason
+    that matters: ``if x not in allowed: return`` refuses, so the constraint
+    holds for everything written after it, and clearing the name from that
+    point on is exactly right. ``if x in allowed:`` refuses nothing — it
+    constrains the value *inside the block* and says nothing at all about the
+    lines that follow. Clearing it the same way would launder the second use.
+
+    So the end line comes back with the names, and the caller gives the taint
+    back when the walk passes it.
+    """
+    test = statement.test
+    if not (isinstance(test, ast.Compare) and len(test.ops) == 1
+            and isinstance(test.ops[0], ast.In)
+            and (_all_literals(test.comparators[0])
+                 or _plain_name(test.comparators[0]) in literals)):
+        return set(), 0
+    name = _plain_name(test.left)
+    if not name:
+        return set(), 0
+    end = max((getattr(one, "end_lineno", None) or one.lineno)
+              for one in statement.body)
+    return {name}, end
 
 
 @dataclass(frozen=True)
@@ -1035,10 +1128,53 @@ def _analyse_body(symbol: Symbol, node: ast.AST,
                 if value.id in pool:
                     pool.add(name)
 
+    # Names an `if x in allowed:` block constrains, and the line each stops
+    # on. Not popped from `facts.tainted`: that map is read after the walk
+    # finishes, and by then a positive guard has been left behind, so a
+    # clearing there would either leak past the block or be undone before
+    # anyone looked. The constraint is a fact about the *site*, so it is
+    # applied where the site is recorded.
+    guarded_until: list[tuple[int, str]] = []
+    guarded_now: set[str] = set()
+
+    def under_guard() -> frozenset[str]:
+        return frozenset(guarded_now)
+
     for child in _ordered_nodes(node):
+        line = getattr(child, "lineno", 0) or 0
+        if guarded_until and line:
+            still = []
+            for end, held in guarded_until:
+                if line > end:
+                    guarded_now.discard(held)
+                else:
+                    still.append((end, held))
+            guarded_until = still
+
         if isinstance(child, ast.Assign):
             note_derivation(child.targets, child.value)
             bind(child.targets, child.value, ref_at(child))
+            # Stripping CR and LF is a real neutralisation and a narrow one:
+            # it defeats header injection, whose mechanism is those two
+            # characters, and nothing else — a string carrying every
+            # metacharacter a shell knows survives it. Hence the `header`
+            # family alone.
+            #
+            # The chain is usually written inside something larger,
+            # `re.sub(p, '****', str(x).replace('\r','').replace('\n',''))`
+            # being the ordinary shape, so what it cleaned has to be
+            # everything untrusted the expression carries. Asked here rather
+            # than in a helper because only here is it known what is tainted.
+            cleaned = _crlf_stripped_base(child.value)
+            if cleaned is not None:
+                outside = (_referenced_names(child.value)
+                           - _referenced_names(cleaned))
+                if not any(name in facts.tainted or match_source(name)
+                           for name in outside):
+                    facts.destination_safe.setdefault("header", set()).update(
+                        target.id for target in child.targets
+                        if isinstance(target, ast.Name)
+                    )
 
         elif isinstance(child, ast.AnnAssign):
             if child.value is not None:
@@ -1070,6 +1206,13 @@ def _analyse_body(symbol: Symbol, node: ast.AST,
                 facts.tainted.pop(name, None)
                 facts.origin_rule.pop(name, None)
                 facts.from_param.pop(name, None)
+
+            # The positive form of the same guard. Cleared only for the block
+            # it opens; `guarded_until` hands the taint back after it.
+            inside, ends = _body_validated(child, frozenset(literal_names))
+            for name in inside:
+                guarded_until.append((ends, name))
+                guarded_now.add(name)
 
         elif isinstance(child, (ast.For, ast.AsyncFor)):
             bind([child.target], child.iter, ref_at(child))
@@ -1115,6 +1258,11 @@ def _analyse_body(symbol: Symbol, node: ast.AST,
                      ref_at(child), extra=frozenset(raised))
 
         elif isinstance(child, ast.Return) and child.value is not None:
+            for rule_id, written in _header_targets(child):
+                facts.sink_calls.append((
+                    rule_id, ref_at(child),
+                    tuple(sorted(_referenced_names(written) - under_guard())),
+                ))
             refs = _referenced_names(child.value)
             matched = matching_source(refs)
             held = carrier(refs)
@@ -1138,6 +1286,12 @@ def _analyse_body(symbol: Symbol, node: ast.AST,
                     carried |= _referenced_names(argument)
                 bind([ast.Name(id=holder, ctx=ast.Store())], None,
                      ref_at(child), extra=frozenset(carried))
+
+            for rule_id, written in _header_targets(child):
+                facts.sink_calls.append((
+                    rule_id, ref_at(child),
+                    tuple(sorted(_referenced_names(written) - under_guard())),
+                ))
 
             called = _called_name(child)
             if not called:
@@ -1169,7 +1323,8 @@ def _analyse_body(symbol: Symbol, node: ast.AST,
                 rule = None
 
             if rule is not None:
-                facts.sink_calls.append((rule.id, ref, tuple(sorted(argument_refs))))
+                facts.sink_calls.append(
+                (rule.id, ref, tuple(sorted(argument_refs - under_guard()))))
                 # Sorted: this decides the insertion order of `param_sinks`,
                 # the fixed point iterates it by that order, and `emit` keeps
                 # the first candidate per sink — so a set's hash order was

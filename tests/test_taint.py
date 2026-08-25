@@ -1865,3 +1865,155 @@ def test_an_allow_list_clears_a_mongo_query(tmp_path):
         "    return 'ok'\n"
     ))
     assert found == []
+
+
+# -- response headers, and the guard that is only true inside its block -----
+
+
+def test_a_tainted_response_header_is_caught(tmp_path):
+    found = _findings(tmp_path, (
+        "from django.http import JsonResponse\n\n"
+        "def view(request):\n"
+        "    data = request.META.get('HTTP_X_CUSTOM', '')\n"
+        "    return JsonResponse({'s': 'ok'}, status=200,"
+        " headers={'Content-Language': str(data)})\n"
+    ))
+    assert [f.rule for f in found] == ["sink.header"]
+
+
+def test_the_flask_spelling_is_the_third_element_of_a_returned_tuple(tmp_path):
+    found = _findings(tmp_path, (
+        "from flask import request, jsonify\n\n"
+        "@app.route('/x')\n"
+        "def handler():\n"
+        "    data = request.args.get('h', '')\n"
+        "    return jsonify({'s': 'ok'}), 200, {'Content-Language': str(data)}\n"
+    ))
+    assert [f.rule for f in found] == ["sink.header"]
+
+
+def test_a_reflected_origin_is_cors_and_not_header_injection(tmp_path):
+    found = _findings(tmp_path, (
+        "from django.http import JsonResponse\n\n"
+        "def view(request):\n"
+        "    data = request.body.decode('utf-8')\n"
+        "    return JsonResponse({'s': 'ok'},"
+        " headers={'Access-Control-Allow-Origin': str(data)})\n"
+    ))
+    assert [f.rule for f in found] == ["sink.cors"]
+
+
+def test_a_dict_of_data_is_not_a_dict_of_headers(tmp_path):
+    """Position is the gate. A key that merely looks like a header name is
+    not one, and matching on the key alone would make every `{'first-name':
+    value}` in the corpus a response header."""
+    found = _findings(tmp_path, (
+        "from django.http import JsonResponse\n\n"
+        "def view(request):\n"
+        "    data = request.META.get('HTTP_X_CUSTOM', '')\n"
+        "    return JsonResponse({'first-name': str(data)}, status=200)\n"
+    ))
+    assert found == []
+
+
+def test_a_positive_allow_list_clears_its_own_block(tmp_path):
+    found = _findings(tmp_path, (
+        "from django.http import JsonResponse\n\n"
+        "def view(request):\n"
+        "    data = request.body.decode('utf-8')\n"
+        "    allowed = {'https://a.example', 'https://b.example'}\n"
+        "    origin = str(data)\n"
+        "    if origin in allowed:\n"
+        "        return JsonResponse({'s': 'ok'},"
+        " headers={'Access-Control-Allow-Origin': origin})\n"
+        "    return JsonResponse({'saved': True})\n"
+    ))
+    assert found == []
+
+
+def test_a_positive_allow_list_clears_nothing_after_its_block(tmp_path):
+    """The whole difference from `if x not in allowed: return`. That one
+    refuses, so the constraint holds for everything below it. This one
+    constrains the value inside the block and says nothing about the line
+    after — treating the two alike would launder the second use."""
+    found = _findings(tmp_path, (
+        "import os\n\n"
+        "def view(request):\n"
+        "    data = request.body.decode('utf-8')\n"
+        "    if data in ('a', 'b'):\n"
+        "        pass\n"
+        "    os.system('echo ' + data)\n"
+    ))
+    assert [f.rule for f in found] == ["sink.os.system"]
+
+
+def test_removing_cr_and_lf_clears_a_header(tmp_path):
+    found = _findings(tmp_path, (
+        "from django.http import JsonResponse\n\n"
+        "def view(request):\n"
+        "    data = request.META.get('HTTP_X_CUSTOM', '')\n"
+        "    clean = str(data).replace('\\r', '').replace('\\n', '')\n"
+        "    return JsonResponse({'s': 'ok'},"
+        " headers={'Content-Language': str(clean)})\n"
+    ))
+    assert found == []
+
+
+def test_removing_cr_and_lf_clears_nothing_else(tmp_path):
+    """It defeats header injection, whose mechanism is those two characters,
+    and it defeats nothing else: every metacharacter a shell knows survives
+    it untouched."""
+    found = _findings(tmp_path, (
+        "import os\n\n"
+        "def view(request):\n"
+        "    data = request.body.decode('utf-8')\n"
+        "    clean = str(data).replace('\\r', '').replace('\\n', '')\n"
+        "    os.system('echo ' + clean)\n"
+    ))
+    assert [f.rule for f in found] == ["sink.os.system"]
+
+
+def test_werkzeug_hands_the_raw_body_through_get_data(tmp_path):
+    """`request.data` does not cover it: prefix matching reaches
+    `request.data.something`, never a different method on the same object."""
+    found = _findings(tmp_path, (
+        "import os\n"
+        "from flask import request\n\n"
+        "@app.route('/x')\n"
+        "def handler():\n"
+        "    data = request.get_data(as_text=True)\n"
+        "    os.system('echo ' + str(data))\n"
+    ))
+    assert [f.rule for f in found] == ["sink.os.system"]
+
+
+def test_a_crlf_strip_buried_in_a_larger_expression_still_proves_it(tmp_path):
+    """The ordinary shape, and 27 false positives before it was read: the
+    chain sits inside `re.sub`, so a helper that only walked the outermost
+    call saw a substitution and stopped."""
+    found = _findings(tmp_path, (
+        "import re\n"
+        "from django.http import JsonResponse\n\n"
+        "def view(request):\n"
+        "    data = request.body.decode('utf-8')\n"
+        "    clean = re.sub(r'[A-Za-z0-9]{4,}', '****',"
+        " str(data).replace('\\r', '').replace('\\n', ''))\n"
+        "    return JsonResponse({'s': 'ok'},"
+        " headers={'Content-Language': str(clean)})\n"
+    ))
+    assert found == []
+
+
+def test_a_crlf_strip_on_one_operand_proves_nothing_about_the_other(tmp_path):
+    """What keeps the previous test from being a licence to launder. The
+    chain cleaned `first`; `second` reached the header untouched."""
+    found = _findings(tmp_path, (
+        "from django.http import JsonResponse\n\n"
+        "def view(request):\n"
+        "    first = request.GET.get('a', '')\n"
+        "    second = request.GET.get('b', '')\n"
+        "    joined = first.replace('\\r', '').replace('\\n', '') + second\n"
+        "    return JsonResponse({'s': 'ok'},"
+        " headers={'Content-Language': str(joined)})\n"
+    ))
+    assert [f.rule for f in found] == ["sink.header"]
