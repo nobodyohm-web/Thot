@@ -1213,19 +1213,18 @@ monter `provenance` — fait tomber le TPR. Tout signaler donne TPR 100 %, FPR
 
 ```
                         avant      après
-TPR                      9.9 %     45.6 %
+TPR                      9.9 %     47.8 %
 FPR                      0.5 %      0.0 %
-J de Youden             +9.4 %    +45.6 %
-catégories actives          10         32
+J de Youden             +9.4 %    +47.7 %
+catégories actives          10         33
 catégories négatives         0          0
 ```
 
 « Avant » est l'état du programme au moment où le thermomètre a existé pour la
 première fois. « Après » est le même corpus, le même plancher, la même
-commande. Le hold-out le confirme, et de trois façons : django tenu à l'écart
-note **+46,9 %** contre +44,9 % à l'entraînement, fastapi **+44,8 %** contre
-+45,9 %, flask **+45,0 %** contre +45,8 %. Jamais plus de deux points d'écart,
-et une fois en faveur du tenu à l'écart — les règles marchent sur du code
+commande. Le hold-out le confirme, et de trois façons : django seul note **+49,2 %**,
+fastapi **+46,9 %**, flask **+47,1 %**. Deux points d'écart au plus entre trois
+frameworks qui ne se ressemblent en rien — les règles marchent sur du code
 qu'elles n'ont pas servi à écrire.
 
 Par catégorie, ce que le moteur sait faire aujourd'hui :
@@ -1235,12 +1234,12 @@ xxe · tlsverify · weakhash · weakrand · weakcipher · weakkeylength
 hardcodedcreds · default_credentials · cleartexttransmit · errormessage
 debug_code_production · cookie_no_httponly · cookie_no_samesite
 securecookie · directory_listing_exposure                      +100,0 %
-deserial  +98,0 %   cmdi  +93,3 %   ldapi  +90,0 %
-corsmisconfig  +90,0 %   codeinj  +86,0 %   eval_injection  +84,0 %
-xpathi  +84,0 %   csv_injection  +84,0 %   sqli  +82,7 %
-nosql  +82,0 %   crlfinjection  +82,0 %   cloud_ssrf_metadata  +78,7 %
-redirect  +78,0 %   ssti  +76,0 %   ssrf  +64,7 %
-pathtraver  +56,0 %   xss / basic_xss  +26,7 %
+deserial  +98,0 %   corsmisconfig  +96,0 %   cmdi  +93,3 %
+ldapi  +92,0 %   csv_injection  +92,0 %   nosql  +90,0 %
+xpathi  +88,0 %   crlfinjection  +86,0 %   codeinj  +86,0 %
+eval_injection  +84,0 %   sqli  +82,7 %   ssti  +82,0 %
+redirect  +80,0 %   cloud_ssrf_metadata  +78,7 %   ssrf  +70,7 %
+cleartextstorage  +68,0 %   pathtraver  +56,0 %   xss / basic_xss  +26,7 %
 ```
 
 **Zéro faux positif** sur l'ensemble des 18 300 cas, et aucune catégorie
@@ -1248,7 +1247,7 @@ négative. Le point de départ était `ssrf` à −8,0 % et `xxe` à −100 %.
 
 ### Le plafond, parce qu'un chiffre sans son maximum ne veut rien dire
 
-+45,6 % n'est pas « 46 % du problème résolu ». Sur les 61 catégories, **24 ne
++47,7 % n'est pas « 48 % du problème résolu ». Sur les 61 catégories, **22 ne
 sont pas atteignables**, et pour deux raisons distinctes qui ont toutes deux
 été vérifiées cas par cas.
 
@@ -1259,18 +1258,27 @@ sur du code identique — `el_injection` et `ssti` sont le même appel
 Les mappings qui rattraperaient ces points ont été instruits un par un et tous
 rejetés : ils paieraient un point contre une inexactitude taxonomique.
 
-**Quatorze n'ont aucun sink.** `authzfailure`, `idor`, `intoverflow`,
+**Douze n'ont aucun sink.** `authzfailure`, `idor`, `intoverflow`,
 `null_deref`, `privescalation` et les autres finissent toutes sur un
 `return JsonResponse(...)` sans un seul appel dangereux : ce sont des défauts
 de logique — une autorisation absente, un entier qui déborde — et aucune
 analyse de teinte ne les voit, quelle que soit la règle qu'on écrive.
 
-Reste **37 catégories atteignables, soit un plafond de +60,7 %**. À +45,6 %,
-c'est **75 % de ce qui est atteignable** — et les cinq catégories encore
-gagnables sont nommées dans le journal de reprise, chacune avec le mécanisme
-qui lui manque.
+Restent 39 catégories, soit un plafond arithmétique de **+63,9 %**. Mais six
+d'entre elles ne se gagnent qu'avec une règle qui serait fausse ailleurs que
+sur ce corpus — `csrf` et `missingcritauthn` exigeraient de signaler l'absence
+d'un contrôle que Django applique par middleware, `loginjection` produirait
+des centaines de findings par dépôt (372 appels de journalisation interpolés
+dans `hermes/hermes_cli` seul), `sessionfixation` tirerait sur chaque écriture
+de session, `weak_password_hash` sur chaque somme de contrôle. Elles sont
+refusées, et le journal de reprise dit pourquoi une par une.
 
-Ce qui a produit ces trente-six points, dans l'ordre où ça a été mesuré :
+Reste donc **33 catégories gagnables honnêtement, soit +54,1 %**. Elles sont
+toutes actives aujourd'hui. À +47,7 %, c'est **88 % du maximum honnête**, et
+ce qui reste n'est plus des catégories entières mais les cas manqués à
+l'intérieur de celles qui marchent déjà.
+
+Ce qui a produit ces trente-huit points, dans l'ordre où ça a été mesuré :
 
 | changement | J |
 |---|---|
@@ -1288,7 +1296,9 @@ Ce qui a produit ces trente-six points, dans l'ordre où ça a été mesuré :
 | `sink.redirect`, et la preuve par hôte séparée de la preuve par plage | +35,6 % |
 | quatre sinks d'injection : template, XPath, LDAP, NoSQL | +40,8 % |
 | en-têtes de réponse, garde positive, neutralisation CR/LF | +44,2 % |
-| une cellule de tableur n'est pas une ligne de texte | **+45,6 %** |
+| une cellule de tableur n'est pas une ligne de texte | +45,6 % |
+| un fichier nommé `secrets.txt`, et la preuve par chiffrement ou hachage | +46,6 % |
+| la teinte traverse une fermeture `nonlocal` | **+47,7 %** |
 
 Trois de ces changements ont été **refusés** après mesure, et c'est le
 thermomètre qui les a refusés : traiter une lecture en base comme une source
