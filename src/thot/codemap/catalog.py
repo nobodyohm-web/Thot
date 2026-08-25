@@ -360,7 +360,16 @@ DEFAULT_SOURCES: tuple[SourceRule, ...] = (
                   "request.get_data", "request.stream",
                   "request.values", "request.get_json", "request.cookies",
                   "request.headers", "request.files", "request.query_params",
-                  "request.body", "request.POST", "request.GET"),
+                  "request.body", "request.POST", "request.GET",
+                  # Django spells two of its own in capitals, and their
+                  # absence did not hide the taint — `request` is a view's
+                  # parameter, so everything read off it is untrusted anyway.
+                  # What it hid was *which* rule started the path, and for a
+                  # travel-sensitive sink that is the whole finding: with no
+                  # source attributed, `impact_for` discounts `sink.fs.read`
+                  # from medium to low, and low is under the floor a default
+                  # report prints. The path was found and nobody saw it.
+                  "request.META", "request.COOKIES", "request.FILES"),
         description="Requête HTTP entrante",
         match_mode="prefix",
         remote=True,

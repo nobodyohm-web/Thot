@@ -2210,3 +2210,25 @@ def test_a_dict_that_only_ever_held_constants_taints_nothing(tmp_path):
         "    os.system('echo ' + str(box['k']))\n"
     ))
     assert found == []
+
+
+def test_django_spells_two_of_its_sources_in_capitals(tmp_path):
+    """Their absence hid no taint — `request` is a view's parameter, so what
+    is read off it is untrusted whatever the catalogue says. What it hid was
+    *which* rule started the path, and for a travel-sensitive sink that is
+    the finding: with no source attributed, `impact_for` discounts
+    `sink.fs.read` from medium to low, and low is under the floor a default
+    report prints. The path was found and nobody saw it."""
+    from thot.contracts import Severity
+
+    found = _findings(tmp_path, (
+        "from django.http import JsonResponse\n\n"
+        "def view(request):\n"
+        "    referer = request.META.get('HTTP_REFERER', '')\n"
+        "    with open('/var/app/data/' + str(referer), 'w') as fh:\n"
+        "        fh.write('x')\n"
+        "    return JsonResponse({})\n"
+    ))
+    assert [(f.rule, f.severity) for f in found] == [
+        ("sink.fs.read", Severity.MEDIUM)
+    ]
