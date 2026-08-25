@@ -2300,3 +2300,55 @@ def test_an_environment_that_does_not_escape_proves_nothing(tmp_path):
         ".from_string('{{ value }}').render(value=data))\n"
     ))
     assert [f.rule for f in found] == ["sink.xss"]
+
+
+def test_a_route_returning_a_raw_html_body_is_xss(tmp_path):
+    """A Flask view that returns a string has it sent as `text/html`. The
+    route decorator is the gate: a helper that happens to build markup is
+    not a response."""
+    found = _findings(tmp_path, (
+        "from flask import request\n\n"
+        "@app.route('/x')\n"
+        "def handler():\n"
+        "    data = request.args.get('q', '')\n"
+        "    return '<div>' + str(data) + '</div>'\n"
+    ))
+    assert [f.rule for f in found] == ["sink.xss"]
+
+
+def test_an_f_string_body_is_the_same_body(tmp_path):
+    found = _findings(tmp_path, (
+        "from flask import request\n\n"
+        "@app.route('/x')\n"
+        "def handler():\n"
+        "    data = request.args.get('q', '')\n"
+        "    return f'<div>{data}</div>'\n"
+    ))
+    assert [f.rule for f in found] == ["sink.xss"]
+
+
+def test_a_helper_that_builds_markup_is_not_a_response(tmp_path):
+    """Without the decorator nothing says this string reaches a browser, and
+    a rule on the shape of the text alone would fire on every template
+    fragment a program assembles."""
+    found = _findings(tmp_path, (
+        "from flask import request\n\n"
+        "def fragment(value):\n"
+        "    return '<div>' + str(value) + '</div>'\n\n"
+        "@app.route('/x')\n"
+        "def handler():\n"
+        "    return 'ok'\n"
+    ))
+    assert found == []
+
+
+def test_an_escaped_body_returned_from_a_route_is_clear(tmp_path):
+    found = _findings(tmp_path, (
+        "import html\n"
+        "from flask import request\n\n"
+        "@app.route('/x')\n"
+        "def handler():\n"
+        "    data = request.args.get('q', '')\n"
+        "    return '<div>' + html.escape(str(data)) + '</div>'\n"
+    ))
+    assert found == []

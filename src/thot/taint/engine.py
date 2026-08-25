@@ -663,6 +663,24 @@ def _header_targets(node: ast.AST) -> list[tuple[str, ast.expr]]:
     return found
 
 
+def _opens_with_markup(value: ast.AST) -> bool:
+    """Whether an expression starts with a literal that opens an HTML tag.
+
+    The leftmost constant, because that is what a browser reads first:
+    `'<div>' + value + '</div>'` and `f'<div>{value}</div>'` are the same
+    body written two ways, and `value + '</div>'` is a fragment somebody else
+    already opened.
+    """
+    current = value
+    while isinstance(current, ast.BinOp) and isinstance(current.op, ast.Add):
+        current = current.left
+    if isinstance(current, ast.JoinedStr):
+        current = current.values[0] if current.values else None
+    return (isinstance(current, ast.Constant)
+            and isinstance(current.value, str)
+            and current.value.lstrip().startswith("<"))
+
+
 def _autoescaped_names(value: ast.AST) -> set[str]:
     """Names that reach an escaping render and go no further.
 
@@ -1011,6 +1029,14 @@ def _available(rule, imported: frozenset[str]) -> bool:
 def _analyse_body(symbol: Symbol, node: ast.AST,
                   imported: frozenset[str] = frozenset()) -> _Facts:
     facts = _Facts(symbol=symbol)
+    # A view that returns a string has it sent as `text/html`. The decorator
+    # is the gate and not the shape of the text: a helper that assembles a
+    # fragment is not a response, and a rule on the markup alone would fire
+    # on every template piece a program builds.
+    from thot.scope.detect import _is_route_decorated
+
+    published = isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) \
+        and _is_route_decorated(node)
     # `self` and `cls` are not input channels. Every other parameter is a
     # value some caller chose and may therefore be untrusted; the receiver is
     # the object the method is already part of, and its fields are tracked by
@@ -1396,6 +1422,13 @@ def _analyse_body(symbol: Symbol, node: ast.AST,
                      ref_at(child), extra=frozenset(raised))
 
         elif isinstance(child, ast.Return) and child.value is not None:
+            if published and _opens_with_markup(child.value):
+                facts.sink_calls.append((
+                    "sink.xss", ref_at(child),
+                    tuple(sorted(_referenced_names(child.value)
+                                 - _autoescaped_names(child.value)
+                                 - under_guard())),
+                ))
             for rule_id, written in _header_targets(child):
                 facts.sink_calls.append((
                     rule_id, ref_at(child),
