@@ -1615,3 +1615,99 @@ def test_returning_through_a_response_is_not_by_itself_a_finding(tmp_path):
         "    return HttpResponse(value)\n"
     ))
     assert found == []
+
+
+# -- open redirect: the host guard proves it, the range guard does not -------
+#
+# CWE-601 was the one weakness class a rule already claimed — `sink.js.redirect`
+# names it — while no Python sink could ever fire on it. The corpus makes the
+# separation plain: every vulnerable case is `redirect(tainted)`, and every
+# safe one puts `urlparse(...).hostname not in (...)` in front of it. That is
+# the guard the engine already understood for outgoing requests.
+#
+# Which is exactly why the proof had to be split. `_DESTINATION_PROOFS` kept
+# host allow-lists and resolved-range checks under one name, "network", and
+# they do not prove the same thing. An allow-list says the value names a host
+# somebody approved — true for a request and true for a redirect. A range
+# check says the resolved address is not private, which stops an SSRF and
+# says nothing at all about sending a *user* to an attacker's public site.
+
+
+def test_a_tainted_redirect_is_an_open_redirect(tmp_path):
+    found = _findings(tmp_path, (
+        "from flask import request, redirect\n\n"
+        "@app.route('/x')\n"
+        "def handler():\n"
+        "    url = request.args.get('next', '')\n"
+        "    return redirect(url)\n"
+    ))
+    assert [f.rule for f in found] == ["sink.redirect"]
+
+
+def test_a_redirect_response_reached_by_keyword_is_caught(tmp_path):
+    """FastAPI spells it `RedirectResponse(url=...)`, and the argument is
+    named rather than positional."""
+    found = _findings(tmp_path, (
+        "from fastapi import Request\n"
+        "from fastapi.responses import RedirectResponse\n\n"
+        "@app.post('/x')\n"
+        "async def handler(request: Request):\n"
+        "    data = request.headers.get('x-next', '')\n"
+        "    return RedirectResponse(url=data)\n"
+    ))
+    assert [f.rule for f in found] == ["sink.redirect"]
+
+
+def test_a_host_allow_list_clears_a_redirect(tmp_path):
+    found = _findings(tmp_path, (
+        "from urllib.parse import urlparse\n"
+        "from flask import request, redirect\n\n"
+        "@app.route('/x')\n"
+        "def handler():\n"
+        "    url = request.args.get('next', '')\n"
+        "    parsed = urlparse(url)\n"
+        "    if parsed.hostname not in ('a.example', 'b.example'):\n"
+        "        return 'no', 403\n"
+        "    return redirect(url)\n"
+    ))
+    assert found == []
+
+
+def test_a_resolved_range_check_does_not_clear_a_redirect(tmp_path):
+    """The guard proves the address is public. A public address is precisely
+    where an open redirect sends its victim."""
+    found = _findings(tmp_path, (
+        "import ipaddress\n"
+        "import socket\n"
+        "from urllib.parse import urlparse\n"
+        "from flask import request, redirect\n\n"
+        "@app.route('/x')\n"
+        "def handler():\n"
+        "    url = request.args.get('next', '')\n"
+        "    parsed = urlparse(url)\n"
+        "    resolved = socket.gethostbyname(parsed.hostname or url)\n"
+        "    if ipaddress.ip_address(resolved).is_private:\n"
+        "        return 'no', 403\n"
+        "    return redirect(url)\n"
+    ))
+    assert [f.rule for f in found] == ["sink.redirect"]
+
+
+def test_a_range_check_still_clears_an_outgoing_request(tmp_path):
+    """The split must not cost the proof it was already making."""
+    found = _findings(tmp_path, (
+        "import ipaddress\n"
+        "import socket\n"
+        "import requests\n"
+        "from urllib.parse import urlparse\n"
+        "from flask import request\n\n"
+        "@app.route('/x')\n"
+        "def handler():\n"
+        "    url = request.args.get('url', '')\n"
+        "    parsed = urlparse(url)\n"
+        "    resolved = socket.gethostbyname(parsed.hostname or url)\n"
+        "    if ipaddress.ip_address(resolved).is_private:\n"
+        "        return 'no', 403\n"
+        "    requests.get(resolved)\n"
+    ))
+    assert found == []

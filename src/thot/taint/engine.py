@@ -384,7 +384,16 @@ def _refuses(body: list[ast.stmt]) -> bool:
 # host; a path-confinement check says the open() will not leave a directory.
 # Neither says one word about the other, and neither says anything about the
 # value's shape — so each is keyed to the sinks it actually covers.
+#
+# `host` and `network` were one entry until `sink.redirect` arrived, and
+# merging them was only ever safe while a single sink read them. A host
+# allow-list says the value names a host somebody approved — which is what a
+# redirect needs, and what a request needs. A resolved-range check says the
+# address is not private: that stops an SSRF, and it is silent about sending
+# a user somewhere. Every public address passes it, and a public address is
+# exactly where an open redirect sends its victim.
 _DESTINATION_PROOFS: dict[str, frozenset[str]] = {
+    "host": frozenset({"sink.network", "sink.redirect"}),
     "network": frozenset({"sink.network"}),
     "path": frozenset({"sink.fs.read", "sink.fs.write"}),
     "html": frozenset({"sink.xss"}),
@@ -504,7 +513,7 @@ def _destination_validated(statement: ast.If,
             and _plain_name(test.left) is None:
         hosts = _host_allow_listed(test, derives)
         if hosts:
-            proved["network"] = hosts
+            proved["host"] = hosts
 
     ranged = _range_checked(test, derives)
     if ranged:

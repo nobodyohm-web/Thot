@@ -212,6 +212,32 @@ DEFAULT_SINKS: tuple[SinkRule, ...] = (
         # knowing which entry points actually reach those parameters, which
         # is the call graph's job and not this catalog's.
     ),
+    SinkRule(
+        id="sink.redirect",
+        # Where the *user's browser* is sent, which is a different question
+        # from where a request goes. `redirect` is Django's and Flask's;
+        # `RedirectResponse` is FastAPI's and takes its target by keyword;
+        # `HttpResponseRedirect` is the class Django's shortcut wraps.
+        #
+        # `url_for` is deliberately absent: it names a route by symbol and
+        # builds the URL itself, so a tainted argument reaching it lands in
+        # a query string, not in the host.
+        patterns=("redirect", "RedirectResponse", "HttpResponseRedirect"),
+        impact=Severity.MEDIUM,
+        description="Redirection vers une destination non validée",
+        match_mode="bare",
+        # Every argument, not just the first: FastAPI spells the destination
+        # `url=` and Flask accepts `location=`, and the default of index 0
+        # saw neither. What the extra arguments carry is `permanent=True` and
+        # `status_code=302` — literals, which reference no name and cost
+        # nothing to consider.
+        dangerous_args=(),
+        # `redirect` is a bare name a great many programs use for something
+        # else. Gated the way `execute` is, on the frameworks that own these
+        # three spellings — `werkzeug` because Flask's redirect lives there,
+        # `starlette` because FastAPI's response class does.
+        needs=("django", "flask", "werkzeug", "fastapi", "starlette"),
+    ),
 )
 
 DEFAULT_SOURCES: tuple[SourceRule, ...] = (

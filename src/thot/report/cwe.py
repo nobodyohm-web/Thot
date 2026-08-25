@@ -36,6 +36,7 @@ CWE_BY_RULE: dict[str, tuple[str, ...]] = {
     "sink.fs.write": ("CWE-22",),
     "sink.fs.read": ("CWE-22",),
     "sink.network": ("CWE-918",),
+    "sink.redirect": ("CWE-601",),
     # -- JavaScript / TypeScript sinks ----------------------------------
     "sink.js.exec": ("CWE-78",),
     "sink.js.spawn": ("CWE-78",),
