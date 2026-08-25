@@ -2693,3 +2693,46 @@ def test_the_route_attribution_travels_into_a_helper(tmp_path):
     candidates = analyse(tmp_path)
     assert [(c.rule, c.source_rule, c.impact.value) for c in candidates] \
         == [("sink.fs.read", "source.http", "medium")]
+
+
+def test_the_answer_from_a_third_party_is_not_this_program_s_data(tmp_path):
+    """A response body is chosen by whoever runs the service at the other
+    end, and a service that answers you is not a service you control. The
+    chain it opens — call out, take what comes back, act on it — is the
+    second half of every SSRF worth the name."""
+    found = _findings(tmp_path, (
+        "import os\n"
+        "import requests\n\n\n"
+        "def sync():\n"
+        "    answer = requests.get('https://partner.example.com/v1/host').text\n"
+        "    os.system('ping ' + str(answer))\n"
+    ))
+    assert [f.rule for f in found] == ["sink.os.system"]
+
+
+def test_a_response_travelled_and_the_ranking_says_so(tmp_path):
+    """`sink.fs.read` is one of the three sinks whose severity turns on
+    whether the value crossed the network. This one did — and `main` is here
+    so the accessibility weight is 1.0 and the only thing the severity can be
+    reading is the provenance."""
+    found = _findings(tmp_path, (
+        "import requests\n\n\n"
+        "def main():\n"
+        "    name = requests.get('https://partner.example.com/v1/name').text\n"
+        "    with open('/var/data/' + str(name)) as fh:\n"
+        "        return fh.read()\n"
+    ))
+    assert [(f.rule, f.severity.value) for f in found] \
+        == [("sink.fs.read", "medium")]
+
+
+def test_calling_out_does_not_make_the_url_a_source(tmp_path):
+    """The rule reads the value that comes back, never the one going out.
+    A constant URL fetched and thrown away is a program doing its job."""
+    found = _findings(tmp_path, (
+        "import requests\n\n\n"
+        "def ping():\n"
+        "    requests.get('https://partner.example.com/health')\n"
+        "    return 'ok'\n"
+    ))
+    assert found == []

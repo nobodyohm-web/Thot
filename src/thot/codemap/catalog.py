@@ -383,6 +383,14 @@ DEFAULT_SOURCES: tuple[SourceRule, ...] = (
         match_mode="prefix",
         remote=True,
     ),
+    SourceRule(
+        id="source.response",
+        patterns=("requests.get", "requests.post", "requests.put",
+                  "requests.patch", "requests.delete", "requests.request",
+                  "httpx.get", "httpx.post", "urllib.request.urlopen"),
+        description="Réponse d'un service tiers",
+        remote=True,
+    ),
 )
 
 
