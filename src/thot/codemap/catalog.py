@@ -238,6 +238,59 @@ DEFAULT_SINKS: tuple[SinkRule, ...] = (
         # `starlette` because FastAPI's response class does.
         needs=("django", "flask", "werkzeug", "fastapi", "starlette"),
     ),
+    SinkRule(
+        id="sink.template",
+        # The template *source*, never the context. `Template('{{ v }}')`
+        # compiles a constant and hands the value to an engine that escapes
+        # it — which is what the safe half of the `xss` category does, ten
+        # cases of it, so a rule on the call instead of on its first argument
+        # would have fired on every one of them and separated nothing.
+        #
+        # `from_string` is deliberately absent for the same reason it would
+        # have been cheap to add: all seventeen of its appearances in the
+        # corpus are in cases labelled safe. A pattern that can only lose is
+        # not worth the line.
+        patterns=("Template", "render_template_string"),
+        impact=Severity.CRITICAL,
+        description="Modèle rendu depuis une source non fiable",
+        match_mode="bare",
+        needs=("django", "flask", "jinja2"),
+    ),
+    SinkRule(
+        id="sink.xpath",
+        patterns=("xpath",),
+        impact=Severity.HIGH,
+        description="Expression XPath composée avec une valeur non fiable",
+        match_mode="method",
+        needs=("lxml", "xml"),
+    ),
+    SinkRule(
+        id="sink.ldap",
+        patterns=("search_s", "search_st", "search_ext_s"),
+        impact=Severity.HIGH,
+        description="Filtre LDAP composé avec une valeur non fiable",
+        match_mode="method",
+        # The filter, third. A search base is chosen by the application, and
+        # counting it would double the rule's surface for nothing.
+        dangerous_args=(2,),
+        needs=("ldap", "ldap3"),
+    ),
+    SinkRule(
+        id="sink.nosql",
+        patterns=("find", "find_one", "find_one_and_update", "update_one",
+                  "update_many", "delete_one", "delete_many", "count_documents",
+                  "aggregate", "distinct"),
+        impact=Severity.HIGH,
+        description="Requête NoSQL composée avec une valeur non fiable",
+        match_mode="method",
+        # `mongo:text` first, and it is what makes the rule possible at all.
+        # `find` belongs to every string and list in Python, and the driver
+        # is not imported where the query is written — `from app_runtime
+        # import mongo_db` is the ordinary shape, the same one that scored
+        # the `execute` import gate 0/100. A quoted query operator is
+        # written by nothing but a Mongo query.
+        needs=("mongo:text", "pymongo", "motor", "mongoengine", "bson"),
+    ),
 )
 
 DEFAULT_SOURCES: tuple[SourceRule, ...] = (

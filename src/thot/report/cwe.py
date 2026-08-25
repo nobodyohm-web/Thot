@@ -37,6 +37,16 @@ CWE_BY_RULE: dict[str, tuple[str, ...]] = {
     "sink.fs.read": ("CWE-22",),
     "sink.network": ("CWE-918",),
     "sink.redirect": ("CWE-601",),
+    # CWE-1336 and not CWE-917: a Django or Jinja template is a
+    # template engine, not an expression language. The corpus labels
+    # this same code both ways — `el_injection` and `ssti` are the
+    # identical `Template(tainted)` call — and naming both here to
+    # collect both categories is the shortcut this table exists to
+    # refuse.
+    "sink.template": ("CWE-1336",),
+    "sink.xpath": ("CWE-643",),
+    "sink.ldap": ("CWE-90",),
+    "sink.nosql": ("CWE-943",),
     # -- JavaScript / TypeScript sinks ----------------------------------
     "sink.js.exec": ("CWE-78",),
     "sink.js.spawn": ("CWE-78",),

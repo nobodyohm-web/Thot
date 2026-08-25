@@ -775,6 +775,15 @@ _IMPORT_LINE = re.compile(r"^\s*(?:import|from)\s+([A-Za-z_][\w.]*)", re.M)
 # A query written out in the file. Stronger evidence than an import: an
 # import says a database library is reachable, this says SQL is being
 # composed right here — whatever local wrapper ends up executing it.
+# The same idea for Mongo, and for the same reason: `.find(` is a name every
+# string and list answers to, and the driver is imported somewhere else. A
+# quoted query operator is written by nothing but a Mongo query.
+_MONGO_TEXT = re.compile(
+    r"""['"]\$(?:where|ne|gt|gte|lt|lte|in|nin|or|and|not|nor|regex|expr"""
+    r"""|elemMatch|exists|type|jsonSchema)['"]"""
+)
+
+
 _SQL_TEXT = re.compile(
     r"\b(?:SELECT\s+.*?\bFROM\b|INSERT\s+INTO\b|UPDATE\s+.*?\bSET\b"
     r"|DELETE\s+FROM\b|CREATE\s+TABLE\b|DROP\s+TABLE\b)",
@@ -806,6 +815,8 @@ def _file_gates(path: Path) -> frozenset[str]:
     gates = set(_IMPORT_LINE.findall(text))
     if _SQL_TEXT.search(text):
         gates.add("sql:text")
+    if _MONGO_TEXT.search(text):
+        gates.add("mongo:text")
     return frozenset(gates)
 
 

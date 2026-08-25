@@ -1711,3 +1711,157 @@ def test_a_range_check_still_clears_an_outgoing_request(tmp_path):
         "    requests.get(resolved)\n"
     ))
     assert found == []
+
+
+# -- three injection sinks the corpus reaches and the catalog did not --------
+
+
+def test_a_tainted_django_template_source_is_ssti(tmp_path):
+    found = _findings(tmp_path, (
+        "from django.template import Template, Context\n"
+        "from django.http import HttpResponse\n\n"
+        "def view(request):\n"
+        "    data = request.META.get('HTTP_USER_AGENT', '')\n"
+        "    return HttpResponse(Template(data).render(Context()))\n"
+    ))
+    assert [f.rule for f in found] == ["sink.template"]
+
+
+def test_a_literal_template_rendering_tainted_context_is_not_ssti(tmp_path):
+    """The distinction the whole rule rests on. `Template('{{ v }}')` compiles
+    a constant and hands the value to an engine that escapes it; the corpus
+    safe half of `xss` is exactly this shape, and a rule on the call rather
+    than on its first argument would have fired on all of it."""
+    found = _findings(tmp_path, (
+        "from django.template import Template, Context\n"
+        "from django.http import HttpResponse\n\n"
+        "def view(request):\n"
+        "    data = request.META.get('HTTP_USER_AGENT', '')\n"
+        "    return HttpResponse("
+        "Template('{{ value }}').render(Context({'value': data})))\n"
+    ))
+    assert found == []
+
+
+def test_render_template_string_is_the_flask_spelling(tmp_path):
+    found = _findings(tmp_path, (
+        "from flask import request, render_template_string\n\n"
+        "@app.route('/x')\n"
+        "def handler():\n"
+        "    data = request.args.get('t', '')\n"
+        "    return render_template_string(data)\n"
+    ))
+    assert [f.rule for f in found] == ["sink.template"]
+
+
+def test_a_shape_guard_clears_a_template(tmp_path):
+    found = _findings(tmp_path, (
+        "import re\n"
+        "from flask import request, render_template_string\n\n"
+        "@app.route('/x')\n"
+        "def handler():\n"
+        "    data = request.args.get('t', '')\n"
+        "    if not re.fullmatch(r'[a-zA-Z0-9_-]+', data):\n"
+        "        return 'no', 400\n"
+        "    return render_template_string(data)\n"
+    ))
+    assert found == []
+
+
+def test_a_tainted_xpath_expression_is_caught(tmp_path):
+    found = _findings(tmp_path, (
+        "from lxml import etree\n"
+        "from flask import request\n\n"
+        "@app.route('/x')\n"
+        "def handler():\n"
+        "    data = request.args.get('n', '')\n"
+        "    tree = etree.fromstring(b'<u/>')\n"
+        "    tree.xpath('/users/user[@name=\"' + data + '\"]')\n"
+        "    return 'ok'\n"
+    ))
+    assert [f.rule for f in found] == ["sink.xpath"]
+
+
+def test_a_tainted_ldap_filter_is_caught(tmp_path):
+    """The filter is the third argument; the base and the scope are not it."""
+    found = _findings(tmp_path, (
+        "import ldap\n"
+        "from flask import request\n\n"
+        "@app.route('/x')\n"
+        "def handler():\n"
+        "    data = request.args.get('u', '')\n"
+        "    conn = ldap.initialize('ldap://localhost:389')\n"
+        "    conn.search_s('dc=example,dc=com', ldap.SCOPE_SUBTREE,"
+        " '(uid=' + data + ')')\n"
+        "    return 'ok'\n"
+    ))
+    assert [f.rule for f in found] == ["sink.ldap"]
+
+
+def test_a_tainted_ldap_base_is_not_the_filter(tmp_path):
+    """`dangerous_args` earns its keep here: a search base is chosen by the
+    application, and treating it as the injection point would double the
+    rule's surface for nothing."""
+    found = _findings(tmp_path, (
+        "import ldap\n"
+        "from flask import request\n\n"
+        "@app.route('/x')\n"
+        "def handler():\n"
+        "    data = request.args.get('u', '')\n"
+        "    conn = ldap.initialize('ldap://localhost:389')\n"
+        "    conn.search_s(data, ldap.SCOPE_SUBTREE, '(uid=admin)')\n"
+        "    return 'ok'\n"
+    ))
+    assert found == []
+
+
+# -- NoSQL: the same lesson `sql:text` already paid for --------------------
+#
+# The sink is `.find(...)`, a name every string and list in Python also
+# answers to, and the driver is not imported where the query is written —
+# `from app_runtime import mongo_db` is the shape, exactly as `db.execute`
+# was. An import gate scores zero on that. What says Mongo is the query
+# document itself: a quoted `$where`, `$ne`, `$regex` is not something any
+# other library writes.
+
+
+def test_a_tainted_mongo_query_is_caught(tmp_path):
+    found = _findings(tmp_path, (
+        "from app_runtime import mongo_db\n"
+        "from flask import request\n\n"
+        "@app.route('/x')\n"
+        "def handler():\n"
+        "    data = request.args.get('u', '')\n"
+        "    mongo_db.users.find({'$where': \"this.n == '\" + data + \"'\"})\n"
+        "    return 'ok'\n"
+    ))
+    assert [f.rule for f in found] == ["sink.nosql"]
+
+
+def test_find_without_a_mongo_operator_is_a_string_method(tmp_path):
+    """The gate is the whole rule. Without it every `.find(` in Python — and
+    there are a great many — becomes a database query."""
+    found = _findings(tmp_path, (
+        "from flask import request\n\n"
+        "@app.route('/x')\n"
+        "def handler():\n"
+        "    data = request.args.get('u', '')\n"
+        "    haystack = 'abcdef'\n"
+        "    return str(haystack.find(data))\n"
+    ))
+    assert found == []
+
+
+def test_an_allow_list_clears_a_mongo_query(tmp_path):
+    found = _findings(tmp_path, (
+        "from app_runtime import mongo_db\n"
+        "from flask import request\n\n"
+        "@app.route('/x')\n"
+        "def handler():\n"
+        "    data = request.args.get('sort', '')\n"
+        "    if data not in ('asc', 'desc', 'name', 'created'):\n"
+        "        return 'no', 400\n"
+        "    mongo_db.users.find({'$where': \"this.n == '\" + data + \"'\"})\n"
+        "    return 'ok'\n"
+    ))
+    assert found == []
