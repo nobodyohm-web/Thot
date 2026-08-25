@@ -1789,12 +1789,25 @@ cesserait d'être un filtre.
 
 ## Limites
 
-Python uniquement pour l'analyse. Sans `--deep`, chaque finding est
-`PLAUSIBLE` : détecté statiquement, pas encore prouvé par exécution. Avec
-`--deep`, un finding `confirmed` a survécu à une réfutation adverse — ce
-n'est pas encore une preuve d'exécution, qui viendra avec le repro. L'absence de finding n'est pas
-une preuve d'absence de défaut — dispatch dynamique, réflexion et
-métaprogrammation échappent à l'analyse.
+La teinte **à travers les fichiers** est réservée à Python : JavaScript et
+TypeScript sont indexés, suivis dans un corps de fonction et jusqu'à un
+helper du même fichier, et s'arrêtent là faute de graphe d'appels résolu — le
+tableau plus haut le dit ligne par ligne. Les règles par motif, elles,
+s'appliquent partout.
+
+Sans `--deep`, chaque finding est `PLAUSIBLE` : détecté statiquement, pas
+encore prouvé par exécution. Avec `--deep`, un finding `confirmed` a survécu
+à une réfutation adverse — ce n'est pas encore une preuve d'exécution, qui
+viendra avec le repro. Et l'absence de finding n'est pas une preuve d'absence
+de défaut : dispatch dynamique, réflexion et métaprogrammation échappent à
+l'analyse.
+
+La recherche plein texte dans les sessions cesse d'être à coût constant sur
+les SQLite dont fts5 ne sait pas remonter les rowid : le moteur y trie
+l'ensemble des correspondances au lieu de couper à vingt. Mesuré sur celui
+qu'embarque CPython 3.12 — 6 588 instructions contre 27 443 quand le corpus
+est multiplié par cinq, là où un moteur capable reste à 2 215 puis 2 698. Un
+test le vérifie et nomme la version quand elle ne le permet pas.
 
 ## Développement
 
