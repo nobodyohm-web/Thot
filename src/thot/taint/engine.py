@@ -397,6 +397,9 @@ _DESTINATION_PROOFS: dict[str, frozenset[str]] = {
     # `_strips_crlf`. It does not reach `sink.cors`: removing newlines from a
     # reflected Origin leaves it reflected.
     "header": frozenset({"sink.header"}),
+    # A digest or a ciphertext is not the secret. It proves storage and only
+    # storage: handing either to a shell is exactly as dangerous as before.
+    "storage": frozenset({"sink.cleartext"}),
     "host": frozenset({"sink.network", "sink.redirect"}),
     "network": frozenset({"sink.network"}),
     "path": frozenset({"sink.fs.read", "sink.fs.write"}),
@@ -596,6 +599,26 @@ def _validated_names(statement: ast.If,
 
 
 _CORS_ORIGIN = "access-control-allow-origin"
+
+
+_SENSITIVE_NAME = re.compile(
+    r"secret|credential|password|passwd|apikey|api[_-]key|token", re.I)
+
+# What turns a value into something a store may hold. A digest is not the
+# secret and neither is a ciphertext — and `hashlib.sha256` being the right
+# answer here is precisely why it is the wrong answer to "is this a password
+# hash": a digest is not a key-derivation function.
+_SEALS = ("hexdigest", "digest", "encrypt", "hashpw", "pbkdf2_hmac", "scrypt")
+
+
+def _sealed(value: ast.AST) -> bool:
+    """Whether every call in this expression ends in a digest or a ciphertext."""
+    for node in ast.walk(value):
+        if isinstance(node, ast.Call):
+            name = _called_name(node) or ""
+            if name.rpartition(".")[2] in _SEALS:
+                return True
+    return False
 
 
 def _header_targets(node: ast.AST) -> list[tuple[str, ast.expr]]:
@@ -1139,6 +1162,8 @@ def _analyse_body(symbol: Symbol, node: ast.AST,
     # Handles opened on a spreadsheet. `with open('report.csv') as fh` is what
     # makes `fh.write` a cell rather than a line of text.
     sheet_handles: set[str] = set()
+    # Handles opened on a file whose name says it holds a secret.
+    store_handles: set[str] = set()
 
     def under_guard() -> frozenset[str]:
         return frozenset(guarded_now)
@@ -1168,6 +1193,11 @@ def _analyse_body(symbol: Symbol, node: ast.AST,
             # being the ordinary shape, so what it cleaned has to be
             # everything untrusted the expression carries. Asked here rather
             # than in a helper because only here is it known what is tainted.
+            if _sealed(child.value):
+                facts.destination_safe.setdefault("storage", set()).update(
+                    target.id for target in child.targets
+                    if isinstance(target, ast.Name)
+                )
             cleaned = _crlf_stripped_base(child.value)
             if cleaned is not None:
                 outside = (_referenced_names(child.value)
@@ -1239,6 +1269,14 @@ def _analyse_body(symbol: Symbol, node: ast.AST,
                             and opened.args[0].value.lower().endswith(
                                 (".csv", ".tsv")):
                         sheet_handles.add(item.optional_vars.id)
+                    if isinstance(item.optional_vars, ast.Name) \
+                            and isinstance(opened, ast.Call) \
+                            and _called_name(opened) == "open" \
+                            and opened.args \
+                            and isinstance(opened.args[0], ast.Constant) \
+                            and isinstance(opened.args[0].value, str) \
+                            and _SENSITIVE_NAME.search(opened.args[0].value):
+                        store_handles.add(item.optional_vars.id)
 
         elif isinstance(child, (ast.ListComp, ast.SetComp, ast.DictComp,
                                 ast.GeneratorExp)):
@@ -1308,6 +1346,15 @@ def _analyse_body(symbol: Symbol, node: ast.AST,
 
             written_to = _called_name(child) or ""
             holder_name, _, method = written_to.rpartition(".")
+            if holder_name in store_handles and method.startswith("write"):
+                stored: set[str] = set()
+                for argument in list(child.args) + [k.value for k in child.keywords]:
+                    stored |= _referenced_names(argument)
+                facts.sink_calls.append((
+                    "sink.cleartext", ref_at(child),
+                    tuple(sorted(stored - under_guard())),
+                ))
+
             if holder_name in sheet_handles \
                     and method in ("write", "writerow", "writerows"):
                 cells: set[str] = set()

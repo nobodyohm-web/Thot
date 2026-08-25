@@ -2065,3 +2065,84 @@ def test_an_allow_list_clears_a_csv_write(tmp_path):
         "    return 'ok'\n"
     ))
     assert found == []
+
+
+# -- a file called secrets.txt --------------------------------------------
+
+
+def test_untrusted_data_stored_in_cleartext_is_caught(tmp_path):
+    found = _findings(tmp_path, (
+        "from flask import request\n\n"
+        "@app.route('/x')\n"
+        "def handler():\n"
+        "    data = request.headers.get('Authorization', '')\n"
+        "    with open('/var/data/secrets.txt', 'w') as fh:\n"
+        "        fh.write(str(data))\n"
+        "    return 'ok'\n"
+    ))
+    assert [f.rule for f in found] == ["sink.cleartext"]
+
+
+def test_an_ordinary_file_is_not_a_secret_store(tmp_path):
+    """The name is the whole rule. Writing a request value to a file is what
+    programs do; writing it to one called `secrets.txt` is the finding."""
+    found = _findings(tmp_path, (
+        "from flask import request\n\n"
+        "@app.route('/x')\n"
+        "def handler():\n"
+        "    data = request.headers.get('Authorization', '')\n"
+        "    with open('/var/data/report.txt', 'w') as fh:\n"
+        "        fh.write(str(data))\n"
+        "    return 'ok'\n"
+    ))
+    assert found == []
+
+
+def test_encrypting_before_the_write_clears_it(tmp_path):
+    found = _findings(tmp_path, (
+        "import os\n"
+        "from cryptography.fernet import Fernet\n"
+        "from flask import request\n\n"
+        "@app.route('/x')\n"
+        "def handler():\n"
+        "    data = request.headers.get('Authorization', '')\n"
+        "    sealed = Fernet(os.environ['K'].encode()).encrypt(str(data).encode())\n"
+        "    with open('/var/data/secrets.enc', 'wb') as fh:\n"
+        "        fh.write(sealed)\n"
+        "    return 'ok'\n"
+    ))
+    assert found == []
+
+
+def test_hashing_before_the_write_clears_it_too(tmp_path):
+    """And `hashlib.sha256` is the right answer here, which is exactly why it
+    is the wrong answer for `weak_password_hash`: a digest is not cleartext,
+    and it is also not a password-hashing function."""
+    found = _findings(tmp_path, (
+        "import hashlib\n"
+        "from flask import request\n\n"
+        "@app.route('/x')\n"
+        "def handler():\n"
+        "    data = request.headers.get('Authorization', '')\n"
+        "    digest = hashlib.sha256(str(data).encode()).hexdigest()\n"
+        "    with open('/var/data/secrets.txt', 'w') as fh:\n"
+        "        fh.write(digest)\n"
+        "    return 'ok'\n"
+    ))
+    assert found == []
+
+
+def test_a_digest_still_proves_nothing_to_a_shell(tmp_path):
+    """The proof is keyed to storage. Hashing says the value on disk is not
+    the secret; it says nothing about handing it to `sh`."""
+    found = _findings(tmp_path, (
+        "import os\n"
+        "import hashlib\n"
+        "from flask import request\n\n"
+        "@app.route('/x')\n"
+        "def handler():\n"
+        "    data = request.args.get('a', '')\n"
+        "    digest = hashlib.sha256(str(data).encode()).hexdigest()\n"
+        "    os.system('echo ' + digest)\n"
+    ))
+    assert [f.rule for f in found] == ["sink.os.system"]

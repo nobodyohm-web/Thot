@@ -321,6 +321,15 @@ DEFAULT_SINKS: tuple[SinkRule, ...] = (
         impact=Severity.MEDIUM,
         description="Cellule de tableur écrite depuis une valeur non fiable",
     ),
+    # Also positional, and the name of the file is the whole rule. Writing a
+    # request value to a file is what programs do; writing it to one called
+    # `secrets.txt` is the finding.
+    SinkRule(
+        id="sink.cleartext",
+        patterns=(),
+        impact=Severity.HIGH,
+        description="Donnée sensible écrite en clair",
+    ),
 )
 
 DEFAULT_SOURCES: tuple[SourceRule, ...] = (
