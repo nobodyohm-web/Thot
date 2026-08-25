@@ -2620,3 +2620,76 @@ def test_the_constant_program_keeps_its_own_order(tmp_path):
         "    return 'ok'\n"
     ))
     assert [f.rule for f in found] == ["sink.os.system"]
+
+
+def test_a_url_capture_is_as_remote_as_a_query_string(tmp_path):
+    """A route's parameters are filled by the request. That is what makes it
+    a route, and `sink.fs.write` is one of the three sinks whose severity
+    turns on whether the value crossed the network — so an unattributed path
+    was ranked `low` and never reached a default report."""
+    found = _findings(tmp_path, (
+        "from flask import request\n\n"
+        "@app.route('/f/<name>')\n"
+        "def handler(name):\n"
+        "    with open('/var/data/' + str(name), 'w') as fh:\n"
+        "        fh.write('x')\n"
+        "    return 'ok'\n"
+    ))
+    assert [(f.rule, f.severity.value) for f in found] \
+        == [("sink.fs.read", "medium")]
+
+
+def test_a_django_url_capture_says_the_same(tmp_path):
+    found = _findings(tmp_path, (
+        "from django.http import JsonResponse\n\n\n"
+        "def view(request, name):\n"
+        "    with open('/var/data/' + str(name), 'w') as fh:\n"
+        "        fh.write('x')\n"
+        "    return JsonResponse({})\n"
+    ))
+    assert [(f.rule, f.severity.value) for f in found] \
+        == [("sink.fs.read", "medium")]
+
+
+def test_the_same_path_reached_from_argv_stays_local(tmp_path):
+    """The distinction this rests on, from the other side. `main` is an
+    entry point too, and whoever supplies argv already holds this process's
+    filesystem — so the identical `open` is ranked one step lower, and that
+    is the whole reason the route case was invisible."""
+    found = _findings(tmp_path, (
+        "import sys\n\n\n"
+        "def store(name):\n"
+        "    with open('/var/data/' + str(name), 'w') as fh:\n"
+        "        fh.write('x')\n\n\n"
+        "def main():\n"
+        "    store(sys.argv[1])\n"
+    ))
+    assert [(f.rule, f.severity.value) for f in found] \
+        == [("sink.fs.read", "low")]
+
+
+def test_the_route_attribution_travels_into_a_helper(tmp_path):
+    """The sink one call away, which is the ordinary shape.
+
+    Read on the candidate and not on the report, because the two answer
+    different questions and only the first is this rule's. The provenance is
+    carried across the call edge and the impact is `medium`; what the report
+    then does is multiply it by an accessibility weight of 0.8 for the extra
+    hop, and 0.5 x 0.8 x 0.6 = 0.24 lands one hundredth under the `medium`
+    threshold. That is the ranking's arithmetic, not a lost source — and
+    moving a threshold to make this line read better would be tuning the
+    score rather than the analysis."""
+    (tmp_path / "app.py").write_text(
+        "from flask import request\n\n\n"
+        "def store(name):\n"
+        "    with open('/var/data/' + str(name), 'w') as fh:\n"
+        "        fh.write('x')\n\n\n"
+        "@app.route('/f/<name>')\n"
+        "def handler(name):\n"
+        "    store(name)\n"
+        "    return 'ok'\n",
+        encoding="utf-8",
+    )
+    candidates = analyse(tmp_path)
+    assert [(c.rule, c.source_rule, c.impact.value) for c in candidates] \
+        == [("sink.fs.read", "source.http", "medium")]

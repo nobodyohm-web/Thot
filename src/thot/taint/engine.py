@@ -1193,6 +1193,17 @@ def _available(rule, imported: frozenset[str]) -> bool:
     )
 
 
+def _imports(package: str, imported: frozenset[str]) -> bool:
+    """Whether a file imports a package, under any of its module names.
+
+    `_file_gates` records what the import line said, and `from django.http
+    import JsonResponse` records `django.http`; asking for `django` in that
+    set finds nothing.
+    """
+    return any(name == package or name.startswith(package + ".")
+               for name in imported)
+
+
 def _analyse_body(symbol: Symbol, node: ast.AST,
                   imported: frozenset[str] = frozenset()) -> _Facts:
     facts = _Facts(symbol=symbol)
@@ -1200,10 +1211,11 @@ def _analyse_body(symbol: Symbol, node: ast.AST,
     # is the gate and not the shape of the text: a helper that assembles a
     # fragment is not a response, and a rule on the markup alone would fire
     # on every template piece a program builds.
-    from thot.scope.detect import _is_route_decorated
+    from thot.scope.detect import _is_django_view, _is_route_decorated
 
     published = isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) \
-        and _is_route_decorated(node)
+        and (_is_route_decorated(node)
+             or _is_django_view(node, _imports("django", imported)))
     # `self` and `cls` are not input channels. Every other parameter is a
     # value some caller chose and may therefore be untrusted; the receiver is
     # the object the method is already part of, and its fields are tracked by
@@ -1217,6 +1229,24 @@ def _analyse_body(symbol: Symbol, node: ast.AST,
     # on a caller that lives in a framework. When a rule says this is an
     # entry point, they are tainted outright, because the thing that fills
     # them is a model or a request and not another function here.
+    # A route's parameters are filled by the request. That is what makes it
+    # a route, and it is the one thing the engine could not say about them:
+    # every parameter is held untrusted until a caller proves otherwise, but
+    # *untrusted* and *remote* are different facts and only the second decides
+    # a travel-sensitive sink. With no source attributed, `impact_for` ranks
+    # `open(url_capture)` one step down, into `low`, under the floor a default
+    # report prints — the same silence `request.META` was hiding, one level up.
+    #
+    # `ENTRYPOINT_NAMES` is deliberately not consulted here. `main` is an
+    # entry point too and its arguments come off the command line, where
+    # whoever supplies them already holds this process's filesystem.
+    if published:
+        seed = CodeRef(path=symbol.path, line=symbol.lineno,
+                       symbol=symbol.name, ast_hash=symbol.ast_hash)
+        for name in params:
+            facts.tainted.setdefault(name, seed)
+            facts.origin_rule.setdefault(name, "source.http")
+
     entry = match_entry(symbol.name)
     if entry is not None:
         seed = CodeRef(path=symbol.path, line=symbol.lineno,
