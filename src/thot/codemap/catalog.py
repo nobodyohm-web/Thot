@@ -483,7 +483,16 @@ SANITIZERS: frozenset[str] = frozenset(
         "int", "float", "bool", "len", "abs", "round",
         "shlex.quote", "quote", "quote_plus",
         "os.path.basename", "basename",
-        "html.escape", "escape", "re.escape",
+        # `re.escape` and not `escape`: the bare name was here, and
+        # `is_sanitizer` reads the last segment, so it collected
+        # `html.escape`, `markupsafe.escape`, `cgi.escape` and
+        # `flask.escape` along with it. All four turn five characters into
+        # entities. None of them touches `;`, `|`, a backtick or `$(`, and
+        # a sanitizer stops the walk outright — so `os.system('ping ' +
+        # html.escape(host))` was silenced by a defence that does not
+        # defend it. They are all in `HTML_SANITIZERS`, where the proof is
+        # keyed to the one destination it covers.
+        "re.escape",
         "urllib.parse.quote", "secure_filename",
         "uuid.UUID", "json.dumps",
     }
@@ -505,12 +514,23 @@ HTML_SANITIZERS: frozenset[str] = frozenset(
         "html.escape", "cgi.escape",
         "markupsafe.escape", "django.utils.html.escape",
         "django.utils.html.escapejs", "flask.escape",
+        # `from markupsafe import escape` is how it is imported, and the
+        # call site then reads `escape(value)` with nothing in front of it.
+        "escape", "escapejs",
     }
 )
 
 
 def is_html_sanitizer(call_name: str) -> bool:
-    return call_name in HTML_SANITIZERS
+    """The last segment counts, exactly as it does for `is_sanitizer`.
+
+    `from django.utils.html import escape` and `import html` are the same
+    neutralisation written two ways, and matching only the qualified form
+    recognised whichever one the file happened not to use.
+    """
+    if call_name in HTML_SANITIZERS:
+        return True
+    return call_name.rsplit(".", 1)[-1] in HTML_SANITIZERS
 
 
 def is_sanitizer(call_name: str) -> bool:

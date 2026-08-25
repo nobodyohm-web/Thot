@@ -413,6 +413,10 @@ _DESTINATION_PROOFS: dict[str, frozenset[str]] = {
     "network": frozenset({"sink.network"}),
     "path": frozenset({"sink.fs.read", "sink.fs.write"}),
     "html": frozenset({"sink.xss"}),
+    # Doubling the delimiter of a quoted identifier proves SQL and nothing
+    # else — see `_quoted_identifier_names`. A shell reads a different
+    # alphabet and `""` hands it the semicolon untouched.
+    "sql": frozenset({"sink.sql"}),
 }
 
 
@@ -691,6 +695,91 @@ def _autoescaped_names(value: ast.AST) -> set[str]:
     found: set[str] = set()
     for node in ast.walk(value):
         if isinstance(node, ast.Call) and _autoescaped_render(node):
+            found |= _referenced_names(node)
+    return found
+
+
+# The three characters SQL uses to delimit a name or a string. Doubling one
+# of them inside its own quotes is the escape the standard defines, and the
+# one `quote_ident` and every driver's identifier quoting implements.
+_SQL_DELIMITERS = ("\"", "`", "'")
+
+
+def _flatten_concat(node: ast.AST) -> list[ast.AST]:
+    """`a + b + c` as three operands rather than two nested pairs."""
+    if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Add):
+        return _flatten_concat(node.left) + _flatten_concat(node.right)
+    return [node]
+
+
+def _doubled_delimiter(node: ast.AST) -> str:
+    """The SQL delimiter a `.replace(d, d + d)` chain doubles, or ``""``."""
+    for inner in ast.walk(node):
+        if not (isinstance(inner, ast.Call)
+                and isinstance(inner.func, ast.Attribute)
+                and inner.func.attr == "replace" and len(inner.args) == 2):
+            continue
+        first, second = inner.args
+        if not (isinstance(first, ast.Constant) and isinstance(second, ast.Constant)):
+            continue
+        if isinstance(first.value, str) and first.value in _SQL_DELIMITERS \
+                and second.value == first.value * 2:
+            return first.value
+    return ""
+
+
+def _quoted_identifier_names(value: ast.AST) -> set[str]:
+    """Names a correctly quoted SQL identifier covers, and no others.
+
+    Both halves are required and the second is what makes this a proof
+    rather than a hopeful pattern. Doubling a `"` says the value cannot end
+    an identifier — but only if the query put it inside one, so the literal
+    immediately before it must close on that same delimiter and the literal
+    immediately after it must open on it. `"SELECT * FROM '" + name + "'"`
+    with `"` doubled escapes a character the parser will never read and
+    leaves the one that ends the string; so does a value concatenated with
+    no delimiter around it at all.
+
+    Only the operand that was quoted. `'... "' + quoted + '" WHERE ' + rest`
+    is one safe name and one injection, and clearing the expression would
+    clear both.
+    """
+    found: set[str] = set()
+    for node in ast.walk(value):
+        parts = _flatten_concat(node)
+        if len(parts) < 3:
+            continue
+        for index in range(1, len(parts) - 1):
+            delimiter = _doubled_delimiter(parts[index])
+            if not delimiter:
+                continue
+            before, after = parts[index - 1], parts[index + 1]
+            if not (isinstance(before, ast.Constant)
+                    and isinstance(before.value, str)
+                    and before.value.endswith(delimiter)):
+                continue
+            if not (isinstance(after, ast.Constant)
+                    and isinstance(after.value, str)
+                    and after.value.startswith(delimiter)):
+                continue
+            found |= _referenced_names(parts[index])
+    return found
+
+
+def _html_only_names(value: ast.AST) -> set[str]:
+    """Names an HTML-only neutralisation covers, written inside the sink.
+
+    `html.escape(...)` and an autoescaping render both make a value safe to
+    put in a page and say nothing about anywhere else it might go. Written
+    to a variable first, they are recorded by `note_derivation` against the
+    name; written straight into the call, there is no name to record them
+    against, so the sink site subtracts them itself — and only when the sink
+    is one the `html` family covers.
+    """
+    found = _autoescaped_names(value)
+    for node in ast.walk(value):
+        if isinstance(node, ast.Call) \
+                and is_html_sanitizer(_called_name(node) or ""):
             found |= _referenced_names(node)
     return found
 
@@ -1222,6 +1311,12 @@ def _analyse_body(symbol: Symbol, node: ast.AST,
             # Proved for HTML and for nothing else, so it goes with the other
             # destination proofs rather than into `tainted`.
             facts.destination_safe.setdefault("html", set()).add(name)
+        read = _referenced_names(value)
+        if read and read <= _quoted_identifier_names(value):
+            # The whole query, and not merely part of it, is quoted: a second
+            # operand left outside the delimiters is the injection this is
+            # supposed to notice, so it has to fail the comparison.
+            facts.destination_safe.setdefault("sql", set()).add(name)
         if _all_literals(value):
             literal_names.add(name)
         elif isinstance(value, ast.Constant) and isinstance(value.value, str):
@@ -1426,7 +1521,7 @@ def _analyse_body(symbol: Symbol, node: ast.AST,
                 facts.sink_calls.append((
                     "sink.xss", ref_at(child),
                     tuple(sorted(_referenced_names(child.value)
-                                 - _autoescaped_names(child.value)
+                                 - _html_only_names(child.value)
                                  - under_guard())),
                 ))
             for rule_id, written in _header_targets(child):
@@ -1515,16 +1610,27 @@ def _analyse_body(symbol: Symbol, node: ast.AST,
                 considered = list(child.args) + [k.value for k in child.keywords]
 
             argument_refs: set[str] = set()
+            proved: dict[str, set[str]] = {"html": set(), "sql": set()}
             for argument in considered:
-                argument_refs |= (_referenced_names(argument)
-                                  - _autoescaped_names(argument))
+                argument_refs |= _referenced_names(argument)
+                proved["html"] |= _html_only_names(argument)
+                proved["sql"] |= _quoted_identifier_names(argument)
 
             if rule is not None and not _sink_applies(rule.id, child):
                 rule = None
 
             if rule is not None:
-                facts.sink_calls.append(
-                (rule.id, ref, tuple(sorted(argument_refs - under_guard()))))
+                # Subtracted here and not above: an escape written inside the
+                # call proves what it proves for *this* destination. Removed
+                # from every argument set, `HTMLResponse(html.escape(x))` on
+                # one line would have cleared `os.system(x)` on the next.
+                cleared: set[str] = set()
+                for family in _proves_for(rule.id):
+                    cleared |= proved.get(family, set())
+                facts.sink_calls.append((
+                    rule.id, ref,
+                    tuple(sorted(argument_refs - cleared - under_guard())),
+                ))
                 # Sorted: this decides the insertion order of `param_sinks`,
                 # the fixed point iterates it by that order, and `emit` keeps
                 # the first candidate per sink — so a set's hash order was

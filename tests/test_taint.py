@@ -2352,3 +2352,182 @@ def test_an_escaped_body_returned_from_a_route_is_clear(tmp_path):
         "    return '<div>' + html.escape(str(data)) + '</div>'\n"
     ))
     assert found == []
+
+
+def test_an_html_escape_proves_nothing_to_a_shell(tmp_path):
+    """`html.escape` turns five characters into entities. A semicolon is not
+    one of them, and neither is a backtick, a pipe or `$(`.
+
+    It sat in the general sanitiser list, where a sanitiser stops the walk
+    outright — so the shell below was silenced by a defence that does not
+    defend it. The escape is real and it belongs with the other proofs that
+    are keyed to the one destination they cover."""
+    found = _findings(tmp_path, (
+        "import html\n"
+        "import os\n"
+        "from flask import request\n\n"
+        "@app.route('/x')\n"
+        "def handler():\n"
+        "    data = request.args.get('q', '')\n"
+        "    os.system('ping ' + html.escape(str(data)))\n"
+        "    return 'ok'\n"
+    ))
+    assert [f.rule for f in found] == ["sink.os.system"]
+
+
+def test_an_escape_stored_first_proves_nothing_to_a_shell_either(tmp_path):
+    """The same fact, written the way a program usually writes it."""
+    found = _findings(tmp_path, (
+        "import html\n"
+        "import os\n"
+        "from flask import request\n\n"
+        "@app.route('/x')\n"
+        "def handler():\n"
+        "    data = request.args.get('q', '')\n"
+        "    safe = html.escape(str(data))\n"
+        "    os.system('ping ' + safe)\n"
+        "    return 'ok'\n"
+    ))
+    assert [f.rule for f in found] == ["sink.os.system"]
+
+
+def test_an_autoescaping_render_proves_nothing_to_a_shell(tmp_path):
+    """Escaping a template's output makes it safe to put in a page. It says
+    nothing about handing the same string to `sh -c`."""
+    found = _findings(tmp_path, (
+        "import os\n"
+        "from jinja2 import Environment\n"
+        "from flask import request\n\n"
+        "@app.route('/x')\n"
+        "def handler():\n"
+        "    data = request.args.get('q', '')\n"
+        "    os.system('ping ' + Environment(autoescape=True)"
+        ".from_string('{{ value }}').render(value=data))\n"
+        "    return 'ok'\n"
+    ))
+    assert [f.rule for f in found] == ["sink.os.system"]
+
+
+def test_markupsafe_escape_still_clears_a_page(tmp_path):
+    """What the change must not cost: the escapes are still escapes, and the
+    only question is which destination they are allowed to clear."""
+    found = _findings(tmp_path, (
+        "from markupsafe import escape\n"
+        "from flask import request\n\n"
+        "@app.route('/x')\n"
+        "def handler():\n"
+        "    data = request.args.get('q', '')\n"
+        "    return '<div>' + escape(str(data)) + '</div>'\n"
+    ))
+    assert found == []
+
+
+def test_a_doubled_delimiter_quotes_a_sql_identifier(tmp_path):
+    """The ANSI way to put a name in a query: wrap it in the delimiter and
+    double every one the value contains. `"` becomes `""`, which cannot end
+    the identifier, and there is nothing left for the value to escape into.
+
+    These are the last three false positives the corpus produced."""
+    found = _findings(tmp_path, (
+        "from flask import request\n"
+        "from app_runtime import db\n\n"
+        "@app.route('/x')\n"
+        "def handler():\n"
+        "    data = request.args.get('table', '')\n"
+        "    db.execute('SELECT * FROM \"' + str(data).replace('\"', '\"\"')"
+        " + '\"')\n"
+        "    return 'ok'\n"
+    ))
+    assert found == []
+
+
+def test_doubling_a_delimiter_the_query_does_not_use_proves_nothing(tmp_path):
+    """Doubling `\"` while the query quotes with `'` doubles a character the
+    parser will never look at, and leaves the one that ends the string."""
+    found = _findings(tmp_path, (
+        "from flask import request\n"
+        "from app_runtime import db\n\n"
+        "@app.route('/x')\n"
+        "def handler():\n"
+        "    data = request.args.get('table', '')\n"
+        '    db.execute("SELECT * FROM \'" + str(data).replace(\'"\', \'""\')'
+        ' + "\'")\n'
+        "    return 'ok'\n"
+    ))
+    assert [f.rule for f in found] == ["sink.sql"]
+
+
+def test_a_doubled_delimiter_with_nothing_around_it_proves_nothing(tmp_path):
+    """Escaping a quote is only a defence if the value is inside one."""
+    found = _findings(tmp_path, (
+        "from flask import request\n"
+        "from app_runtime import db\n\n"
+        "@app.route('/x')\n"
+        "def handler():\n"
+        "    data = request.args.get('table', '')\n"
+        "    db.execute('SELECT * FROM ' + str(data).replace('\"', '\"\"'))\n"
+        "    return 'ok'\n"
+    ))
+    assert [f.rule for f in found] == ["sink.sql"]
+
+
+def test_a_quoted_identifier_proves_nothing_to_a_shell(tmp_path):
+    """The delimiter belongs to SQL. A shell reads a different alphabet, and
+    doubling a double quote hands it `;` untouched."""
+    found = _findings(tmp_path, (
+        "import os\n"
+        "from flask import request\n\n"
+        "@app.route('/x')\n"
+        "def handler():\n"
+        "    os.system('echo \"' + str(request.args.get('q', ''))"
+        ".replace('\"', '\"\"') + '\"')\n"
+        "    return 'ok'\n"
+    ))
+    assert [f.rule for f in found] == ["sink.os.system"]
+
+
+def test_only_the_quoted_operand_is_cleared(tmp_path):
+    """One value quoted does not quote the one concatenated after it."""
+    found = _findings(tmp_path, (
+        "from flask import request\n"
+        "from app_runtime import db\n\n"
+        "@app.route('/x')\n"
+        "def handler():\n"
+        "    table = request.args.get('table', '')\n"
+        "    where = request.args.get('where', '')\n"
+        "    db.execute('SELECT * FROM \"' + str(table).replace('\"', '\"\"')"
+        " + '\" WHERE ' + str(where))\n"
+        "    return 'ok'\n"
+    ))
+    assert [f.rule for f in found] == ["sink.sql"]
+
+
+def test_a_query_quoted_into_a_variable_first_is_cleared_too(tmp_path):
+    found = _findings(tmp_path, (
+        "from flask import request\n"
+        "from app_runtime import db\n\n"
+        "@app.route('/x')\n"
+        "def handler():\n"
+        "    data = request.args.get('table', '')\n"
+        "    query = 'SELECT * FROM \"' + str(data).replace('\"', '\"\"')"
+        " + '\"'\n"
+        "    db.execute(query)\n"
+        "    return 'ok'\n"
+    ))
+    assert found == []
+
+
+def test_a_variable_query_with_one_operand_left_outside_is_not(tmp_path):
+    found = _findings(tmp_path, (
+        "from flask import request\n"
+        "from app_runtime import db\n\n"
+        "@app.route('/x')\n"
+        "def handler():\n"
+        "    table = request.args.get('table', '')\n"
+        "    where = request.args.get('where', '')\n"
+        "    query = 'SELECT * FROM \"' + str(table).replace('\"', '\"\"')"
+        " + '\" WHERE ' + str(where)\n"
+        "    db.execute(query)\n"
+        "    return 'ok'\n"
+    ))
+    assert [f.rule for f in found] == ["sink.sql"]
