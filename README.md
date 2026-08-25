@@ -1213,18 +1213,18 @@ monter `provenance` — fait tomber le TPR. Tout signaler donne TPR 100 %, FPR
 
 ```
                         avant      après
-TPR                      9.9 %     47.8 %
+TPR                      9.9 %     50.0 %
 FPR                      0.5 %      0.0 %
-J de Youden             +9.4 %    +47.7 %
+J de Youden             +9.4 %    +49.9 %
 catégories actives          10         33
 catégories négatives         0          0
 ```
 
 « Avant » est l'état du programme au moment où le thermomètre a existé pour la
 première fois. « Après » est le même corpus, le même plancher, la même
-commande. Le hold-out le confirme, et de trois façons : django seul note **+49,2 %**,
-fastapi **+46,9 %**, flask **+47,1 %**. Deux points d'écart au plus entre trois
-frameworks qui ne se ressemblent en rien — les règles marchent sur du code
+commande. Le hold-out le confirme, et de trois façons : django seul note **+50,0 %**,
+fastapi **+49,8 %**, flask **+50,0 %**. Deux dixièmes de point d'écart entre
+trois frameworks qui ne se ressemblent en rien — les règles marchent sur du code
 qu'elles n'ont pas servi à écrire.
 
 Par catégorie, ce que le moteur sait faire aujourd'hui :
@@ -1235,11 +1235,12 @@ hardcodedcreds · default_credentials · cleartexttransmit · errormessage
 debug_code_production · cookie_no_httponly · cookie_no_samesite
 securecookie · directory_listing_exposure                      +100,0 %
 deserial  +98,0 %   corsmisconfig  +96,0 %   cmdi  +93,3 %
-ldapi  +92,0 %   csv_injection  +92,0 %   nosql  +90,0 %
-xpathi  +88,0 %   crlfinjection  +86,0 %   codeinj  +86,0 %
-eval_injection  +84,0 %   sqli  +82,7 %   ssti  +82,0 %
-redirect  +80,0 %   cloud_ssrf_metadata  +78,7 %   ssrf  +70,7 %
-cleartextstorage  +68,0 %   pathtraver  +56,0 %   xss / basic_xss  +26,7 %
+ldapi  +92,0 %   csv_injection  +92,0 %   basic_xss  +90,0 %
+nosql  +90,0 %   xpathi  +88,0 %   crlfinjection  +86,0 %
+codeinj  +86,0 %   xss  +86,0 %   eval_injection  +84,0 %
+sqli  +82,7 %   ssti  +82,0 %   redirect  +80,0 %
+cloud_ssrf_metadata  +78,7 %   pathtraver  +74,7 %   ssrf  +70,7 %
+cleartextstorage  +68,0 %
 ```
 
 **Zéro faux positif** sur l'ensemble des 18 300 cas, et aucune catégorie
@@ -1247,7 +1248,7 @@ négative. Le point de départ était `ssrf` à −8,0 % et `xxe` à −100 %.
 
 ### Le plafond, parce qu'un chiffre sans son maximum ne veut rien dire
 
-+47,7 % n'est pas « 48 % du problème résolu ». Sur les 61 catégories, **22 ne
++49,9 % n'est pas « 50 % du problème résolu ». Sur les 61 catégories, **22 ne
 sont pas atteignables**, et pour deux raisons distinctes qui ont toutes deux
 été vérifiées cas par cas.
 
@@ -1274,11 +1275,17 @@ de session, `weak_password_hash` sur chaque somme de contrôle. Elles sont
 refusées, et le journal de reprise dit pourquoi une par une.
 
 Reste donc **33 catégories gagnables honnêtement, soit +54,1 %**. Elles sont
-toutes actives aujourd'hui. À +47,7 %, c'est **88 % du maximum honnête**, et
-ce qui reste n'est plus des catégories entières mais les cas manqués à
-l'intérieur de celles qui marchent déjà.
+toutes actives aujourd'hui. À +49,9 %, c'est **92 % du maximum honnête**.
 
-Ce qui a produit ces trente-huit points, dans l'ordre où ça a été mesuré :
+Les 4,2 points qui manquent encore ne sont plus des catégories mais des cas
+manqués à l'intérieur de celles qui marchent, et ils ont été comptés un par
+un : sur 556 manqués, **282 — la moitié — ont pour source une lecture en
+base**, refusée deux fois sur mesure ; 26 viennent d'une variable
+d'environnement ou d'un fichier de configuration, que la remise
+d'accessibilité déclasse à dessein ; 9 d'une file de messages. Ce qui reste
+est un reliquat.
+
+Ce qui a produit ces quarante points, dans l'ordre où ça a été mesuré :
 
 | changement | J |
 |---|---|
@@ -1298,7 +1305,10 @@ Ce qui a produit ces trente-huit points, dans l'ordre où ça a été mesuré :
 | en-têtes de réponse, garde positive, neutralisation CR/LF | +44,2 % |
 | une cellule de tableur n'est pas une ligne de texte | +45,6 % |
 | un fichier nommé `secrets.txt`, et la preuve par chiffrement ou hachage | +46,6 % |
-| la teinte traverse une fermeture `nonlocal` | **+47,7 %** |
+| la teinte traverse une fermeture `nonlocal` | +47,7 % |
+| Django écrit trois de ses sources en capitales | +48,0 % |
+| `HTMLResponse` déclare du HTML, `html.escape` en protège | +49,0 % |
+| une vue qui retourne une chaîne retourne du HTML | **+49,9 %** |
 
 Trois de ces changements ont été **refusés** après mesure, et c'est le
 thermomètre qui les a refusés : traiter une lecture en base comme une source
