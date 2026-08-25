@@ -276,25 +276,55 @@ def test_a_failed_forget_leaves_the_session_whole(store):
     assert [t.content for t in store.turns(session_id)] == ["à oublier"]
 
 
+def _opcodes(store, run):
+    """SQLite virtual-machine instructions spent on one call.
+
+    A deterministic stand-in for cost — a property of the work done, not of
+    the clock, so it means the same thing on a loaded CI runner as here.
+    """
+    count = 0
+
+    def tick():
+        nonlocal count
+        count += 1
+        return 0
+
+    store._connection.set_progress_handler(tick, 1)
+    try:
+        run()
+    finally:
+        store._connection.set_progress_handler(None, 0)
+    return count
+
+
 def test_full_text_search_cuts_before_it_sorts(store):
-    """Twenty rows must not cost a sort over every match in the memory."""
+    """Twenty rows must not cost a sort over every match in the memory.
+
+    Asserted on work done rather than on the query plan. This test used to
+    read `EXPLAIN QUERY PLAN` looking for "TEMP B-TREE", which reports what
+    one planner chose — and the SQLite bundled with CPython 3.12 chooses
+    differently from 3.11's and 3.13's for this very query, so the guarantee
+    read as broken where it was not. The plan was only ever a proxy.
+
+    Measured here instead: five times the matches, and the cost of twenty
+    rows stays flat. A query that sorted the whole match set first would
+    carry all of it — 4 474 instructions against 22 097 on these same two
+    sizes, where cutting on the FTS rowid costs 2 215 and then 2 698.
+    """
     session_id = store.start("/repo")
-    for index in range(40):
+    for index in range(400):
         store.append(session_id, "user", f"injection numéro {index}")
 
-    statements: list[str] = []
-    store._connection.set_trace_callback(statements.append)
-    try:
-        store.find("injection", limit=20)
-    finally:
-        store._connection.set_trace_callback(None)
+    store.find("injection", limit=20)  # warm the statement cache
+    few = _opcodes(store, lambda: store.find("injection", limit=20))
 
-    executed = [s for s in statements if "MATCH" in s]
-    assert len(executed) == 1, executed
-    plan = store._connection.execute(
-        "EXPLAIN QUERY PLAN " + executed[0]
-    ).fetchall()
-    assert not any("TEMP B-TREE" in str(row[3]) for row in plan), plan
+    for index in range(400, 2000):
+        store.append(session_id, "user", f"injection numéro {index}")
+    many = _opcodes(store, lambda: store.find("injection", limit=20))
+
+    # Measured at 1.2x here and 4.9x for the version that sorts everything.
+    # Two is the gap between those, not a tuning knob.
+    assert many <= few * 2, (few, many)
 
 
 def test_a_scoped_search_fills_its_limit_from_that_repository(store):
