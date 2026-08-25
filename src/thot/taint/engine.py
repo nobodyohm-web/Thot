@@ -94,6 +94,15 @@ def _target_names(node: ast.AST) -> list[str]:
     if isinstance(node, ast.Attribute):
         name = _expression_name(node)
         return [name] if name else []
+    if isinstance(node, ast.Subscript):
+        # `box['k'] = tainted` marks the container, which is what appending to
+        # a list already does. The read side renders `box['k']` as `box`, so
+        # both ends agree on one name; keying the taint per subscript would
+        # need the two sides to agree on the key as well, and `box[name]`
+        # settles nothing. Conservative across keys, and the corpus shows why
+        # it is worth having: 504 of its files pass a value through a
+        # module-level dict on the way to the sink.
+        return _target_names(node.value)
     if isinstance(node, ast.Starred):
         return _target_names(node.value)
     if isinstance(node, (ast.Tuple, ast.List)):
@@ -1164,6 +1173,11 @@ def _analyse_body(symbol: Symbol, node: ast.AST,
     sheet_handles: set[str] = set()
     # Handles opened on a file whose name says it holds a secret.
     store_handles: set[str] = set()
+    # Nested callbacks that write into a name belonging to this scope:
+    # callback name -> [(argument position, name it writes)]. The ordinary
+    # shape of a callback in Python, and the chain used to break at the name
+    # the caller reads back one line later.
+    captures: dict[str, list[tuple[int, str]]] = {}
 
     def under_guard() -> frozenset[str]:
         return frozenset(guarded_now)
@@ -1246,6 +1260,25 @@ def _analyse_body(symbol: Symbol, node: ast.AST,
             for name in inside:
                 guarded_until.append((ends, name))
                 guarded_now.add(name)
+
+        elif isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            declared = {name for inner in ast.walk(child)
+                        if isinstance(inner, ast.Nonlocal)
+                        for name in inner.names}
+            if declared:
+                slots = [one.arg for one in child.args.args]
+                writes: list[tuple[int, str]] = []
+                for inner in ast.walk(child):
+                    if not isinstance(inner, ast.Assign) or len(inner.targets) != 1:
+                        continue
+                    target = inner.targets[0]
+                    if not isinstance(target, ast.Name) or target.id not in declared:
+                        continue
+                    for read in _referenced_names(inner.value):
+                        if read in slots:
+                            writes.append((slots.index(read), target.id))
+                if writes:
+                    captures[child.name] = writes
 
         elif isinstance(child, (ast.For, ast.AsyncFor)):
             bind([child.target], child.iter, ref_at(child))
@@ -1343,6 +1376,13 @@ def _analyse_body(symbol: Symbol, node: ast.AST,
                     rule_id, ref_at(child),
                     tuple(sorted(_referenced_names(written) - under_guard())),
                 ))
+
+            # A call to one of those callbacks carries its argument into the
+            # name the callback writes, here in the scope that owns it.
+            for position, target in captures.get(_called_name(child) or "", ()):
+                if position < len(child.args):
+                    bind([ast.Name(id=target, ctx=ast.Store())],
+                         child.args[position], ref_at(child))
 
             written_to = _called_name(child) or ""
             holder_name, _, method = written_to.rpartition(".")

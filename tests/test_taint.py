@@ -2146,3 +2146,67 @@ def test_a_digest_still_proves_nothing_to_a_shell(tmp_path):
         "    os.system('echo ' + digest)\n"
     ))
     assert [f.rule for f in found] == ["sink.os.system"]
+
+
+# -- a callback that writes to the scope that made it -----------------------
+
+
+def test_taint_travels_through_a_nonlocal_callback(tmp_path):
+    """The ordinary shape of a callback in Python: a nested function is
+    handed the value and writes it into the name the caller reads back.
+    Without this the chain broke at `collected`, which is read one line later
+    and is exactly as untrusted as what went in."""
+    found = _findings(tmp_path, (
+        "import os\n\n"
+        "def view(request):\n"
+        "    incoming = request.COOKIES.get('token', '')\n"
+        "    collected = None\n"
+        "    def on_ready(value):\n"
+        "        nonlocal collected\n"
+        "        collected = value\n"
+        "    on_ready(incoming)\n"
+        "    os.system('echo ' + str(collected))\n"
+    ))
+    assert [f.rule for f in found] == ["sink.os.system"]
+
+
+def test_a_callback_handed_a_constant_taints_nothing(tmp_path):
+    """The argument is what matters, not the callback."""
+    found = _findings(tmp_path, (
+        "import os\n\n"
+        "def view(request):\n"
+        "    collected = None\n"
+        "    def on_ready(value):\n"
+        "        nonlocal collected\n"
+        "        collected = value\n"
+        "    on_ready('constant')\n"
+        "    os.system('echo ' + str(collected))\n"
+    ))
+    assert found == []
+
+
+def test_taint_travels_through_a_dict_used_as_a_relay(tmp_path):
+    """`box['k'] = value` marks the container, the way appending to a list
+    already did. The read side renders `box['k']` as `box`, so both ends of
+    the assignment agree on one name."""
+    found = _findings(tmp_path, (
+        "import os\n\n"
+        "request_state: dict[str, str] = {}\n\n"
+        "def view(request):\n"
+        "    incoming = request.COOKIES.get('token', '')\n"
+        "    request_state['last_input'] = incoming\n"
+        "    data = request_state['last_input']\n"
+        "    os.system('echo ' + str(data))\n"
+    ))
+    assert [f.rule for f in found] == ["sink.os.system"]
+
+
+def test_a_dict_that_only_ever_held_constants_taints_nothing(tmp_path):
+    found = _findings(tmp_path, (
+        "import os\n\n"
+        "def view(request):\n"
+        "    box = {}\n"
+        "    box['k'] = 'constant'\n"
+        "    os.system('echo ' + str(box['k']))\n"
+    ))
+    assert found == []
