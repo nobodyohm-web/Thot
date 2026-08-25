@@ -283,16 +283,17 @@ thot fusion audit             # auditer les trois arbres en une passe
 programme : trois commandes et une fusion mentale de trois rapports.
 
 ```
-thot       203 fichiers     5 finding(s) — 4 high · 1 medium · 14 sous le seuil
-hermes    7080 fichiers   127 finding(s) — 12 high · 115 medium · 806 sous le seuil
-prime      952 fichiers    13 finding(s) — 3 high · 10 medium · 28 sous le seuil
+thot       227 fichiers     5 finding(s) —  3 high ·   2 medium ·  27 sous le seuil
+hermes    7080 fichiers   191 finding(s) —  8 high · 183 medium · 863 sous le seuil
+prime      952 fichiers    14 finding(s) —  3 high ·  11 medium ·  27 sous le seuil
 
-145 finding(s) sur l'ensemble — 19 high · 126 medium · 848 sous le seuil (`--all`)
+210 finding(s) sur l'ensemble — 14 high · 196 medium · 917 sous le seuil (`--all`)
 ```
 
 Le seuil est celui de `thot audit`, et c'est le point : le même arbre doit
 donner le même nombre aux deux commandes. Cette vue comptait chaque `low`,
-donc elle répondait 933 pour un dépôt que `thot audit hermes` appelait 127,
+donc elle annonçait le total de la colonne « sous le seuil » en plus du
+reste, pour un dépôt que `thot audit hermes` chiffrait sept fois plus bas
 dans la même minute. Ce qui est retenu est compté, jamais tu.
 
 Quand une mémoire de verdicts a déjà tranché, la ligne le dit à part —
