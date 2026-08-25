@@ -977,6 +977,13 @@ def test_the_remedy_that_needs_nothing_is_named_first(monkeypatch, tmp_path):
     )
     monkeypatch.setattr("thot.schedule.install.launchd_runs", lambda label: 0)
     monkeypatch.setattr("thot.schedule.daemon.running", lambda: None)
+    # `_loop` sort tôt si l'unité n'existe pas. Sans ce répertoire à
+    # nous, le test lisait le vrai ~/Library/LaunchAgents : vert chez
+    # qui a installé l'unité, rouge partout ailleurs.
+    agents = tmp_path / "LaunchAgents"
+    agents.mkdir()
+    (agents / "com.thot.improve.plist").write_text("<plist/>")
+    monkeypatch.setattr("thot.schedule.install.LAUNCH_AGENTS", agents)
     monkeypatch.setattr(
         doctor, "unreachable_from_launchd",
         lambda paths, home=None: ["/Users/qui/Desktop/Thot/src"],

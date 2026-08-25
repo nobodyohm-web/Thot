@@ -1,5 +1,9 @@
 """The account path: command construction and stream parsing.
 
+The fake binary is autouse: `_command` resolves `claude` on PATH, so
+nine tests here passed only on a machine that had the real CLI
+installed and failed everywhere else — including CI.
+
 The real CLI is never launched here — these tests check what Thot asks for and
 how it reads the answer.
 """
@@ -211,7 +215,7 @@ raise SystemExit(0)
 '''
 
 
-@pytest.fixture
+@pytest.fixture(autouse=True)
 def fake_claude(tmp_path, monkeypatch):
     """A CLI that fails the way the real one failed, and logs every argv."""
     import stat

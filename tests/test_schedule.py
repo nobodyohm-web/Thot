@@ -464,6 +464,9 @@ def test_installing_warns_when_the_job_could_never_start(tmp_path, monkeypatch):
 
     home = tmp_path / "home"
     (home / "Desktop").mkdir(parents=True)
+    # `install()` branche sur la plateforme et rend une ligne de crontab
+    # hors macOS ; ce test-ci porte sur le chemin launchd.
+    monkeypatch.setattr("platform.system", lambda: "Darwin")
     monkeypatch.setattr("thot.schedule.install.LAUNCH_AGENTS", tmp_path)
     monkeypatch.setattr("pathlib.Path.home", classmethod(lambda cls: home))
     monkeypatch.setattr("thot.doctor.job_import_paths",
