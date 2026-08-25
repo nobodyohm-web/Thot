@@ -1,0 +1,58 @@
+# Thot, run against Thot.
+#
+# The point is not the verdict — it is that the whole pipeline runs on a
+# machine nobody configured: index, taint, rules, severity floor, SARIF. A
+# tool that only works in its author's shell is a tool with one user.
+#
+# Deliberately not `--deep`: no model, no network, no agent. What this
+# measures is the deterministic analysis. And deliberately without the
+# verdict memory, which lives in a home directory a runner does not have —
+# so this is the report a first-time reader gets, not the quieter one the
+# author sees.
+name: self-audit
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  schedule:
+    # Weekly, because the catalogue moves even when the code does not.
+    - cron: '17 4 * * 1'
+
+permissions:
+  contents: read
+
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+          cache-dependency-glob: uv.lock
+
+      - name: Install
+        run: uv sync --frozen
+
+      # Naming a tree is what authorises auditing it. A checkout carries no
+      # `.thot/`, and writing one is that act — done explicitly here rather
+      # than bypassed with a flag, because the flag would be a habit.
+      - name: Authorise this checkout
+        run: uv run --no-sync thot init . --owner github-actions
+
+      - name: Audit
+        run: |
+          uv run --no-sync thot audit . --no-memory --no-store \
+            --sarif --out thot.sarif --fail-on critical
+          uv run --no-sync thot audit . --no-memory --no-store \
+            --markdown --out thot-report.md
+          cat thot-report.md >> "$GITHUB_STEP_SUMMARY"
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: self-audit-sarif
+          path: thot.sarif
