@@ -1,1 +1,18 @@
+# `docs/superpowers/specs/` décrit une méthode de travail, pas ce programme.
 docs/superpowers/specs/*.md linguist-documentation
+
+# Les arbres importés, exactement comme NOTICE.md les décrit : copiés, pas
+# écrits ici. Sans cette marque, GitHub pèse les langues du dépôt et trouve
+# 149 Mo de Python Hermes et 19 Mo de TypeScript Prime face aux 1,1 Mo de
+# `src/thot/` — il annonce alors tout sauf le projet. `linguist-vendored` ne
+# cache rien : les fichiers restent lisibles, clonés et diffables ; ils
+# cessent seulement d'être attribués à quelqu'un qui ne les a pas écrits.
+hermes/** linguist-vendored
+prime/**  linguist-vendored
+
+# Même provenance, même raison. La bibliothèque de skills et le catalogue MCP
+# sont ceux d'Hermes, fichier pour fichier ; à eux seuls, 12 Mo de Markdown,
+# soit six fois le code de Thot.
+skills/**          linguist-vendored
+optional-skills/** linguist-vendored
+mcp-catalog/**     linguist-vendored

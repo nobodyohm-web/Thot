@@ -1,6 +1,6 @@
 MIT License
 
-Copyright (c) 2026 Alex
+Copyright (c) 2026 nobodyohm-web
 
 Permission is hereby granted, free of charge, to any person obtaining a copy
 of this software and associated documentation files (the "Software"), to deal
@@ -12,9 +12,17 @@ furnished to do so, subject to the following conditions:
 The above copyright notice and this permission notice shall be included in all
 copies or substantial portions of the Software.
 
-Portions of this software are derived from Hermes Agent (MIT, Copyright (c)
-2025 Nous Research) and from Anthropic's claude-plugins-official (Apache-2.0).
-See NOTICE.md for details.
+This licence covers the work in `src/`, `tests/`, `plugins/`, `commands/`
+and `prime-skill/`. It does not cover everything in this repository.
+
+Vendored here under their own licences: Hermes Agent (MIT, Copyright (c)
+2025 Nous Research) in `hermes/`; Prime Agent (MIT, Copyright (c) 2025
+Mario Zechner and (c) 2026 Prime Intellect) in `prime/`; Anthropic's
+claude-plugins-official (Apache-2.0) at `src/thot/guard/patterns.py`; and
+G0DM0D3 / L1B3RT4S (AGPL-3.0, Copyright (c) elder-plinius) in the
+`godmode` skill, which is AGPL-3.0 and not MIT.
+
+NOTICE.md names every part, its licence, and what was done to it.
 
 THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
 IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,

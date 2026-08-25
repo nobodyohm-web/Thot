@@ -1,0 +1,50 @@
+# The test suite, on every Python the project claims to support.
+#
+# `requires-python = ">=3.11,<3.14"` is a promise, and a promise nobody
+# measures is a guess. The floor is what the workspace resolves to locally;
+# the ceiling is Hermes's, whose Rust-backed transitives have no cp314 wheel.
+name: tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+# The suite reads the checkout and nothing else. Anything more would be a
+# token this workflow has no use for.
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  pytest:
+    runs-on: ubuntu-latest
+    strategy:
+      # Which interpreter broke is the whole answer; stopping at the first
+      # failure withholds it.
+      fail-fast: false
+      matrix:
+        python: ["3.11", "3.12", "3.13"]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+          cache-dependency-glob: uv.lock
+
+      # `--frozen` resolves from uv.lock and refuses to update it. A CI that
+      # re-resolves is testing a dependency set nobody reviewed, and would go
+      # green on a version the maintainer has never run.
+      - name: Install
+        run: uv sync --frozen --python ${{ matrix.python }}
+
+      # `--no-sync` because the previous step already did it; without it uv
+      # re-checks the environment on a lockfile it was just told to trust.
+      - name: Test
+        run: uv run --no-sync pytest -q

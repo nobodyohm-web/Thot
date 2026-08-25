@@ -11,6 +11,12 @@ thing and conflating them would be dishonest:
 * **adapted** — the design is upstream's, the code is Thot's;
 * **shared** — a format both programs read, invented by neither.
 
+Two of those parts are whole upstream repositories, vendored into this tree
+rather than depended upon: `hermes/` (9 890 files) and `prime/` (1 133) are
+checkouts of the programs named below, each carrying its own `LICENSE`. They
+are 11 023 of this repository's 12 340 tracked files, and the root `LICENSE`
+does not cover them.
+
 ---
 
 ## Hermes Agent — MIT
@@ -145,10 +151,12 @@ audit verdicts. No upstream code copied.
 
 ## Prime Agent — MIT
 
-Copyright (c) 2025 Mario Zechner
+Copyright (c) 2025 Mario Zechner · Copyright (c) 2026 Prime Intellect
+https://github.com/PrimeIntellect-ai/prime-agent
 
-Prime is TypeScript; nothing here is a copy. These are the ideas that
-survived translation into Python.
+The `prime/` tree is upstream's, entire and unmodified. Nothing under
+`src/thot/` is a copy of it — Prime is TypeScript, and what follows are
+the ideas that survived translation into Python.
 
 ### Adapted
 
@@ -218,4 +226,42 @@ Copyright (c) Anthropic, PBC. and the security-guidance contributors
 https://github.com/anthropics/claude-plugins-official
 
 Licensed under the Apache License, Version 2.0. The full licence header is
-retained at the top of `src/thot/guard/patterns.py`.
+retained at the top of `src/thot/guard/patterns.py`. The complete licence
+text and Anthropic's own NOTICE travel with the imported tree, at
+`hermes/plugins/security-guidance/LICENSE` and
+`hermes/plugins/security-guidance/NOTICE` — the same path the file was
+forked from, so the attribution and the code did not become separable.
+
+---
+
+## G0DM0D3 / L1B3RT4S — AGPL-3.0
+
+Copyright (c) elder-plinius · https://github.com/elder-plinius/G0DM0D3 ·
+https://github.com/elder-plinius/L1B3RT4S
+
+The `godmode` skill — present twice, at `optional-skills/security/godmode/`
+and in the vendored tree at `hermes/optional-skills/security/godmode/` — is
+not MIT, whatever the rest of this repository is.
+
+`scripts/parseltongue.py` says so itself on line 4: it is a JavaScript-to-Python
+port of G0DM0D3, and a port is a derivative work. `references/jailbreak-templates.md`
+reproduces prompts from both projects verbatim. Both upstreams are AGPL-3.0, and
+the AGPL does not stop applying because a file travelled through an MIT tree.
+
+Two edits were therefore made to those directories, and they are the only
+places where this repository knowingly departs from what upstream shipped:
+
+1. the `license:` field in both `SKILL.md` files read `MIT`, inherited from
+   Hermes; it now reads `AGPL-3.0`, which is what the code has always been;
+2. the full licence text was added at `LICENSE` in both directories, the way
+   `ast-grep`, `humanizer`, `docx`, `pdf`, `powerpoint` and `xlsx` already
+   carry theirs.
+
+Nothing was removed and nothing was disabled. The skill works exactly as
+upstream wrote it; only its label now matches its contents.
+
+The boundary is checked, not assumed: no module under `src/thot/` imports
+these files. `skills/loader.py` reads them as text and runs their scripts as
+separate processes, which is aggregation — the AGPL travels with the skill,
+not with Thot.
+

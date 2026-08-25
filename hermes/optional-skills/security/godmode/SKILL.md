@@ -3,7 +3,7 @@ name: godmode
 description: "Jailbreak LLMs: Parseltongue, GODMODE, ULTRAPLINIAN."
 version: 1.0.0
 author: Hermes Agent + Teknium
-license: MIT
+license: AGPL-3.0
 platforms: [linux, macos, windows]
 metadata:
   hermes:

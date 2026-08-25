@@ -5,12 +5,23 @@ dist/
 build/
 *.egg-info/
 .pytest_cache/
-.thot/store.db
-.thot/authorization.yaml
+
+# L'état de travail de Thot sur ce dépôt-ci : autorisation, base des verdicts,
+# mémoire du harnais. Motif sans ancrage, parce que `.thot/authorization.yaml`
+# en contenait un implicite — un slash interne ancre à la racine, et les
+# `.thot/` de hermes/ et prime/ passaient au travers.
+.thot/
+
+# Le document de reprise est une note de travail, pas de la documentation.
+REPRISE.md
 
 # Les arbres importés apportent leurs propres dépendances installées.
+node_modules/
 hermes/.venv/
-hermes/node_modules/
-prime/node_modules/
-prime/packages/*/node_modules/
 prime/packages/*/dist/
+
+# macOS et sorties de session, qu'un `git add -A` emporterait sans bruit.
+.DS_Store
+*.log
+*.db
+*.sqlite*
