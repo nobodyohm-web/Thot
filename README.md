@@ -1,6 +1,6 @@
 # Thot
 
-[![tests](https://github.com/nobodyohm-web/thot/actions/workflows/tests.yml/badge.svg)](https://github.com/nobodyohm-web/thot/actions/workflows/tests.yml)
+[![tests](https://github.com/nobodyohm-web/Thot/actions/workflows/tests.yml/badge.svg)](https://github.com/nobodyohm-web/Thot/actions/workflows/tests.yml)
 [![python](https://img.shields.io/badge/python-3.11%20%7C%203.12%20%7C%203.13-blue)](pyproject.toml)
 
 Un assistant de code en terminal qui **connaît déjà ton dépôt** — et le dépôt
@@ -348,8 +348,8 @@ et jamais la liste.
 ## Installation
 
 ```bash
-git clone https://github.com/nobodyohm-web/thot.git
-cd thot
+git clone https://github.com/nobodyohm-web/Thot.git
+cd Thot
 uv tool install --editable --from . thot
 ```
 
@@ -1812,7 +1812,7 @@ test le vérifie et nomme la version quand elle ne le permet pas.
 ## Développement
 
 ```bash
-cd thot
+cd Thot
 uv run pytest -q
 ```
 
