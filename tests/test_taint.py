@@ -2793,3 +2793,54 @@ def test_an_ordinary_file_is_still_not_a_store(tmp_path):
         "        store.write(str(setting))\n"
     ))
     assert found == []
+
+
+def test_what_the_database_gives_back_is_what_somebody_put_in(tmp_path):
+    """Stored injection, and the blind spot most tools share. `SELECT bio
+    FROM profiles` returns whatever a user wrote there, however long ago —
+    the row is a request that has been waiting."""
+    found = _findings(tmp_path, (
+        "import os\n"
+        "from app_runtime import db\n\n\n"
+        "def main():\n"
+        "    bio = db.fetch_one('SELECT bio FROM profiles LIMIT 1')\n"
+        "    os.system('echo ' + str(bio))\n"
+    ))
+    assert [f.rule for f in found] == ["sink.os.system"]
+
+
+def test_the_orm_says_the_same_thing(tmp_path):
+    found = _findings(tmp_path, (
+        "import os\n"
+        "from app.models import Profile\n\n\n"
+        "def main():\n"
+        "    bio = Profile.objects.filter(active=True).values_list('bio')\n"
+        "    os.system('echo ' + str(bio))\n"
+    ))
+    assert [f.rule for f in found] == ["sink.os.system"]
+
+
+def test_an_ordinary_get_is_not_a_query(tmp_path):
+    """`objects` is the whole gate. Without it this rule would be a source
+    under every `.get` in the language."""
+    found = _findings(tmp_path, (
+        "import os\n\n\n"
+        "def main(options):\n"
+        "    os.system('echo ' + str(options.get('label', 'none')))\n"
+    ))
+    assert found == []
+
+
+def test_a_stored_value_that_was_escaped_is_still_escaped(tmp_path):
+    """What makes this rule cost nothing is that the neutralisations were
+    already understood. A stored value is untrusted; a stored value put
+    through `shlex.quote` is a quoted argument."""
+    found = _findings(tmp_path, (
+        "import os\n"
+        "import shlex\n"
+        "from app_runtime import db\n\n\n"
+        "def main():\n"
+        "    bio = db.fetch_one('SELECT bio FROM profiles LIMIT 1')\n"
+        "    os.system('echo ' + shlex.quote(str(bio)))\n"
+    ))
+    assert found == []

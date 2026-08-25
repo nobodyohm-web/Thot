@@ -391,6 +391,32 @@ DEFAULT_SOURCES: tuple[SourceRule, ...] = (
         description="Réponse d'un service tiers",
         remote=True,
     ),
+    SourceRule(
+        id="source.stored",
+        # The DB-API cursor and the `databases` package, which is what an
+        # async framework uses. `first` and `scalar_one` were measured with
+        # them and earned exactly nothing, so they are not here: `.first()`
+        # is SQLAlchemy's idiom and also pandas', and a source rule that
+        # cannot tell them apart is a source rule under every groupby.
+        patterns=("fetch_one", "fetch_all", "fetch_val", "fetchone",
+                  "fetchall", "fetchmany"),
+        description="Lecture en base",
+        match_mode="method",
+        remote=True,
+    ),
+    SourceRule(
+        id="source.orm",
+        # The same fact through Django's ORM, which the corpus never writes
+        # and half of Python's web code does. Measured at zero here and zero
+        # on both shipped trees; it is in because a catalogue that knows
+        # `fetchone` and not `objects.get` would be a catalogue about
+        # BenchProctor. Qualified on `objects`, so `options.get` and every
+        # other `.get` in the language stay what they are.
+        patterns=("objects.get", "objects.filter", "objects.all",
+                  "objects.values", "objects.values_list"),
+        description="Lecture par l'ORM",
+        remote=True,
+    ),
 )
 
 
