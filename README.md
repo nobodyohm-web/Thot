@@ -1888,6 +1888,19 @@ helper du même fichier, et s'arrêtent là faute de graphe d'appels résolu —
 tableau plus haut le dit ligne par ligne. Les règles par motif, elles,
 s'appliquent partout.
 
+**Le +55,5 % est un chiffre Python.** BenchProctor étiquette du django, du
+fastapi et du flask, et rien d'autre ; le catalogue JavaScript est plus étroit
+que son homologue — pas de source « lecture en base », pas de sink de
+journalisation — et ses règles reposent sur ses tests plutôt que sur 18 300
+cas étiquetés. Quand une correction vaut pour les deux moteurs elle est portée
+sur les deux, et le journal dit laquelle a été mesurée où.
+
+`sink.log` lit le message et lui seul. `logger.info('failed: %s', exc)` confie
+la valeur à la machinerie de journalisation au lieu de l'écrire dans la chaîne
+que l'auteur a tapée ; lire ces arguments-là aussi vaut +0,0000 sur le corpus
+et 4 844 findings de plus sur `hermes/`, un par `except … as exc:` de l'arbre.
+Ce n'est pas couvert, et le dire coûte moins cher que le laisser croire.
+
 Sans `--deep`, chaque finding est `PLAUSIBLE` : détecté statiquement, pas
 encore prouvé par exécution. Avec `--deep`, un finding `confirmed` a survécu
 à une réfutation adverse — ce n'est pas encore une preuve d'exécution, qui
