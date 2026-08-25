@@ -2,6 +2,8 @@
 
 [![tests](https://github.com/nobodyohm-web/Thot/actions/workflows/tests.yml/badge.svg)](https://github.com/nobodyohm-web/Thot/actions/workflows/tests.yml)
 [![python](https://img.shields.io/badge/python-3.11%20%7C%203.12%20%7C%203.13-blue)](pyproject.toml)
+[![youden](https://img.shields.io/badge/Youden%20J-%2B55.5%25-brightgreen)](#le-thermomètre-et-la-boucle-qui-sen-sert)
+[![false positives](https://img.shields.io/badge/faux%20positifs-0%20%2F%209%20150-brightgreen)](#le-thermomètre-et-la-boucle-qui-sen-sert)
 
 Un assistant de code en terminal qui **connaît déjà ton dépôt** — et le dépôt
 où vivent **Hermes Agent** et **Prime Agent**, entiers.
@@ -1213,79 +1215,81 @@ monter `provenance` — fait tomber le TPR. Tout signaler donne TPR 100 %, FPR
 
 ```
                         avant      après
-TPR                      9.9 %     50.0 %
-FPR                      0.5 %      0.0 %
-J de Youden             +9.4 %    +49.9 %
-catégories actives          10         33
+TPR                      9.9 %     55.5 %
+FPR                      0.5 %      0.000 %
+J de Youden             +9.4 %    +55.5 %
+catégories actives          10         34
 catégories négatives         0          0
 ```
 
 « Avant » est l'état du programme au moment où le thermomètre a existé pour la
 première fois. « Après » est le même corpus, le même plancher, la même
-commande. Le hold-out le confirme, et de trois façons : django seul note **+50,0 %**,
-fastapi **+49,8 %**, flask **+50,0 %**. Deux dixièmes de point d'écart entre
-trois frameworks qui ne se ressemblent en rien — les règles marchent sur du code
-qu'elles n'ont pas servi à écrire.
+commande. Le hold-out le confirme, et de trois façons : django seul note
+**+55,5 %**, fastapi **+55,5 %**, flask **+55,5 %**. Trois frameworks qui ne se
+ressemblent en rien, le même chiffre au dixième près — les règles marchent sur
+du code qu'elles n'ont pas servi à écrire.
 
-Par catégorie, ce que le moteur sait faire aujourd'hui :
+Par catégorie, ce que le moteur sait faire aujourd'hui. **Trente-deux des
+trente-quatre catégories actives sont à exactement +100 %** :
 
 ```
-xxe · tlsverify · weakhash · weakrand · weakcipher · weakkeylength
-hardcodedcreds · default_credentials · cleartexttransmit · errormessage
-debug_code_production · cookie_no_httponly · cookie_no_samesite
-securecookie · directory_listing_exposure                      +100,0 %
-deserial  +98,0 %   corsmisconfig  +96,0 %   cmdi  +93,3 %
-ldapi  +92,0 %   csv_injection  +92,0 %   basic_xss  +90,0 %
-nosql  +90,0 %   xpathi  +88,0 %   crlfinjection  +86,0 %
-codeinj  +86,0 %   xss  +86,0 %   eval_injection  +84,0 %
-sqli  +82,7 %   ssti  +82,0 %   redirect  +80,0 %
-cloud_ssrf_metadata  +78,7 %   pathtraver  +74,7 %   ssrf  +70,7 %
-cleartextstorage  +68,0 %
+basic_xss · cleartextstorage · cleartexttransmit · cloud_ssrf_metadata
+cmdi · codeinj · cookie_no_httponly · cookie_no_samesite · corsmisconfig
+crlfinjection · csv_injection · debug_code_production · default_credentials
+deserial · errormessage · eval_injection · hardcodedcreds · ldapi
+loginjection · nosql · redirect · securecookie · sqli · ssti · tlsverify
+weakcipher · weakhash · weakkeylength · weakrand · xpathi · xss · xxe
+                                                               +100,0 %
+pathtraver  +94,0 %          ssrf  +92,0 %
 ```
 
-**Zéro faux positif** sur l'ensemble des 18 300 cas, et aucune catégorie
-négative. Le point de départ était `ssrf` à −8,0 % et `xxe` à −100 %.
+**Zéro faux positif** sur les 9 150 cas sains, et aucune catégorie négative.
+Le point de départ était `ssrf` à −8,0 % et `xxe` à −100 %.
 
 ### Le plafond, parce qu'un chiffre sans son maximum ne veut rien dire
 
-+49,9 % n'est pas « 50 % du problème résolu ». Sur les 61 catégories, **22 ne
-sont pas atteignables**, et pour deux raisons distinctes qui ont toutes deux
-été vérifiées cas par cas.
++55,5 % n'est pas « la moitié du problème résolu ». Sur les 61 catégories,
+**27 ne sont pas atteignables**, et pour deux raisons distinctes qui ont
+toutes deux été vérifiées cas par cas, fichier ouvert.
 
-**Dix sont vues mais mal nommées.** Thot tire sur les bons fichiers et annonce
-une autre classe que l'étiquette, parce que le corpus écrit des CWE différents
-sur du code identique — `el_injection` et `ssti` sont le même appel
-`Template(données)`, `loginjection` et `sensinlogs` le même `logging.info`.
-Les mappings qui rattraperaient ces points ont été instruits un par un et tous
-rejetés : ils paieraient un point contre une inexactitude taxonomique.
+**Dix sont du code qu'une autre catégorie possède déjà.** Le corpus écrit deux
+CWE différents sur la même ligne : `el_injection` et `ssti` sont le même appel
+`Template(données)`, `argument_injection` et `genericcmdi` le même
+`os.system('echo ' + données)` que `cmdi`, `unverified_signature` le même
+`verify=False` que `tlsverify`, `sensinlogs` le même `logging.info` que
+`loginjection`, `hardcoded_crypto_key` la même clé en dur que
+`hardcodedcreds`. Thot tire sur tous ces fichiers — le rapport le dit, colonne
+`seen` — et annonce la classe que le code est vraiment. Les rattraper
+demanderait de nommer deux classes pour une règle, ce que `report/cwe.py`
+existe précisément pour refuser.
 
-**Douze n'ont aucun sink.** `authzfailure`, `idor`, `intoverflow`,
-`null_deref`, `privescalation` et les autres finissent toutes sur un
-`return JsonResponse(...)` sans un seul appel dangereux : ce sont des défauts
-de logique — une autorisation absente, un entier qui déborde — et aucune
-analyse de teinte ne les voit, quelle que soit la règle qu'on écrive.
+**Dix-sept n'ont aucun sink.** `authzfailure`, `idor`, `intoverflow`,
+`null_deref`, `privescalation`, `csrf`, `missingcritauthn`, `sessionfixation`
+et les autres finissent toutes sur un `return JsonResponse(...)` sans un seul
+appel dangereux. Le cas vulnérable d'`idor` est une requête *correctement
+paramétrée* ; ce qui manque est un appel d'autorisation. `clickjacking` se
+gagne en signalant l'absence de `X-Frame-Options`, que Django pose par
+middleware. `weak_password_hash` sépare pourtant parfaitement ce corpus —
+chaque cas vulnérable est `hashlib.sha256`, chaque cas sain `pbkdf2_hmac` —
+mais aucune de ces lignes ne dit que la valeur est un mot de passe, et la
+règle tirerait sur toutes les sommes de contrôle, tous les ETag et tous les
+HMAC d'un dépôt réel. Ce sont des défauts de logique ou des contrôles absents ;
+aucune analyse de teinte ne les voit, quelle que soit la règle qu'on écrive.
 
-Restent 39 catégories, soit un plafond arithmétique de **+63,9 %**. Mais six
-d'entre elles ne se gagnent qu'avec une règle qui serait fausse ailleurs que
-sur ce corpus — `csrf` et `missingcritauthn` exigeraient de signaler l'absence
-d'un contrôle que Django applique par middleware, `loginjection` produirait
-des centaines de findings par dépôt (372 appels de journalisation interpolés
-dans `hermes/hermes_cli` seul), `sessionfixation` tirerait sur chaque écriture
-de session, `weak_password_hash` sur chaque somme de contrôle. Elles sont
-refusées, et le journal de reprise dit pourquoi une par une.
+Reste donc **34 catégories gagnables honnêtement, soit +55,7 %**. Elles sont
+toutes actives. À +55,5 %, c'est **99,6 % du maximum honnête**.
 
-Reste donc **33 catégories gagnables honnêtement, soit +54,1 %**. Elles sont
-toutes actives aujourd'hui. À +49,9 %, c'est **92 % du maximum honnête**.
+Les 21 cas qui manquent encore ne sont plus des catégories mais des cas
+manqués à l'intérieur de deux d'entre elles, et ils ont été comptés un par
+un : **12 en `ssrf`** ont pour source `mq_client.get_message()` ou
+`redis_client.get()`, deux objets `_Stub()` déclarés dans l'`app_runtime.py`
+de BenchProctor — ils ne nomment rien qui existe hors de ce corpus, et un
+motif écrit pour eux collerait au thermomètre au lieu de détecter quoi que ce
+soit ; **9 en `pathtraver`** viennent d'une variable d'environnement, que la
+remise d'accessibilité déclasse à dessein, parce que qui fournit
+l'environnement tient déjà le système de fichiers de ce processus.
 
-Les 4,2 points qui manquent encore ne sont plus des catégories mais des cas
-manqués à l'intérieur de celles qui marchent, et ils ont été comptés un par
-un : sur 556 manqués, **282 — la moitié — ont pour source une lecture en
-base**, refusée deux fois sur mesure ; 26 viennent d'une variable
-d'environnement ou d'un fichier de configuration, que la remise
-d'accessibilité déclasse à dessein ; 9 d'une file de messages. Ce qui reste
-est un reliquat.
-
-Ce qui a produit ces quarante points, dans l'ordre où ça a été mesuré :
+Ce qui a produit ces quarante-six points, dans l'ordre où ça a été mesuré :
 
 | changement | J |
 |---|---|
@@ -1308,28 +1312,50 @@ Ce qui a produit ces quarante points, dans l'ordre où ça a été mesuré :
 | la teinte traverse une fermeture `nonlocal` | +47,7 % |
 | Django écrit trois de ses sources en capitales | +48,0 % |
 | `HTMLResponse` déclare du HTML, `html.escape` en protège | +49,0 % |
-| une vue qui retourne une chaîne retourne du HTML | **+49,9 %** |
+| une vue qui retourne une chaîne retourne du HTML | +49,9 % |
+| une preuve ne vaut que ce qu'elle prouve, et l'identifiant SQL cité | +50,0 % |
+| un programme écrit dans une chaîne reste un programme | +50,4 % |
+| les paramètres d'une route viennent du réseau | +50,4 % |
+| la réponse d'un tiers n'est pas la donnée de ce programme | +50,6 % |
+| un fichier que le programme nomme `secrets` dit ce qu'il contient | +51,2 % |
+| ce que la base rend est ce que quelqu'un y a mis | +53,9 % |
+| une ligne de journal se termine par un saut de ligne, comme un en-tête | +55,5 % |
+| une route qui retourne la page construite une ligne plus haut | **+55,5 %** |
 
-Trois de ces changements ont été **refusés** après mesure, et c'est le
-thermomètre qui les a refusés : traiter une lecture en base comme une source
-non fiable (436 cas vulnérables, 343 sains — autant de bruit que de signal),
-`clickjacking` (23 faux positifs sur ce dépôt), et `weak_password_hash`, qui
-sépare pourtant parfaitement ce corpus — chaque cas vulnérable est
-`hashlib.sha256`, chaque cas sain `pbkdf2_hmac`. La règle vaudrait 1,6 point
-et tirerait sur toutes les sommes de contrôle, tous les ETag et tous les HMAC
-d'un dépôt réel ; aucun cas du corpus ne nomme un mot de passe.
+Deux de ces changements avaient d'abord été **refusés** après mesure, et c'est
+le thermomètre qui les avait refusés : `clickjacking`, qui coûtait 23 faux
+positifs sur ce dépôt, et `weak_password_hash`, qui sépare pourtant
+parfaitement ce corpus — chaque cas vulnérable est `hashlib.sha256`, chaque
+cas sain `pbkdf2_hmac`. Ils le restent, pour la raison dite plus haut : rien
+dans ces lignes ne dit qu'il s'agit d'un mot de passe, et la règle tirerait
+sur chaque somme de contrôle d'un dépôt réel.
+
+Un troisième refus a été **levé**, et c'est le plus instructif du lot. Traiter
+une lecture en base comme une source non fiable avait été mesuré deux fois et
+rejeté deux fois : 436 cas vulnérables contre 343 sains la première fois, 11
+contre 13 quand on l'a restreinte au XSS stocké — où la moitié *saine* lit en
+base plus souvent que l'autre. Les deux lectures étaient justes sur le
+programme d'alors. Ce qui a changé n'est pas le corpus : ce sont les défenses
+de la moitié saine, qui sont désormais comprises une par une — le chiffrement,
+les échappements HTML et le rendu auto-échappé, la neutralisation CR/LF, la
+liste blanche d'hôtes et la plage d'IP résolue, la garde positive,
+l'identifiant SQL cité. Un cas sain qui lit une ligne puis la chiffre est
+dédouané *par le chiffrement*, et non par le fait que personne n'a vu la
+ligne. La même règle qui coûtait 343 inventions en coûte zéro, et rapporte
+2,7 points sur seize catégories à la fois. Un refus mesuré n'est vrai que du
+jour où il a été mesuré.
 
 Les cinq règles d'injection LDAP / XPath / NoSQL / SSTI / EL avaient elles
 aussi été refusées, sur un J mesuré à **0,000** : elles tiraient autant sur la
-moitié saine que sur l'autre. Quatre d'entre elles marchent aujourd'hui, entre
-+76,0 % et +90,0 % et sans un seul faux positif, et ce n'est pas le verdict qui
-a changé d'avis — c'est ce qu'on leur a donné à lire. Chacune ne regarde plus
-que l'argument qui porte l'injection (le filtre LDAP est le troisième, la
-source du template est le premier), et `sink.nosql` passe par une barrière sur
-le texte de la requête plutôt que sur l'import, parce que `.find(` appartient
-à toutes les chaînes de Python. La cinquième, `el_injection`, reste refusée :
-c'est le même appel `Template(…)` que `ssti`, étiqueté d'une autre classe, et
-lui donner ce nom-là serait payer un point pour une inexactitude.
+moitié saine que sur l'autre. Quatre d'entre elles sont aujourd'hui à
+**+100,0 %** sans un seul faux positif, et ce n'est pas le verdict qui a changé
+d'avis — c'est ce qu'on leur a donné à lire. Chacune ne regarde plus que
+l'argument qui porte l'injection (le filtre LDAP est le troisième, la source du
+template est le premier), et `sink.nosql` passe par une barrière sur le texte de
+la requête plutôt que sur l'import, parce que `.find(` appartient à toutes les
+chaînes de Python. La cinquième, `el_injection`, reste refusée : c'est le même
+appel `Template(…)` que `ssti`, étiqueté d'une autre classe, et lui donner ce
+nom-là serait payer un point pour une inexactitude.
 
 ### La précision ne s'achète pas avec un angle mort
 
