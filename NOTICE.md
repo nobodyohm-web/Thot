@@ -11,6 +11,11 @@ thing and conflating them would be dishonest:
 * **adapted** — the design is upstream's, the code is Thot's;
 * **shared** — a format both programs read, invented by neither.
 
+The root `LICENSE` is MIT and covers the work in `src/`, `tests/`,
+`plugins/`, `commands/` and `prime-skill/`. It covers nothing else in this
+repository. Everything else is listed below with the licence it actually
+carries — including one directory that is AGPL-3.0, not MIT.
+
 Two of those parts are whole upstream repositories, vendored into this tree
 rather than depended upon: `hermes/` (9 890 files) and `prime/` (1 133) are
 checkouts of the programs named below, each carrying its own `LICENSE`. They

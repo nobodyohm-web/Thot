@@ -34,6 +34,19 @@ AWS et GitHub d'apparence valide, syntaxiquement corrects et rattachés à
 aucun compte, servent à vérifier que le détecteur de secrets les voit. Ils ne
 sont pas exploitables et leur retrait rendrait le détecteur non testé.
 
+## Ce que Thot signale à tort sur lui-même
+
+L'audit tourne en intégration continue et son rapport est joint à chaque
+exécution. Un des findings est faux, et le dire vaut mieux que le faire taire.
+
+`src/thot/session.py`, `sink.sql` — le sink est `kernel.execute(code)`. Le
+moteur voit un appel nommé `execute` qui reçoit une chaîne construite et
+conclut à une requête. Il n'y a pas de base de données : c'est le noyau
+Python qui reçoit une cellule. Le même motif a déjà été resserré une fois
+(`fix(taint): \`execute\` is a method name, not a database`) et il subsiste
+ici. Rien ne le masque, parce qu'un scanner qui cache ses faux positifs
+n'apprend plus rien de personne.
+
 ## Hors périmètre
 
 `hermes/` et `prime/` sont du code tiers redistribué tel quel, décrit dans
