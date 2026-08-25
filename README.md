@@ -1213,18 +1213,20 @@ monter `provenance` — fait tomber le TPR. Tout signaler donne TPR 100 %, FPR
 
 ```
                         avant      après
-TPR                      9.9 %     34.4 %
+TPR                      9.9 %     45.6 %
 FPR                      0.5 %      0.0 %
-J de Youden             +9.4 %    +34.4 %
-catégories actives          10         24
+J de Youden             +9.4 %    +45.6 %
+catégories actives          10         32
 catégories négatives         0          0
 ```
 
 « Avant » est l'état du programme au moment où le thermomètre a existé pour la
 première fois. « Après » est le même corpus, le même plancher, la même
-commande. Le hold-out le confirme : flask tenu à l'écart note **+33,3 %**,
-django tenu à l'écart **+35,9 %** — à moins de deux points de l'entraînement,
-donc les règles marchent sur du code qu'elles n'ont pas servi à écrire.
+commande. Le hold-out le confirme, et de trois façons : django tenu à l'écart
+note **+46,9 %** contre +44,9 % à l'entraînement, fastapi **+44,8 %** contre
++45,9 %, flask **+45,0 %** contre +45,8 %. Jamais plus de deux points d'écart,
+et une fois en faveur du tenu à l'écart — les règles marchent sur du code
+qu'elles n'ont pas servi à écrire.
 
 Par catégorie, ce que le moteur sait faire aujourd'hui :
 
@@ -1233,15 +1235,42 @@ xxe · tlsverify · weakhash · weakrand · weakcipher · weakkeylength
 hardcodedcreds · default_credentials · cleartexttransmit · errormessage
 debug_code_production · cookie_no_httponly · cookie_no_samesite
 securecookie · directory_listing_exposure                      +100,0 %
-deserial  +98,0 %   cmdi  +93,3 %   codeinj  +86,0 %
-eval_injection  +84,0 %   sqli  +82,7 %   cloud_ssrf_metadata  +78,7 %
-ssrf  +64,7 %   pathtraver  +56,0 %   xss / basic_xss  +26,7 %
+deserial  +98,0 %   cmdi  +93,3 %   ldapi  +90,0 %
+corsmisconfig  +90,0 %   codeinj  +86,0 %   eval_injection  +84,0 %
+xpathi  +84,0 %   csv_injection  +84,0 %   sqli  +82,7 %
+nosql  +82,0 %   crlfinjection  +82,0 %   cloud_ssrf_metadata  +78,7 %
+redirect  +78,0 %   ssti  +76,0 %   ssrf  +64,7 %
+pathtraver  +56,0 %   xss / basic_xss  +26,7 %
 ```
 
 **Zéro faux positif** sur l'ensemble des 18 300 cas, et aucune catégorie
 négative. Le point de départ était `ssrf` à −8,0 % et `xxe` à −100 %.
 
-Ce qui a produit ces vingt-cinq points, dans l'ordre où ça a été mesuré :
+### Le plafond, parce qu'un chiffre sans son maximum ne veut rien dire
+
++45,6 % n'est pas « 46 % du problème résolu ». Sur les 61 catégories, **24 ne
+sont pas atteignables**, et pour deux raisons distinctes qui ont toutes deux
+été vérifiées cas par cas.
+
+**Dix sont vues mais mal nommées.** Thot tire sur les bons fichiers et annonce
+une autre classe que l'étiquette, parce que le corpus écrit des CWE différents
+sur du code identique — `el_injection` et `ssti` sont le même appel
+`Template(données)`, `loginjection` et `sensinlogs` le même `logging.info`.
+Les mappings qui rattraperaient ces points ont été instruits un par un et tous
+rejetés : ils paieraient un point contre une inexactitude taxonomique.
+
+**Quatorze n'ont aucun sink.** `authzfailure`, `idor`, `intoverflow`,
+`null_deref`, `privescalation` et les autres finissent toutes sur un
+`return JsonResponse(...)` sans un seul appel dangereux : ce sont des défauts
+de logique — une autorisation absente, un entier qui déborde — et aucune
+analyse de teinte ne les voit, quelle que soit la règle qu'on écrive.
+
+Reste **37 catégories atteignables, soit un plafond de +60,7 %**. À +45,6 %,
+c'est **75 % de ce qui est atteignable** — et les cinq catégories encore
+gagnables sont nommées dans le journal de reprise, chacune avec le mécanisme
+qui lui manque.
+
+Ce qui a produit ces trente-six points, dans l'ordre où ça a été mesuré :
 
 | changement | J |
 |---|---|
@@ -1255,14 +1284,32 @@ Ce qui a produit ces vingt-cinq points, dans l'ordre où ça a été mesuré :
 | confinement de chemin et liste blanche nommée | +15,5 % |
 | `mark_safe` comme sink, `bleach` comme neutralisation HTML | +16,3 % |
 | douze règles de motif à une ligne | +27,8 % |
-| un motif ne paie plus la remise d'accessibilité | **+34,4 %** |
+| un motif ne paie plus la remise d'accessibilité | +34,4 % |
+| `sink.redirect`, et la preuve par hôte séparée de la preuve par plage | +35,6 % |
+| quatre sinks d'injection : template, XPath, LDAP, NoSQL | +40,8 % |
+| en-têtes de réponse, garde positive, neutralisation CR/LF | +44,2 % |
+| une cellule de tableur n'est pas une ligne de texte | **+45,6 %** |
 
 Trois de ces changements ont été **refusés** après mesure, et c'est le
 thermomètre qui les a refusés : traiter une lecture en base comme une source
 non fiable (436 cas vulnérables, 343 sains — autant de bruit que de signal),
-`clickjacking` (23 faux positifs sur ce dépôt), et les cinq règles
-d'injection LDAP/XPath/NoSQL/SSTI/EL, dont le J mesuré est exactement
-**0,000** : elles tirent autant sur la moitié saine que sur l'autre.
+`clickjacking` (23 faux positifs sur ce dépôt), et `weak_password_hash`, qui
+sépare pourtant parfaitement ce corpus — chaque cas vulnérable est
+`hashlib.sha256`, chaque cas sain `pbkdf2_hmac`. La règle vaudrait 1,6 point
+et tirerait sur toutes les sommes de contrôle, tous les ETag et tous les HMAC
+d'un dépôt réel ; aucun cas du corpus ne nomme un mot de passe.
+
+Les cinq règles d'injection LDAP / XPath / NoSQL / SSTI / EL avaient elles
+aussi été refusées, sur un J mesuré à **0,000** : elles tiraient autant sur la
+moitié saine que sur l'autre. Quatre d'entre elles marchent aujourd'hui, entre
++76,0 % et +90,0 % et sans un seul faux positif, et ce n'est pas le verdict qui
+a changé d'avis — c'est ce qu'on leur a donné à lire. Chacune ne regarde plus
+que l'argument qui porte l'injection (le filtre LDAP est le troisième, la
+source du template est le premier), et `sink.nosql` passe par une barrière sur
+le texte de la requête plutôt que sur l'import, parce que `.find(` appartient
+à toutes les chaînes de Python. La cinquième, `el_injection`, reste refusée :
+c'est le même appel `Template(…)` que `ssti`, étiqueté d'une autre classe, et
+lui donner ce nom-là serait payer un point pour une inexactitude.
 
 ### La précision ne s'achète pas avec un angle mort
 
