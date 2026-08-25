@@ -1273,8 +1273,17 @@ middleware. `weak_password_hash` sépare pourtant parfaitement ce corpus —
 chaque cas vulnérable est `hashlib.sha256`, chaque cas sain `pbkdf2_hmac` —
 mais aucune de ces lignes ne dit que la valeur est un mot de passe, et la
 règle tirerait sur toutes les sommes de contrôle, tous les ETag et tous les
-HMAC d'un dépôt réel. Ce sont des défauts de logique ou des contrôles absents ;
-aucune analyse de teinte ne les voit, quelle que soit la règle qu'on écrive.
+HMAC d'un dépôt réel. Deux dernières ont été rouvertes avec l'idée qu'elles étaient peut-être du
+code après tout, et ferment pour une raison qu'il vaut la peine d'écrire.
+`intoverflow` manufacture sa faiblesse avec `ctypes.c_int32` — **les entiers
+Python ne débordent pas**, et une règle qui tire sur `ctypes` serait une règle
+sur BenchProctor. `resourceexhaust` est `bytearray(int(données))` sans borne
+contre `bytearray(min(…, 1024))`, et le séparateur est un unique jeton `min` ;
+mais `bytearray(x)` veut dire deux choses selon que `x` est un entier ou un
+tampon, Thot n'infère pas les types, et sur `hermes/` les 102 appels de cette
+famille sont des conversions et non des allocations. Ce sont des défauts de
+logique ou des contrôles absents ; aucune analyse de teinte ne les voit,
+quelle que soit la règle qu'on écrive.
 
 Reste donc **34 catégories gagnables honnêtement, soit +55,7 %**. Elles sont
 toutes actives. À +55,5 %, c'est **99,6 % du maximum honnête**.
