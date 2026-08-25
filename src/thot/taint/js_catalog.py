@@ -230,12 +230,36 @@ _ONE_DOWN = {
 }
 
 
-# A tainted value that passes through one of these stops being tainted.
+# A tainted value that passes through one of these stops being tainted,
+# wherever it is going afterwards. `encodeURIComponent` percent-encodes every
+# character a shell reads; `parseInt` returns a number.
 SANITIZERS: frozenset[str] = frozenset({
-    "encodeURIComponent", "encodeURI", "escape", "escapeHtml", "escapeHTML",
+    "encodeURIComponent", "encodeURI",
     "Number", "parseInt", "parseFloat", "BigInt", "Boolean",
-    "basename", "sanitize", "sanitizeHtml", "quote", "shellQuote",
+    "basename", "quote", "shellQuote",
     "validate", "assertSafe",
+})
+
+# Neutralisations that hold for HTML and for nothing else, kept apart for the
+# same reason `codemap.catalog` keeps `html.escape` apart: they turn five
+# characters into entities, or strip tags, and leave `; rm -rf /` exactly as
+# they found it. In the general list — where they were — they broke the chain
+# outright, and `exec("ping " + escapeHtml(host))` was silenced by a defence
+# that does not defend it.
+#
+# `escape` is here rather than above because the name is ambiguous — lodash's
+# is HTML, the global one is a deprecated URL encoder — and the conservative
+# reading of an ambiguous escape is the narrower one.
+HTML_SANITIZERS: frozenset[str] = frozenset({
+    "escape", "escapeHtml", "escapeHTML", "sanitize", "sanitizeHtml",
+    "purify", "DOMPurify",
+})
+
+# The sinks an HTML neutralisation is allowed to clear. A redirect is not one
+# of them: escaping a URL's angle brackets says nothing about where it sends
+# somebody.
+HTML_SINKS: frozenset[str] = frozenset({
+    "sink.js.html", "sink.js.dangerous_html",
 })
 
 # What the file must be importing for a `needs` rule to fire.

@@ -1011,3 +1011,65 @@ def test_the_discount_does_not_reach_the_shell_in_javascript(tmp_path):
         }
         """)
     assert [c.impact for c in found] == [Severity.CRITICAL]
+
+
+def test_an_html_escape_proves_nothing_to_a_shell(tmp_path):
+    """`escapeHtml` turns five characters into entities. A semicolon is not
+    one of them, and neither is a backtick, a pipe or `$(`.
+
+    It sat in the general sanitiser list, where a sanitiser breaks the chain
+    outright — the same mistake the Python catalogue made with `html.escape`,
+    and the same fix: the escape is real, and it clears the destination it
+    covers and no other."""
+    found = scan(tmp_path, REQUIRE + """
+        const escapeHtml = require("escape-html");
+        function handler(req, res) {
+          const target = escapeHtml(req.query.host);
+          exec("ping -c1 " + target);
+        }
+    """)
+    assert [c.rule for c in found] == ["sink.js.exec"]
+
+
+def test_an_html_escape_written_inside_the_call_proves_nothing_either(tmp_path):
+    found = scan(tmp_path, REQUIRE + """
+        const escapeHtml = require("escape-html");
+        function handler(req, res) {
+          exec("ping -c1 " + escapeHtml(req.query.host));
+        }
+    """)
+    assert [c.rule for c in found] == ["sink.js.exec"]
+
+
+def test_the_same_escape_still_clears_a_page(tmp_path):
+    """What the change must not cost. The escape is an escape; the only
+    question is which destination it is allowed to clear."""
+    found = scan(tmp_path, """
+        const escapeHtml = require("escape-html");
+        function handler(req, res) {
+          const safe = escapeHtml(req.query.name);
+          res.send("<div>" + safe + "</div>");
+        }
+    """)
+    assert found == []
+
+
+def test_and_still_clears_one_written_inside_the_call(tmp_path):
+    found = scan(tmp_path, """
+        const escapeHtml = require("escape-html");
+        function handler(req, res) {
+          res.send("<div>" + escapeHtml(req.query.name) + "</div>");
+        }
+    """)
+    assert found == []
+
+
+def test_encodeuricomponent_still_clears_everything(tmp_path):
+    """It percent-encodes every character a shell reads, which is why it is
+    a general sanitiser and the HTML escapes are not."""
+    found = scan(tmp_path, REQUIRE + """
+        function handler(req, res) {
+          exec("curl " + encodeURIComponent(req.query.url));
+        }
+    """)
+    assert found == []

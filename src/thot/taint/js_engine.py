@@ -39,7 +39,8 @@ from thot.codemap.ts_indexer import EXTENSIONS, _line_of, read_masked
 from thot.contracts import CodeRef, Symbol
 from thot.scope.detect import source_versions
 from thot.taint.js_catalog import (
-    PROTOTYPE_GUARDS, active, bindings, imports, using,
+    HTML_SANITIZERS, HTML_SINKS, PROTOTYPE_GUARDS, active, bindings, imports,
+    using,
 )
 
 _IDENT = r"[A-Za-z_$][A-Za-z0-9_$]*"
@@ -239,13 +240,59 @@ def _source_in(text: str) -> str | None:
     return None
 
 
-def _sanitised(text: str) -> bool:
+def _sanitised(text: str, names: frozenset[str] | None = None) -> bool:
     """Whether the value is wrapped in something that neutralises it."""
     head = text.strip()
     match = re.match(rf"({_IDENT}(?:\.{_IDENT})*)\s*\(", head)
     if not match:
         return False
-    return match.group(1).split(".")[-1] in active().sanitizers
+    pool = active().sanitizers if names is None else names
+    return match.group(1).split(".")[-1] in pool
+
+
+# How many neutralising calls are peeled out of one fragment before giving
+# up. A fragment interpolating more than this many escaped values is not a
+# fragment anybody wrote by hand.
+_PEEL_ROUNDS = 16
+
+
+def _without_neutralised(text: str, names: frozenset[str]) -> str:
+    """The fragment with every neutralising call, and its argument, removed.
+
+    `_sanitised` only ever recognised a call wrapping the *whole* value, and
+    that is not how anyone writes it: `exec("curl " + encodeURIComponent(u))`
+    is a concatenation, so the check looked at `"curl " + …`, found no
+    identifier at the front, and reported a percent-encoded URL as a command
+    injection. Removing what is neutralised and asking the question again
+    costs nothing and keeps the other operands: `exec(escape(a) + b)` still
+    reports `b`.
+    """
+    out = text
+    for _ in range(_PEEL_ROUNDS):
+        for match in re.finditer(rf"({_IDENT}(?:\.{_IDENT})*)\s*\(", out):
+            if match.group(1).split(".")[-1] not in names:
+                continue
+            opening = out.find("(", match.start())
+            if opening == -1:
+                continue
+            inner = _arguments(out, match.start())
+            if not inner and out[opening : opening + 2] != "()":
+                # Never closed inside `ARGUMENT_LIMIT`; not a call this can
+                # read, and cutting to the end of the file would erase the
+                # rest of the fragment with it.
+                continue
+            out = out[: match.start()] + '""' + out[opening + len(inner) + 2 :]
+            break
+        else:
+            break
+    return out
+
+
+def _clears(rule_id: str) -> frozenset[str]:
+    """The neutralisations a given sink accepts."""
+    if rule_id in HTML_SINKS:
+        return active().sanitizers | HTML_SANITIZERS
+    return active().sanitizers
 
 
 # Past this, it is not an argument list. Profiled on Prime: `_split_arguments`
@@ -452,6 +499,10 @@ def _scan_body(
     tainted: dict[str, str] = dict(seeded or {})
     origin: dict[str, int] = {}    # variable -> line where it became tainted
     guarded: set[str] = set()      # keys the author already refused by name
+    # Names an HTML-only escape covers. Kept apart from `tainted` for the
+    # reason the Python engine keeps `destination_safe` apart: popping them
+    # there would clear every sink, and `escapeHtml` is not a shell quote.
+    html_safe: set[str] = set()
     found = []
     seen_sites: dict[str, int] = {}
     module = relative.rsplit(".", 1)[0].replace("/", ".")
@@ -556,12 +607,17 @@ def _scan_body(
                         [parts[i] for i in rule.dangerous_args if i < len(parts)]
                         if rule.dangerous_args else parts
                     )
-                    fragment = ",".join(watched)
+                    fragment = _without_neutralised(
+                        ",".join(watched), _clears(rule.id))
                     culprit = _reads_tainted(fragment, tainted)
+                    if culprit is not None and rule.id in HTML_SINKS \
+                            and culprit in html_safe:
+                        # Escaped at the assignment, and that proof reaches
+                        # here and no further: the same name handed to `exec`
+                        # is still a command.
+                        culprit = None
                     direct = None if culprit else _source_in(fragment)
                     if not culprit and not direct:
-                        continue
-                    if not culprit and _sanitised(fragment):
                         continue
                     seen_before = seen_sites.get(name, 0)
                     seen_sites[name] = seen_before + 1
@@ -733,7 +789,12 @@ def _scan_body(
             name, value = assigned.group(1), assigned.group(2)
             if _sanitised(value):
                 tainted.pop(name, None)
+                html_safe.discard(name)
                 continue
+            if _sanitised(value, HTML_SANITIZERS):
+                html_safe.add(name)
+            else:
+                html_safe.discard(name)
             mark = _source_in(value)
             if mark is None:
                 culprit = _reads_tainted(value, tainted)
