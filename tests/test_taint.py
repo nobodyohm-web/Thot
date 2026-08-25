@@ -2232,3 +2232,71 @@ def test_django_spells_two_of_its_sources_in_capitals(tmp_path):
     assert [(f.rule, f.severity) for f in found] == [
         ("sink.fs.read", Severity.MEDIUM)
     ]
+
+
+# -- a response that declares itself HTML ----------------------------------
+
+
+def test_an_html_response_built_from_a_request_value_is_xss(tmp_path):
+    """`HTMLResponse` is not `HttpResponse`. Django's escapes on the way out
+    and returning a value through it is what a view does — which is why it is
+    deliberately absent from this catalogue. Starlette's *declares* the body
+    to be HTML and escapes nothing."""
+    found = _findings(tmp_path, (
+        "from fastapi import Request\n"
+        "from starlette.responses import HTMLResponse\n\n"
+        "@app.post('/x')\n"
+        "async def handler(request: Request):\n"
+        "    data = request.headers.get('referer', '')\n"
+        "    return HTMLResponse('<div>' + str(data) + '</div>')\n"
+    ))
+    assert [f.rule for f in found] == ["sink.xss"]
+
+
+def test_html_escape_from_the_standard_library_clears_it(tmp_path):
+    """`markupsafe.escape` and `bleach.clean` were known; the one in the
+    standard library was not, and the corpus reaches for it 66 times."""
+    found = _findings(tmp_path, (
+        "import html\n"
+        "from fastapi import Request\n"
+        "from starlette.responses import HTMLResponse\n\n"
+        "@app.post('/x')\n"
+        "async def handler(request: Request):\n"
+        "    data = request.headers.get('referer', '')\n"
+        "    safe = html.escape(str(data))\n"
+        "    return HTMLResponse('<div>' + safe + '</div>')\n"
+    ))
+    assert found == []
+
+
+def test_an_autoescaping_render_of_a_literal_template_clears_it(tmp_path):
+    """Two facts together, and neither alone would do: the template is a
+    constant, so this is not template injection, and the environment escapes,
+    so the value it interpolates cannot close a tag."""
+    found = _findings(tmp_path, (
+        "from jinja2 import Environment\n"
+        "from fastapi import Request\n"
+        "from starlette.responses import HTMLResponse\n\n"
+        "@app.post('/x')\n"
+        "async def handler(request: Request):\n"
+        "    data = request.headers.get('referer', '')\n"
+        "    return HTMLResponse(Environment(autoescape=True)"
+        ".from_string('{{ value }}').render(value=data))\n"
+    ))
+    assert found == []
+
+
+def test_an_environment_that_does_not_escape_proves_nothing(tmp_path):
+    """The keyword is the proof. Without it Jinja2 does not escape, and the
+    same call is the same bug."""
+    found = _findings(tmp_path, (
+        "from jinja2 import Environment\n"
+        "from fastapi import Request\n"
+        "from starlette.responses import HTMLResponse\n\n"
+        "@app.post('/x')\n"
+        "async def handler(request: Request):\n"
+        "    data = request.headers.get('referer', '')\n"
+        "    return HTMLResponse(Environment(autoescape=False)"
+        ".from_string('{{ value }}').render(value=data))\n"
+    ))
+    assert [f.rule for f in found] == ["sink.xss"]

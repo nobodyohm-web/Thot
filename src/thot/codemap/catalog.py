@@ -112,7 +112,16 @@ DEFAULT_SINKS: tuple[SinkRule, ...] = (
         # three hundred cases and separated nothing.
         patterns=("mark_safe", "django.utils.safestring.mark_safe",
                   "format_html", "Markup", "markupsafe.Markup",
-                  "flask.Markup", "jinja2.Markup"),
+                  "flask.Markup", "jinja2.Markup",
+                  # And one that is not an escape hatch but a declaration.
+                  # `HTMLResponse` is not `HttpResponse`: Django's escapes on
+                  # the way out, which is why returning a value through it is
+                  # what a view does and why it stays absent from this list.
+                  # Starlette's sets the content type to HTML and escapes
+                  # nothing, so a body built by concatenation is the bug
+                  # itself.
+                  "HTMLResponse", "starlette.responses.HTMLResponse",
+                  "fastapi.responses.HTMLResponse"),
         impact=Severity.HIGH,
         description="HTML rendu sans échappement",
         match_mode="bare",
@@ -490,6 +499,10 @@ SANITIZERS: frozenset[str] = frozenset(
 HTML_SANITIZERS: frozenset[str] = frozenset(
     {
         "bleach.clean", "bleach.linkify", "nh3.clean",
+        # The one in the standard library. `markupsafe.escape` and
+        # `bleach.clean` were here and this was not, and it is what a program
+        # with no dependency reaches for — 66 times in the corpus.
+        "html.escape", "cgi.escape",
         "markupsafe.escape", "django.utils.html.escape",
         "django.utils.html.escapejs", "flask.escape",
     }

@@ -663,6 +663,58 @@ def _header_targets(node: ast.AST) -> list[tuple[str, ast.expr]]:
     return found
 
 
+def _autoescaped_names(value: ast.AST) -> set[str]:
+    """Names that reach an escaping render and go no further.
+
+    Only the names *inside* the render, never the whole expression: the
+    corpus writes `HTMLResponse('<div>' + render(...) + suffix)`, and
+    clearing the expression would clear `suffix` for free.
+    """
+    found: set[str] = set()
+    for node in ast.walk(value):
+        if isinstance(node, ast.Call) and _autoescaped_render(node):
+            found |= _referenced_names(node)
+    return found
+
+
+def _autoescaped_render(value: ast.AST) -> bool:
+    """Whether this expression renders a *constant* template through an
+    environment that escapes.
+
+    Two facts, and neither alone would do. The template being a literal is
+    what makes this not template injection — `sink.template` reads the same
+    first argument and finds a constant. The environment escaping is what
+    makes the interpolated value unable to close a tag. Written without the
+    keyword, Jinja2 does not escape and the same call is the same bug, so
+    the keyword is read rather than assumed.
+    """
+    for node in ast.walk(value):
+        if not (isinstance(node, ast.Call)
+                and isinstance(node.func, ast.Attribute)
+                and node.func.attr == "render"):
+            continue
+        current = node.func.value
+        literal_template = False
+        escaping = False
+        while isinstance(current, ast.Call):
+            name = _called_name(current) or ""
+            if name.rpartition(".")[2] in ("from_string", "get_template"):
+                literal_template = bool(current.args) and isinstance(
+                    current.args[0], ast.Constant)
+            if name.rpartition(".")[2] in ("Environment", "SandboxedEnvironment"):
+                escaping = any(
+                    word.arg == "autoescape"
+                    and isinstance(word.value, ast.Constant)
+                    and word.value.value is True
+                    for word in current.keywords
+                )
+            current = (current.func.value
+                       if isinstance(current.func, ast.Attribute) else None)
+        if literal_template and escaping:
+            return True
+    return False
+
+
 def _crlf_stripped_base(value: ast.AST) -> ast.AST | None:
     """The expression a `.replace('\\r','').replace('\\n','')` chain cleans.
 
@@ -1138,7 +1190,9 @@ def _analyse_body(symbol: Symbol, node: ast.AST,
             return
         name = names[0]
         derives[name] = frozenset(_referenced_names(value))
-        if isinstance(value, ast.Call) and is_html_sanitizer(_called_name(value) or ""):
+        if isinstance(value, ast.Call) and (
+                is_html_sanitizer(_called_name(value) or "")
+                or _autoescaped_render(value)):
             # Proved for HTML and for nothing else, so it goes with the other
             # destination proofs rather than into `tainted`.
             facts.destination_safe.setdefault("html", set()).add(name)
@@ -1429,7 +1483,8 @@ def _analyse_body(symbol: Symbol, node: ast.AST,
 
             argument_refs: set[str] = set()
             for argument in considered:
-                argument_refs |= _referenced_names(argument)
+                argument_refs |= (_referenced_names(argument)
+                                  - _autoescaped_names(argument))
 
             if rule is not None and not _sink_applies(rule.id, child):
                 rule = None
