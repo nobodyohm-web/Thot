@@ -1243,6 +1243,16 @@ def _imports(package: str, imported: frozenset[str]) -> bool:
                for name in imported)
 
 
+# Proofs written inside the sink call itself, by the family they prove. The
+# ones established at an assignment live in `facts.destination_safe`; these
+# have no name to be recorded against, so the sink site asks for them — and
+# only for the families its own rule accepts.
+_INLINE_PROOFS = {
+    "html": _html_only_names,
+    "sql": _quoted_identifier_names,
+}
+
+
 def _analyse_body(symbol: Symbol, node: ast.AST,
                   imported: frozenset[str] = frozenset()) -> _Facts:
     facts = _Facts(symbol=symbol)
@@ -1778,23 +1788,26 @@ def _analyse_body(symbol: Symbol, node: ast.AST,
                 considered = list(child.args) + [k.value for k in child.keywords]
 
             argument_refs: set[str] = set()
-            proved: dict[str, set[str]] = {"html": set(), "sql": set()}
             for argument in considered:
                 argument_refs |= _referenced_names(argument)
-                proved["html"] |= _html_only_names(argument)
-                proved["sql"] |= _quoted_identifier_names(argument)
 
             if rule is not None and not _sink_applies(rule.id, child):
                 rule = None
 
             if rule is not None:
-                # Subtracted here and not above: an escape written inside the
-                # call proves what it proves for *this* destination. Removed
+                # Asked here and not above: an escape written inside the call
+                # proves what it proves for *this* destination. Subtracted
                 # from every argument set, `HTMLResponse(html.escape(x))` on
-                # one line would have cleared `os.system(x)` on the next.
+                # one line would have cleared `os.system(x)` on the next — and
+                # asking the question at every call in the file, sink or not,
+                # is work for the great majority of calls that are neither.
                 cleared: set[str] = set()
                 for family in _proves_for(rule.id):
-                    cleared |= proved.get(family, set())
+                    finder = _INLINE_PROOFS.get(family)
+                    if finder is None:
+                        continue
+                    for argument in considered:
+                        cleared |= finder(argument)
                 facts.sink_calls.append((
                     rule.id, ref,
                     tuple(sorted(argument_refs - cleared - under_guard())),
