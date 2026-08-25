@@ -167,11 +167,41 @@ def _referenced_names(node: ast.AST, *, through_sanitizers: bool = False) -> set
                 names.add(full)
             visit(current.value)
             return
+        if isinstance(current, (ast.GeneratorExp, ast.ListComp, ast.SetComp)) \
+                and not _reads_its_loop(current):
+            # `','.join('?' for _ in ids)` — the correct way to parameterise
+            # an `IN` clause, and the shape a taint engine most often gets
+            # wrong. What comes out is a string of question marks whose
+            # length is the number of ids and whose content is the author's;
+            # the loop variable is never read, so nothing of the ids is in
+            # it. Only the iterables are dropped: a tainted name written in
+            # the element is in the output whatever is being looped over,
+            # and so is one read by a filter.
+            visit(current.elt)
+            for clause in current.generators:
+                for condition in clause.ifs:
+                    visit(condition)
+            return
         for child in ast.iter_child_nodes(current):
             visit(child)
 
     visit(node)
     return names
+
+
+def _reads_its_loop(node: ast.AST) -> bool:
+    """Whether a comprehension's element names anything it iterates over.
+
+    The targets of every clause, because `[a for a in xs for b in ys]` binds
+    two and either one is enough to carry the values through.
+    """
+    bound: set[str] = set()
+    for clause in node.generators:
+        for target in ast.walk(clause.target):
+            if isinstance(target, ast.Name):
+                bound.add(target.id)
+    return any(isinstance(one, ast.Name) and one.id in bound
+               for one in ast.walk(node.elt))
 
 
 def _literal_choice(node: ast.IfExp) -> bool:

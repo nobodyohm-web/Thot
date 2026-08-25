@@ -2844,3 +2844,48 @@ def test_a_stored_value_that_was_escaped_is_still_escaped(tmp_path):
         "    os.system('echo ' + shlex.quote(str(bio)))\n"
     ))
     assert found == []
+
+
+def test_a_row_of_placeholders_carries_no_row(tmp_path):
+    """`','.join('?' for _ in ids)` is the correct way to parameterise an
+    `IN` clause, and it is the shape a taint engine most often gets wrong.
+    What comes out is a string of question marks whose length is the number
+    of ids; the loop variable is never read, so nothing of the ids is in it.
+
+    Found by running the new stored-value source over hermes, where this is
+    `gateway/platforms/api_server.py:943`."""
+    found = _findings(tmp_path, (
+        "from app_runtime import db\n\n\n"
+        "def main():\n"
+        "    ids = db.fetchall('SELECT id FROM responses')\n"
+        "    marks = ','.join('?' for _ in ids)\n"
+        "    db.execute('DELETE FROM responses WHERE id IN (' + marks + ')',"
+        " ids)\n"
+    ))
+    assert found == []
+
+
+def test_a_comprehension_that_reads_what_it_iterates_still_carries_it(tmp_path):
+    """The whole distinction. Name the loop variable in the element and the
+    values are the values."""
+    found = _findings(tmp_path, (
+        "from app_runtime import db\n\n\n"
+        "def main():\n"
+        "    ids = db.fetchall('SELECT id FROM responses')\n"
+        "    inline = ','.join(str(one) for one in ids)\n"
+        "    db.execute('DELETE FROM responses WHERE id IN (' + inline + ')')\n"
+    ))
+    assert [f.rule for f in found] == ["sink.sql"]
+
+
+def test_a_comprehension_still_carries_what_it_reads_from_outside(tmp_path):
+    """Dropping the iterable is not dropping the expression: a tainted value
+    named in the element is in the output whatever is being looped over."""
+    found = _findings(tmp_path, (
+        "from app_runtime import db\n\n\n"
+        "def main():\n"
+        "    name = db.fetch_one('SELECT name FROM t')\n"
+        "    parts = ','.join(str(name) for _ in range(3))\n"
+        "    db.execute('DELETE FROM t WHERE n IN (' + parts + ')')\n"
+    ))
+    assert [f.rule for f in found] == ["sink.sql"]
