@@ -535,28 +535,40 @@ def run(name):
 '''
 
 
-def test_execute_is_a_sink_where_a_database_is_imported(tmp_path):
+def test_execute_is_a_sink_where_a_query_is_written(tmp_path):
+    """The query is what does it, and the import is beside the point — this
+    used to pass on `import sqlite3` and passes now on the `SELECT`."""
     repo = _tree(tmp_path, QUERY.format(importation="import sqlite3",
                                         receveur="conn"))
     assert "sink.sql" in {c.rule for c in analyse(repo)}
 
 
-def test_execute_with_neither_a_driver_nor_a_query_is_not_a_sink(tmp_path):
+def test_the_query_alone_is_enough_with_no_driver_in_sight(tmp_path):
+    """Which is the ordinary shape: the driver sits behind a local wrapper,
+    and against 100 labelled cases whose sink was `db.execute` after `from
+    app_runtime import db`, the import gate found none of them."""
+    repo = _tree(tmp_path, QUERY.format(importation="", receveur="conn"))
+    assert "sink.sql" in {c.rule for c in analyse(repo)}
+
+
+def test_execute_with_no_query_written_anywhere_is_not_a_sink(tmp_path):
     """A console engine, an LLM relay and a pipeline all have one.
 
-    This is what the gate is still for. No driver imported *and* no query
-    written anywhere in the file: nothing here says the word `execute` means
-    a database.
+    This is what the gate is for. No query written anywhere in the file:
+    nothing here says the word `execute` means a database.
     """
     repo = _tree(tmp_path, "import sys\n\n\ndef handler():\n"
                            "    engine.execute(sys.argv[1])\n")
     assert "sink.sql" not in {c.rule for c in analyse(repo)}
 
 
-def test_a_driver_reached_through_a_package_still_counts(tmp_path):
-    repo = _tree(tmp_path, QUERY.format(importation="from django.db import connection",
-                                        receveur="conn"))
-    assert "sink.sql" in {c.rule for c in analyse(repo)}
+def test_a_driver_imported_and_no_query_written_is_not_one_either(tmp_path):
+    """The same file with a database in scope. `import sqlite3` says a
+    database error can reach here; it does not say SQL is composed here, and
+    only the second makes `execute` mean a cursor."""
+    repo = _tree(tmp_path, "import sqlite3\nimport sys\n\n\ndef handler():\n"
+                           "    engine.execute(sys.argv[1])\n")
+    assert "sink.sql" not in {c.rule for c in analyse(repo)}
 
 
 def test_a_rule_that_needs_no_module_is_unaffected(tmp_path):
@@ -3037,3 +3049,39 @@ def test_listing_a_constant_directory_is_not(tmp_path):
         "    return str(os.listdir('/var/app/data'))\n"
     ))
     assert found == []
+
+
+def test_a_driver_imported_only_to_catch_its_error_is_not_a_database(tmp_path):
+    """Thot's own last false positive, and the shape is ordinary.
+
+    `src/thot/session.py` imports `sqlite3` for eight `except sqlite3.Error`
+    clauses and writes no query anywhere; the `execute` it calls belongs to a
+    Python kernel. An import says a database error can reach this file. It
+    does not say SQL is composed here, and only the second makes `execute`
+    mean a cursor."""
+    (tmp_path / "app.py").write_text(
+        "import sqlite3\n"
+        "import sys\n\n\n"
+        "def main():\n"
+        "    code = sys.argv[1]\n"
+        "    try:\n"
+        "        kernel.execute(code)\n"
+        "    except (sqlite3.Error, OSError):\n"
+        "        return None\n",
+        encoding="utf-8",
+    )
+    assert "sink.sql" not in {c.rule for c in analyse(tmp_path)}
+
+
+def test_a_query_written_in_the_file_still_makes_execute_a_cursor(tmp_path):
+    """What the change must not cost, and it is the whole corpus: every one
+    of the 98 `sink.sql` findings across the three trees shipped here is on a
+    file that writes SQL out."""
+    (tmp_path / "app.py").write_text(
+        "import sys\n\n\n"
+        "def main():\n"
+        "    name = sys.argv[1]\n"
+        "    handle.execute(\"SELECT * FROM t WHERE n = '\" + name + \"'\")\n",
+        encoding="utf-8",
+    )
+    assert "sink.sql" in {c.rule for c in analyse(tmp_path)}

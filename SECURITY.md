@@ -36,16 +36,23 @@ sont pas exploitables et leur retrait rendrait le détecteur non testé.
 
 ## Ce que Thot signale à tort sur lui-même
 
-L'audit tourne en intégration continue et son rapport est joint à chaque
-exécution. Un des findings est faux, et le dire vaut mieux que le faire taire.
+Plus rien. L'audit tourne en intégration continue, son rapport est joint à
+chaque exécution, et les **quatre** findings qu'il produit sont les trois
+comportements délibérés ci-dessus.
 
-`src/thot/session.py`, `sink.sql` — le sink est `kernel.execute(code)`. Le
-moteur voit un appel nommé `execute` qui reçoit une chaîne construite et
-conclut à une requête. Il n'y a pas de base de données : c'est le noyau
-Python qui reçoit une cellule. Le même motif a déjà été resserré une fois
-(`fix(taint): \`execute\` is a method name, not a database`) et il subsiste
-ici. Rien ne le masque, parce qu'un scanner qui cache ses faux positifs
-n'apprend plus rien de personne.
+Il en restait un cinquième, faux, et cette section le déclarait plutôt que de
+le taire : `src/thot/session.py`, `sink.sql` sur `kernel.execute(code)` — un
+appel nommé `execute` qui reçoit une chaîne construite, sauf qu'il n'y a pas
+de base de données et que c'est le noyau Python qui reçoit une cellule. La
+règle passait sa barrière parce que le fichier importe `sqlite3`, et il
+l'importe pour huit clauses `except sqlite3.Error`.
+
+Compté sur les trois arbres livrés ici : **98 findings `sink.sql`, 98 sur un
+fichier qui écrit du SQL en toutes lettres, et exactement un reposant sur un
+import seul** — celui-là. Un import dit qu'une erreur de base de données peut
+arriver jusqu'ici ; il ne dit pas que du SQL s'y compose, et seul le second
+fait de `execute` un curseur. La liste de pilotes a donc quitté la barrière,
+et un test nomme la clause `except` qui la déclenchait.
 
 ## Hors périmètre
 

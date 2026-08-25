@@ -150,11 +150,17 @@ DEFAULT_SINKS: tuple[SinkRule, ...] = (
         # exception. `sql:text` is the way back in — the file writes a query
         # out in full, which says SQL is being composed here more directly
         # than any import does. See `taint/engine.py::_file_gates`.
-        needs=("sql:text",
-               "sqlite3", "aiosqlite", "psycopg", "psycopg2", "pymysql",
-               "MySQLdb", "mysql", "mariadb", "sqlalchemy", "asyncpg",
-               "duckdb", "oracledb", "cx_Oracle", "pyodbc", "django",
-               "peewee", "tortoise", "databases", "sqlmodel"),
+        #
+        # And then the driver list went, because it never earned its place
+        # and it did cost. Counted across the three trees shipped here: 98
+        # `sink.sql` findings, 98 of them on a file that writes SQL out, and
+        # exactly one resting on an import alone — Thot's own `session.py`,
+        # which imports `sqlite3` for eight `except sqlite3.Error` clauses,
+        # writes no query anywhere, and calls `execute` on a Python kernel.
+        # An import says a database error can reach this file. It does not
+        # say SQL is composed here, and only the second makes `execute` mean
+        # a cursor.
+        needs=("sql:text",),
     ),
     SinkRule(
         id="sink.fs.write",
