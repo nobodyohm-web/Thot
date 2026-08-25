@@ -1,5 +1,8 @@
 # Thot
 
+[![tests](https://github.com/nobodyohm-web/thot/actions/workflows/tests.yml/badge.svg)](https://github.com/nobodyohm-web/thot/actions/workflows/tests.yml)
+[![python](https://img.shields.io/badge/python-3.11%20%7C%203.12%20%7C%203.13-blue)](pyproject.toml)
+
 Un assistant de code en terminal qui **connaît déjà ton dépôt** — et le dépôt
 où vivent **Hermes Agent** et **Prime Agent**, entiers.
 
