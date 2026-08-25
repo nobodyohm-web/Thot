@@ -2889,3 +2889,67 @@ def test_a_comprehension_still_carries_what_it_reads_from_outside(tmp_path):
         "    db.execute('DELETE FROM t WHERE n IN (' + parts + ')')\n"
     ))
     assert [f.rule for f in found] == ["sink.sql"]
+
+
+def test_a_request_value_written_straight_into_a_log_line(tmp_path):
+    """CWE-117, and the same forgery as CWE-93 against a different reader:
+    a log line ends at a newline exactly as a header does, so a value
+    carrying one writes a record the author never wrote."""
+    found = _findings(tmp_path, (
+        "import logging\n"
+        "from flask import request\n\n"
+        "@app.route('/x')\n"
+        "def handler():\n"
+        "    who = request.headers.get('user-agent', '')\n"
+        "    logging.info('User action: ' + str(who))\n"
+        "    return 'ok'\n"
+    ))
+    assert [f.rule for f in found] == ["sink.log"]
+
+
+def test_removing_the_terminators_is_the_whole_fix(tmp_path):
+    """The proof already written for `sink.header`, and it covers this for
+    the same reason it covers that one."""
+    found = _findings(tmp_path, (
+        "import logging\n"
+        "import re\n"
+        "from flask import request\n\n"
+        "@app.route('/x')\n"
+        "def handler():\n"
+        "    who = request.headers.get('user-agent', '')\n"
+        "    clean = re.sub(r'[A-Za-z0-9]{4,}', '****',"
+        " str(who).replace('\\r', '').replace('\\n', ''))\n"
+        "    logging.info('User action: ' + str(clean))\n"
+        "    return 'ok'\n"
+    ))
+    assert found == []
+
+
+def test_a_log_call_in_a_file_that_does_not_log(tmp_path):
+    """`info`, `error` and `warning` are ordinary English words. The import
+    is the gate, exactly as `sql:text` gates `sink.sql`."""
+    found = _findings(tmp_path, (
+        "from flask import request\n\n"
+        "@app.route('/x')\n"
+        "def handler():\n"
+        "    who = request.headers.get('user-agent', '')\n"
+        "    report.info('User action: ' + str(who))\n"
+        "    return 'ok'\n"
+    ))
+    assert found == []
+
+
+def test_a_validated_value_is_not_forging_anything(tmp_path):
+    found = _findings(tmp_path, (
+        "import logging\n"
+        "import re\n"
+        "from flask import request\n\n"
+        "@app.route('/x')\n"
+        "def handler():\n"
+        "    who = request.headers.get('user-agent', '')\n"
+        "    if not re.fullmatch(r'[a-zA-Z0-9_.-]+', str(who)):\n"
+        "        return 'no', 400\n"
+        "    logging.info('User action: ' + str(who))\n"
+        "    return 'ok'\n"
+    ))
+    assert found == []

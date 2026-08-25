@@ -222,6 +222,29 @@ DEFAULT_SINKS: tuple[SinkRule, ...] = (
         # is the call graph's job and not this catalog's.
     ),
     SinkRule(
+        id="sink.log",
+        # CWE-117, and the same forgery as CWE-93 against a different
+        # reader: both a header and a log line end at a newline, so a value
+        # carrying one writes a record the author did not.
+        patterns=("info", "warning", "warn", "error", "debug", "critical",
+                  "exception"),
+        impact=Severity.MEDIUM,
+        description="Écriture non neutralisée dans un journal",
+        # The level names are ordinary English words — `response.error`,
+        # `parser.info` — so the import is the gate, exactly as `sql:text`
+        # gates `sink.sql`. A file that imports a logging library and calls
+        # `.warning(...)` is logging.
+        match_mode="method",
+        # The message, and only the message. `logger.info('failed: %s', exc)`
+        # hands the value to the logging machinery instead of writing it into
+        # the string the author wrote, and reading those arguments too is
+        # measured at +0.0000 on the corpus and 4 844 further findings on
+        # hermes — every `except Exception as exc: log.error('...', exc)` in
+        # the tree. What is not covered is stated rather than hidden.
+        dangerous_args=(0,),
+        needs=("logging", "structlog", "loguru"),
+    ),
+    SinkRule(
         id="sink.redirect",
         # Where the *user's browser* is sent, which is a different question
         # from where a request goes. `redirect` is Django's and Flask's;

@@ -432,10 +432,13 @@ def _refuses(body: list[ast.stmt]) -> bool:
 # a user somewhere. Every public address passes it, and a public address is
 # exactly where an open redirect sends its victim.
 _DESTINATION_PROOFS: dict[str, frozenset[str]] = {
-    # Stripping CR and LF proves a header and nothing else — see
-    # `_strips_crlf`. It does not reach `sink.cors`: removing newlines from a
-    # reflected Origin leaves it reflected.
-    "header": frozenset({"sink.header"}),
+    # Stripping CR and LF proves a record that a newline delimits, and
+    # nothing else — see `_crlf_stripped_base`. A response header is one and
+    # so is a log line: CWE-93 and CWE-117 are the same forgery against two
+    # readers, and removing the terminators is the whole fix for both. It
+    # does not reach `sink.cors`: removing newlines from a reflected Origin
+    # leaves it reflected.
+    "header": frozenset({"sink.header", "sink.log"}),
     # A digest or a ciphertext is not the secret. It proves storage and only
     # storage: handing either to a shell is exactly as dangerous as before.
     "storage": frozenset({"sink.cleartext"}),

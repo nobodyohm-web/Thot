@@ -36,6 +36,7 @@ CWE_BY_RULE: dict[str, tuple[str, ...]] = {
     "sink.fs.write": ("CWE-22",),
     "sink.fs.read": ("CWE-22",),
     "sink.network": ("CWE-918",),
+    "sink.log": ("CWE-117",),
     "sink.redirect": ("CWE-601",),
     # CWE-1336 and not CWE-917: a Django or Jinja template is a
     # template engine, not an expression language. The corpus labels
