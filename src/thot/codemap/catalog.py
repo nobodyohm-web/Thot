@@ -310,6 +310,17 @@ DEFAULT_SINKS: tuple[SinkRule, ...] = (
         impact=Severity.MEDIUM,
         description="Origine CORS reflétée depuis la requête",
     ),
+    # Recognised by position too: what makes a cell dangerous is that a
+    # spreadsheet evaluates it, so the rule is about the file being written,
+    # not the method doing the writing. `.write` is among the most common
+    # method names in Python and a rule on the name alone would fire on every
+    # file a program opens.
+    SinkRule(
+        id="sink.csv",
+        patterns=(),
+        impact=Severity.MEDIUM,
+        description="Cellule de tableur écrite depuis une valeur non fiable",
+    ),
 )
 
 DEFAULT_SOURCES: tuple[SourceRule, ...] = (

@@ -2017,3 +2017,51 @@ def test_a_crlf_strip_on_one_operand_proves_nothing_about_the_other(tmp_path):
         " headers={'Content-Language': str(joined)})\n"
     ))
     assert [f.rule for f in found] == ["sink.header"]
+
+
+# -- a spreadsheet is not a text file --------------------------------------
+
+
+def test_untrusted_data_written_to_a_csv_is_caught(tmp_path):
+    found = _findings(tmp_path, (
+        "from flask import request\n\n"
+        "@app.route('/x')\n"
+        "def handler():\n"
+        "    data = request.args.get('v', '')\n"
+        "    with open('output.csv', 'a') as fh:\n"
+        "        fh.write(str(data) + ',data\\n')\n"
+        "    return 'ok'\n"
+    ))
+    assert [f.rule for f in found] == ["sink.csv"]
+
+
+def test_writing_the_same_value_to_a_log_is_not_csv_injection(tmp_path):
+    """The suffix is the whole rule. `.write` is the most common method name
+    in Python and a rule on it alone would fire on every file a program
+    opens; what makes a cell dangerous is that a spreadsheet will evaluate
+    it."""
+    found = _findings(tmp_path, (
+        "from flask import request\n\n"
+        "@app.route('/x')\n"
+        "def handler():\n"
+        "    data = request.args.get('v', '')\n"
+        "    with open('output.log', 'a') as fh:\n"
+        "        fh.write(str(data) + '\\n')\n"
+        "    return 'ok'\n"
+    ))
+    assert found == []
+
+
+def test_an_allow_list_clears_a_csv_write(tmp_path):
+    found = _findings(tmp_path, (
+        "from flask import request\n\n"
+        "@app.route('/x')\n"
+        "def handler():\n"
+        "    data = request.args.get('v', '')\n"
+        "    if data not in ('asc', 'desc'):\n"
+        "        return 'no', 400\n"
+        "    with open('output.csv', 'a') as fh:\n"
+        "        fh.write(str(data) + ',data\\n')\n"
+        "    return 'ok'\n"
+    ))
+    assert found == []

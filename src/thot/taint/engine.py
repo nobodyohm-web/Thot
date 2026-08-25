@@ -1136,6 +1136,9 @@ def _analyse_body(symbol: Symbol, node: ast.AST,
     # applied where the site is recorded.
     guarded_until: list[tuple[int, str]] = []
     guarded_now: set[str] = set()
+    # Handles opened on a spreadsheet. `with open('report.csv') as fh` is what
+    # makes `fh.write` a cell rather than a line of text.
+    sheet_handles: set[str] = set()
 
     def under_guard() -> frozenset[str]:
         return frozenset(guarded_now)
@@ -1226,6 +1229,16 @@ def _analyse_body(symbol: Symbol, node: ast.AST,
             for item in child.items:
                 if item.optional_vars is not None:
                     bind([item.optional_vars], item.context_expr, ref_at(child))
+                    opened = item.context_expr
+                    if isinstance(item.optional_vars, ast.Name) \
+                            and isinstance(opened, ast.Call) \
+                            and _called_name(opened) == "open" \
+                            and opened.args \
+                            and isinstance(opened.args[0], ast.Constant) \
+                            and isinstance(opened.args[0].value, str) \
+                            and opened.args[0].value.lower().endswith(
+                                (".csv", ".tsv")):
+                        sheet_handles.add(item.optional_vars.id)
 
         elif isinstance(child, (ast.ListComp, ast.SetComp, ast.DictComp,
                                 ast.GeneratorExp)):
@@ -1291,6 +1304,18 @@ def _analyse_body(symbol: Symbol, node: ast.AST,
                 facts.sink_calls.append((
                     rule_id, ref_at(child),
                     tuple(sorted(_referenced_names(written) - under_guard())),
+                ))
+
+            written_to = _called_name(child) or ""
+            holder_name, _, method = written_to.rpartition(".")
+            if holder_name in sheet_handles \
+                    and method in ("write", "writerow", "writerows"):
+                cells: set[str] = set()
+                for argument in list(child.args) + [k.value for k in child.keywords]:
+                    cells |= _referenced_names(argument)
+                facts.sink_calls.append((
+                    "sink.csv", ref_at(child),
+                    tuple(sorted(cells - under_guard())),
                 ))
 
             called = _called_name(child)

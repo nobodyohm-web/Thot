@@ -49,6 +49,7 @@ CWE_BY_RULE: dict[str, tuple[str, ...]] = {
     "sink.nosql": ("CWE-943",),
     "sink.header": ("CWE-93",),
     "sink.cors": ("CWE-942",),
+    "sink.csv": ("CWE-1236",),
     # -- JavaScript / TypeScript sinks ----------------------------------
     "sink.js.exec": ("CWE-78",),
     "sink.js.spawn": ("CWE-78",),
