@@ -283,11 +283,11 @@ thot fusion audit             # auditer les trois arbres en une passe
 programme : trois commandes et une fusion mentale de trois rapports.
 
 ```
-thot       227 fichiers     4 finding(s) —  3 high ·   1 medium ·  27 sous le seuil
-hermes    7080 fichiers   191 finding(s) —  8 high · 183 medium · 863 sous le seuil
+thot       227 fichiers     4 finding(s) —  3 high ·   1 medium ·  17 sous le seuil
+hermes    7080 fichiers   190 finding(s) —  8 high · 182 medium · 839 sous le seuil
 prime      952 fichiers    14 finding(s) —  3 high ·  11 medium ·  27 sous le seuil
 
-209 finding(s) sur l'ensemble — 14 high · 195 medium · 917 sous le seuil (`--all`)
+208 finding(s) sur l'ensemble — 14 high · 194 medium · 883 sous le seuil (`--all`)
 ```
 
 Le seuil est celui de `thot audit`, et c'est le point : le même arbre doit

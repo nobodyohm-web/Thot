@@ -3085,3 +3085,89 @@ def test_a_query_written_in_the_file_still_makes_execute_a_cursor(tmp_path):
         encoding="utf-8",
     )
     assert "sink.sql" in {c.rule for c in analyse(tmp_path)}
+
+
+def test_a_header_sent_with_a_request_is_not_a_response_header(tmp_path):
+    """`headers={...}` is the keyword of every HTTP *client* in Python, and
+    that is by far its commonest use. CWE-93 is a forged line in a response
+    the browser reads; `requests` and `httpx` both raise on a header value
+    containing CR or LF, so it is not even the weakness on the way out.
+
+    Counted on the two trees shipped here: of the 16 `sink.header` findings
+    whose call could be named, 15 were `httpx.get`, `session.post`,
+    `urllib.request.Request` and their kin. One was a response."""
+    found = _findings(tmp_path, (
+        "import httpx\n"
+        "from flask import request\n\n"
+        "@app.route('/x')\n"
+        "def handler():\n"
+        "    tag = request.args.get('tag', '')\n"
+        "    httpx.get('https://api.example.com/v1',"
+        " headers={'X-Trace': str(tag)})\n"
+        "    return 'ok'\n"
+    ))
+    assert "sink.header" not in {f.rule for f in found}
+
+
+def test_a_header_set_on_a_response_still_is_one(tmp_path):
+    found = _findings(tmp_path, (
+        "from django.http import JsonResponse\n\n\n"
+        "def view(request):\n"
+        "    lang = request.GET.get('lang', '')\n"
+        "    return JsonResponse({'ok': True},"
+        " headers={'Content-Language': str(lang)})\n"
+    ))
+    assert [f.rule for f in found] == ["sink.header"]
+
+
+def test_a_redirect_response_carries_headers_like_any_other(tmp_path):
+    """`HttpResponseRedirect` does not end in `Response`; it contains it."""
+    found = _findings(tmp_path, (
+        "from django.http import HttpResponseRedirect\n\n\n"
+        "def view(request):\n"
+        "    lang = request.GET.get('lang', '')\n"
+        "    return HttpResponseRedirect('/next',"
+        " headers={'Content-Language': str(lang)})\n"
+    ))
+    assert "sink.header" in {f.rule for f in found}
+
+
+def test_flask_make_response_is_a_response_by_name(tmp_path):
+    found = _findings(tmp_path, (
+        "from flask import make_response, request\n\n"
+        "@app.route('/x')\n"
+        "def handler():\n"
+        "    lang = request.args.get('lang', '')\n"
+        "    return make_response('ok', 200,"
+        " headers={'Content-Language': str(lang)})\n"
+    ))
+    assert "sink.header" in {f.rule for f in found}
+
+
+def test_the_flask_three_tuple_is_untouched(tmp_path):
+    """It has no call to name, and it is unambiguously a response."""
+    found = _findings(tmp_path, (
+        "from flask import jsonify, request\n\n"
+        "@app.route('/x')\n"
+        "def handler():\n"
+        "    lang = request.args.get('lang', '')\n"
+        "    return jsonify({'ok': True}), 200,"
+        " {'Content-Language': str(lang)}\n"
+    ))
+    assert [f.rule for f in found] == ["sink.header"]
+
+
+def test_three_things_returned_from_a_helper_are_not_a_response(tmp_path):
+    """`return a, b, {...}` is an ordinary Python return, and the third
+    element being a dict says nothing. The route decorator is what makes the
+    same line a Flask response — the same gate a raw HTML body already needs.
+
+    Found on hermes: `return provider_name, model_name, {...}` in
+    `agent/auxiliary_client.py` and `return None, None, {...}` in
+    `tools/transcription_tools.py`."""
+    found = _findings(tmp_path, (
+        "from flask import request\n\n\n"
+        "def convert(source):\n"
+        "    return None, None, {'error': str(source), 'ok': False}\n"
+    ))
+    assert "sink.header" not in {f.rule for f in found}

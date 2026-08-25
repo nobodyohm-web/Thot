@@ -667,7 +667,25 @@ def _sealed(value: ast.AST) -> bool:
     return False
 
 
-def _header_targets(node: ast.AST) -> list[tuple[str, ast.expr]]:
+# Calls that build a response and take its headers with it. Read by name
+# because that is what the frameworks agree on: Django spells them
+# `HttpResponse`, `HttpResponseRedirect`, `JsonResponse`; Starlette and
+# FastAPI `Response`, `JSONResponse`, `HTMLResponse`, `PlainTextResponse`,
+# `RedirectResponse`, `FileResponse`, `StreamingResponse`; aiohttp
+# `web.Response` and `web.FileResponse`. Containing the word rather than
+# ending in it, so `HttpResponseRedirect` is one and `urllib.request.Request`
+# is not.
+_RESPONSE_BY_NAME = ("make_response", "json_response", "send_file",
+                     "send_from_directory", "abort")
+
+
+def _builds_a_response(node: ast.Call) -> bool:
+    name = (_called_name(node) or "").rsplit(".", 1)[-1]
+    return "Response" in name or name in _RESPONSE_BY_NAME
+
+
+def _header_targets(node: ast.AST, published: bool = False
+                    ) -> list[tuple[str, ast.expr]]:
     """Response headers written at this node, as (rule id, value).
 
     Two shapes, because the frameworks disagree and both are ordinary:
@@ -675,16 +693,32 @@ def _header_targets(node: ast.AST) -> list[tuple[str, ast.expr]]:
     `body, status, {...}` as the third element of a tuple. The key names the
     header and the value is what must not be attacker-chosen.
 
+    `published` gates the second shape, and it needs one: `return a, b, {...}`
+    is an ordinary Python return and the third element being a dict says
+    nothing at all. Found on hermes as `return provider_name, model_name,
+    {...}` and `return None, None, {...}`. The route decorator is what makes
+    the same line a response, which is the gate a raw HTML body already uses.
+
     Position is the whole gate. A dict whose keys merely *look* like header
     names — `{'first-name': value}` — is data, and matching on the shape of
     the key alone would have turned every such dict into a response header.
+
+    And the call has to be a response. `headers={...}` is the keyword of
+    every HTTP *client* in Python and that is by far its commonest use:
+    counted on the two trees shipped here, of the 16 findings whose call
+    could be named, 15 were `httpx.get`, `session.post`,
+    `urllib.request.Request` and their kin, and one was a response. CWE-93 is
+    a forged line in a response the browser reads; on the way out `requests`
+    and `httpx` both raise on a header value containing CR or LF, so it is
+    not the weakness there either.
     """
     dicts: list[ast.Dict] = []
-    if isinstance(node, ast.Call):
+    if isinstance(node, ast.Call) and _builds_a_response(node):
         for keyword in node.keywords:
             if keyword.arg == "headers" and isinstance(keyword.value, ast.Dict):
                 dicts.append(keyword.value)
-    elif isinstance(node, ast.Return) and isinstance(node.value, ast.Tuple) \
+    elif published and isinstance(node, ast.Return) \
+            and isinstance(node.value, ast.Tuple) \
             and len(node.value.elts) == 3 \
             and isinstance(node.value.elts[2], ast.Dict):
         dicts.append(node.value.elts[2])
@@ -1690,7 +1724,7 @@ def _analyse_body(symbol: Symbol, node: ast.AST,
                                  - _html_only_names(child.value)
                                  - under_guard())),
                 ))
-            for rule_id, written in _header_targets(child):
+            for rule_id, written in _header_targets(child, published):
                 facts.sink_calls.append((
                     rule_id, ref_at(child),
                     tuple(sorted(_referenced_names(written) - under_guard())),
